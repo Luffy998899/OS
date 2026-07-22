@@ -1,0 +1,340 @@
+// Auxa — Work OS CRM
+// Dev uses SQLite for zero-setup local testing. The schema avoids enums and scalar
+// lists so it ports cleanly to PostgreSQL (switch `provider` to "postgresql" and add
+// pgvector for DailyJournal.embedding in production).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// People & access control
+// ---------------------------------------------------------------------------
+
+model Role {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  description String?
+  isSystem    Boolean  @default(false)
+  permissions String   @default("[]") // JSON array of permission keys (RBAC)
+  users       User[]
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model User {
+  id           String    @id @default(cuid())
+  email        String    @unique
+  name         String
+  passwordHash String
+  avatarUrl    String?
+  title        String?
+  department   String? // maps to gamified rooms / verticals
+  phone        String?   @unique
+  status       String    @default("active") // active | suspended | invited
+  timezone     String    @default("Asia/Kolkata")
+  points       Int       @default(0) // cached leaderboard total (source: PointsLedger)
+  roleId       String
+  role         Role      @relation(fields: [roleId], references: [id])
+  lastLoginAt  DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  assignedTasks  Task[]             @relation("TaskAssignee")
+  createdTasks   Task[]             @relation("TaskCreator")
+  taskComments   TaskComment[]
+  shifts         Shift[]
+  dayReports     DayReport[]
+  timeEntries    TimeEntry[]
+  documents      Document[]
+  documentShares DocumentShare[]
+  pointsLedger   PointsLedger[]
+  redemptions    RewardRedemption[]
+  notifications  Notification[]
+  avatar         AvatarState?
+  managedClients Client[]           @relation("ClientManager")
+  journals       DailyJournal[]
+}
+
+// ---------------------------------------------------------------------------
+// CRM — clients & outreach
+// ---------------------------------------------------------------------------
+
+model Client {
+  id          String        @id @default(cuid())
+  companyName String
+  ownerName   String?
+  email       String?
+  phone       String?
+  category    String? // New Customer | Active | Enterprise | ...
+  status      String        @default("new") // new | active | suspended | churned
+  temperature String        @default("cold") // hot | warm | cold (outreach)
+  notes       String?
+  managerId   String?
+  manager     User?         @relation("ClientManager", fields: [managerId], references: [id])
+  tasks       Task[]
+  outreach    OutreachLog[]
+  timeEntries TimeEntry[]
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+}
+
+model OutreachLog {
+  id             String    @id @default(cuid())
+  clientId       String
+  client         Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  channel        String // call | email | whatsapp | meeting
+  outcome        String? // followup | interested | not_interested | closed
+  note           String?
+  nextFollowUpAt DateTime?
+  createdAt      DateTime  @default(now())
+}
+
+// ---------------------------------------------------------------------------
+// Tasks / Missions
+// ---------------------------------------------------------------------------
+
+model Task {
+  id              String    @id @default(cuid())
+  title           String
+  description     String?
+  vertical        String    @default("roadmap") // website-dev | digital-marketing | roadmap | client-outreach | billing
+  status          String    @default("todo") // todo | in_progress | review | done | blocked
+  priority        String    @default("medium") // low | medium | high | urgent
+  points          Int       @default(10)
+  estimateMinutes Int?
+  dueAt           DateTime?
+  startedAt       DateTime?
+  completedAt     DateTime?
+  source          String    @default("manual") // manual | ai | whatsapp | voice
+  aiGenerated     Boolean   @default(false)
+  approvalStatus  String    @default("approved") // draft | pending_review | approved | rejected
+  aiRationale     String? // why AI routed this to this role/person
+
+  assigneeId  String?
+  assignee    User?   @relation("TaskAssignee", fields: [assigneeId], references: [id])
+  createdById String
+  createdBy   User    @relation("TaskCreator", fields: [createdById], references: [id])
+  clientId    String?
+  client      Client? @relation(fields: [clientId], references: [id])
+  roomId      String?
+  room        Room?   @relation(fields: [roomId], references: [id])
+
+  comments    TaskComment[]
+  activities  TaskActivity[]
+  timeEntries TimeEntry[]
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+}
+
+model TaskComment {
+  id        String   @id @default(cuid())
+  taskId    String
+  task      Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  authorId  String
+  author    User     @relation(fields: [authorId], references: [id])
+  body      String
+  createdAt DateTime @default(now())
+}
+
+model TaskActivity {
+  id        String   @id @default(cuid())
+  taskId    String
+  task      Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  type      String // created | status_changed | assigned | commented | completed
+  meta      String? // JSON
+  actorId   String?
+  createdAt DateTime @default(now())
+}
+
+// ---------------------------------------------------------------------------
+// Attendance, day reports & timesheets
+// ---------------------------------------------------------------------------
+
+model Shift {
+  id          String     @id @default(cuid())
+  userId      String
+  user        User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  checkInAt   DateTime   @default(now())
+  checkOutAt  DateTime?
+  status      String     @default("active") // active | completed
+  checkInNote String?
+  report      DayReport?
+  createdAt   DateTime   @default(now())
+}
+
+model DayReport {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  shiftId     String?  @unique
+  shift       Shift?   @relation(fields: [shiftId], references: [id])
+  date        String // YYYY-MM-DD (IST)
+  summary     String
+  blockers    String?
+  hoursWorked Float?
+  tasksWorked String? // JSON array of task ids
+  submittedAt DateTime @default(now())
+}
+
+model TimeEntry {
+  id              String   @id @default(cuid())
+  userId          String
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  taskId          String?
+  task            Task?    @relation(fields: [taskId], references: [id])
+  clientId        String?
+  client          Client?  @relation(fields: [clientId], references: [id])
+  description     String?
+  date            String // YYYY-MM-DD
+  startTime       String? // HH:MM
+  durationSeconds Int      @default(0)
+  invoiceStatus   String   @default("not_invoiced") // invoiced | not_invoiced
+  createdAt       DateTime @default(now())
+}
+
+// ---------------------------------------------------------------------------
+// Documents & whiteboards (Miro-like)
+// ---------------------------------------------------------------------------
+
+model Document {
+  id         String          @id @default(cuid())
+  title      String
+  type       String          @default("whiteboard") // whiteboard | doc
+  ownerId    String
+  owner      User            @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  visibility String          @default("private") // private | team | public
+  content    String? // JSON snapshot (tldraw store) or rich-doc json
+  thumbnail  String?
+  shares     DocumentShare[]
+  createdAt  DateTime        @default(now())
+  updatedAt  DateTime        @updatedAt
+}
+
+model DocumentShare {
+  id         String   @id @default(cuid())
+  documentId String
+  document   Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  permission String   @default("view") // view | edit
+
+  @@unique([documentId, userId])
+}
+
+// ---------------------------------------------------------------------------
+// Gamified AI workspace — rooms, avatars, points & rewards
+// ---------------------------------------------------------------------------
+
+model Room {
+  id          String        @id @default(cuid())
+  key         String        @unique // developer | creative | managing-heads | ...
+  name        String
+  department  String?
+  description String?
+  capacity    Int           @default(12)
+  posX        Int           @default(0) // layout position on the office map grid
+  posY        Int           @default(0)
+  tasks       Task[]
+  avatars     AvatarState[]
+  createdAt   DateTime      @default(now())
+}
+
+model AvatarState {
+  id        String   @id @default(cuid())
+  userId    String   @unique
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  roomId    String?
+  room      Room?    @relation(fields: [roomId], references: [id])
+  x         Float    @default(0)
+  y         Float    @default(0)
+  status    String   @default("online") // online | away | busy
+  updatedAt DateTime @updatedAt
+}
+
+model PointsLedger {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  delta     Int
+  reason    String
+  taskId    String?
+  createdAt DateTime @default(now())
+}
+
+model Reward {
+  id          String             @id @default(cuid())
+  name        String
+  description String?
+  costPoints  Int
+  active      Boolean            @default(true)
+  redemptions RewardRedemption[]
+  createdAt   DateTime           @default(now())
+}
+
+model RewardRedemption {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  rewardId    String
+  reward      Reward   @relation(fields: [rewardId], references: [id])
+  pointsSpent Int
+  status      String   @default("pending") // pending | fulfilled | rejected
+  createdAt   DateTime @default(now())
+}
+
+// ---------------------------------------------------------------------------
+// AI layer & integrations
+// ---------------------------------------------------------------------------
+
+model AiCheckin {
+  id             String   @id @default(cuid())
+  summary        String
+  importantTasks String? // JSON
+  createdAt      DateTime @default(now())
+}
+
+model DailyJournal {
+  id        String   @id @default(cuid())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id])
+  date      String // YYYY-MM-DD
+  content   String
+  embedding String? // JSON float array (pgvector column in production)
+  createdAt DateTime @default(now())
+}
+
+model WhatsAppMessage {
+  id           String   @id @default(cuid())
+  fromPhone    String
+  body         String
+  direction    String   @default("inbound") // inbound | outbound
+  status       String   @default("received") // received | parsed | approved | rejected
+  parsedTaskId String?
+  meta         String? // JSON
+  createdAt    DateTime @default(now())
+}
+
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      String // task_assigned | report_reminder | approval | reward | system
+  title     String
+  body      String?
+  read      Boolean  @default(false)
+  meta      String? // JSON
+  createdAt DateTime @default(now())
+}
+
+model Setting {
+  id        String   @id @default(cuid())
+  key       String   @unique
+  value     String // JSON
+  updatedAt DateTime @updatedAt
+}
