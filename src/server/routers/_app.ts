@@ -11,6 +11,8 @@ import { assignRouter } from "./assign";
 import { reportRouter } from "./report";
 import { documentRouter } from "./document";
 import { settingRouter } from "./setting";
+import { workspaceRouter } from "./workspace";
+import { leaderboardRouter } from "./leaderboard";
 
 export const appRouter = router({
   health: publicProcedure.query(() => ({ ok: true, service: "auxa" })),
@@ -27,6 +29,8 @@ export const appRouter = router({
   report: reportRouter,
   document: documentRouter,
   setting: settingRouter,
+  workspace: workspaceRouter,
+  leaderboard: leaderboardRouter,
 });
 
 export type AppRouter = typeof appRouter;
