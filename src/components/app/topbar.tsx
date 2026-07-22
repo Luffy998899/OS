@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "./theme-toggle";
 import { UserMenu } from "./user-menu";
 import { NotificationsBell } from "./notifications-bell";
+import { CheckInControl } from "@/components/attendance/check-in-control";
 import type { CurrentUser } from "@/lib/auth/types";
 
 export function Topbar({
@@ -42,6 +43,7 @@ export function Topbar({
       </div>
 
       <div className="ml-auto flex items-center gap-1 sm:gap-1.5">
+        <CheckInControl />
         <ThemeToggle />
         <NotificationsBell />
         <UserMenu user={user} />
