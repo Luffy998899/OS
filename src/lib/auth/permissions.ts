@@ -16,6 +16,17 @@ export type PermissionKey = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];
 
 export const ALL_PERMISSIONS: PermissionKey[] = Object.values(PERMISSIONS);
 
+export const PERMISSION_LABELS: Record<PermissionKey, string> = {
+  [PERMISSIONS.ADMIN]: "Access the Admin panel",
+  [PERMISSIONS.PEOPLE_MANAGE]: "Manage people & roles",
+  [PERMISSIONS.CLIENTS_MANAGE]: "Manage clients",
+  [PERMISSIONS.TASKS_ASSIGN]: "Assign & plan work",
+  [PERMISSIONS.TASKS_REVIEW]: "Review AI / WhatsApp drafts",
+  [PERMISSIONS.REPORTS_VIEW]: "View reports & workload",
+  [PERMISSIONS.SETTINGS_MANAGE]: "Manage settings & integrations",
+  [PERMISSIONS.REWARDS_MANAGE]: "Manage rewards",
+};
+
 // Default permission sets for the three system roles.
 export const ROLE_DEFAULTS: Record<string, string[]> = {
   Admin: ["*"],
