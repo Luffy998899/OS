@@ -3,6 +3,9 @@ import { cookies } from "next/headers";
 import { SignJWT, jwtVerify } from "jose";
 import { db } from "@/lib/db";
 import { parsePermissions } from "./permissions";
+import type { CurrentUser } from "./types";
+
+export type { CurrentUser };
 
 const COOKIE_NAME = "auxa_session";
 const MAX_AGE = 60 * 60 * 24 * 7; // 7 days
@@ -68,19 +71,6 @@ export async function readSession(): Promise<SessionPayload | null> {
     return null;
   }
 }
-
-export type CurrentUser = {
-  id: string;
-  email: string;
-  name: string;
-  avatarUrl: string | null;
-  title: string | null;
-  department: string | null;
-  points: number;
-  status: string;
-  roleName: string;
-  permissions: string[];
-};
 
 /**
  * Loads the current user fresh from the database (so role/permission/status
