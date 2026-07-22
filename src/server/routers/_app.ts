@@ -9,6 +9,7 @@ import { roleRouter } from "./role";
 import { clientRouter } from "./client";
 import { assignRouter } from "./assign";
 import { reportRouter } from "./report";
+import { documentRouter } from "./document";
 
 export const appRouter = router({
   health: publicProcedure.query(() => ({ ok: true, service: "auxa" })),
@@ -23,6 +24,7 @@ export const appRouter = router({
   clients: clientRouter,
   assign: assignRouter,
   report: reportRouter,
+  document: documentRouter,
 });
 
 export type AppRouter = typeof appRouter;
