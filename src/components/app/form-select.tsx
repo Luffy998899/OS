@@ -25,8 +25,15 @@ export function FormSelect({
   className?: string;
   id?: string;
 }) {
+  // Base UI's Select.Value renders labels for preset values via the `items` map.
+  const items = Object.fromEntries(options.map((o) => [o.value, o.label]));
+
   return (
-    <Select value={value} onValueChange={(v) => onValueChange(String(v))}>
+    <Select
+      items={items}
+      value={value}
+      onValueChange={(v) => onValueChange(String(v))}
+    >
       <SelectTrigger id={id} className={className ?? "w-full"}>
         <SelectValue placeholder={placeholder} />
       </SelectTrigger>
