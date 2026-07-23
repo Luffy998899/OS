@@ -78,6 +78,19 @@ everyone.)
 
 ## Quickstart
 
+One‑command setup + start (creates `.env` with a fresh secret, installs, migrates,
+seeds on first run, builds, and serves):
+
+```bash
+./deploy.sh              # production build + start on http://localhost:3000
+./deploy.sh dev          # development server
+./deploy.sh --smoke      # setup + build + health checks + unit tests, then exit
+./deploy.sh --reset      # drop, re-migrate and re-seed the database
+# flags: --seed  --no-install  --no-build  --port 3001
+```
+
+Or run the steps manually:
+
 ```bash
 pnpm install
 cp .env.example .env        # then set AUTH_SECRET (openssl rand -base64 32)
