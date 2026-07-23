@@ -28,7 +28,11 @@ export async function sendEmail(
 
   if (!key) {
     console.log(`[email:skipped] "${args.subject}" -> ${args.to}`);
-    return { sent: false, skipped: true };
+    return {
+      sent: false,
+      skipped: true,
+      error: "Email provider not configured — add RESEND_API_KEY to send.",
+    };
   }
 
   try {

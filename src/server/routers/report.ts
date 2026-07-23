@@ -4,6 +4,28 @@ import { istDateString } from "@/lib/time";
 import { ACTIVE_STATUSES } from "@/lib/constants";
 
 export const reportRouter = router({
+  // Day reports employees submit at check-out.
+  dayReports: permissionProcedure(PERMISSIONS.REPORTS_VIEW).query(({ ctx }) =>
+    ctx.db.dayReport.findMany({
+      orderBy: { submittedAt: "desc" },
+      take: 100,
+      include: {
+        user: { select: { id: true, name: true, avatarUrl: true, department: true } },
+      },
+    }),
+  ),
+
+  // Daily AI check-ins (journals) across the team.
+  checkIns: permissionProcedure(PERMISSIONS.REPORTS_VIEW).query(({ ctx }) =>
+    ctx.db.dailyJournal.findMany({
+      orderBy: { createdAt: "desc" },
+      take: 100,
+      include: {
+        user: { select: { id: true, name: true, avatarUrl: true, department: true } },
+      },
+    }),
+  ),
+
   data: permissionProcedure(PERMISSIONS.REPORTS_VIEW).query(async ({ ctx }) => {
     const now = new Date();
     const weekAgo = new Date(now.getTime() - 7 * 86400000);
