@@ -99,6 +99,19 @@ pnpm db:seed                # load demo data
 pnpm dev                    # http://localhost:3000
 ```
 
+### GitHub Codespaces / proxies / tunnels
+
+Next.js blocks Server Actions (like sign‑in) when the request's `Origin` doesn't
+match the forwarded host — you'll see *"x-forwarded-host … does not match origin …
+Aborting the action."* Auxa pre‑allows localhost plus common tunnels
+(`*.app.github.dev`, `*.gitpod.io`, `*.ngrok*`, `*.trycloudflare.com`) in
+`next.config.ts`. For any other proxied domain, add it via `ALLOWED_ORIGINS` in
+`.env` (comma‑separated) and rebuild:
+
+```bash
+ALLOWED_ORIGINS="your-space.app.github.dev" ./deploy.sh
+```
+
 ### Demo logins (password `auxa1234`)
 
 | Email | Role |
