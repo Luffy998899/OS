@@ -40,12 +40,19 @@ export const VERTICAL_ROOM_KEY: Record<string, string> = {
 };
 
 async function resolveRoomId(
-  db: { room: { findUnique: (a: { where: { key: string }; select: { id: true } }) => Promise<{ id: string } | null> } },
-  vertical: string,
-  provided?: string | null,
+  db: typeof import("@/lib/db").db,
+  opts: { vertical: string; clientId?: string | null; provided?: string | null },
 ): Promise<string | null> {
-  if (provided) return provided;
-  const key = VERTICAL_ROOM_KEY[vertical];
+  if (opts.provided) return opts.provided;
+  // A client's own area takes precedence, so their missions land there.
+  if (opts.clientId) {
+    const clientRoom = await db.room.findFirst({
+      where: { clientId: opts.clientId },
+      select: { id: true },
+    });
+    if (clientRoom) return clientRoom.id;
+  }
+  const key = VERTICAL_ROOM_KEY[opts.vertical];
   if (!key) return null;
   const room = await db.room.findUnique({ where: { key }, select: { id: true } });
   return room?.id ?? null;
@@ -122,7 +129,11 @@ export const taskRouter = router({
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      const roomId = await resolveRoomId(ctx.db, input.vertical, input.roomId);
+      const roomId = await resolveRoomId(ctx.db, {
+        vertical: input.vertical,
+        clientId: input.clientId,
+        provided: input.roomId,
+      });
       const task = await ctx.db.task.create({
         data: {
           title: input.title,

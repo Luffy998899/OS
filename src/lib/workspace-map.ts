@@ -1,171 +1,162 @@
-// Top-down office map for the Gamified Workspace game. Rooms have walls with
-// doorways (collision), desks and decor. Coordinates are a fixed world space;
-// the canvas scales to fit.
-
-export const WORLD = { w: 1040, h: 660 };
-export const TILE = 20;
+// DB-driven office layout for the Gamified Workspace. Rooms are placed on a grid
+// (posX/posY) so the map is expandable — admins add client areas at runtime.
+// Logic (movement/collision) stays in top-down world coordinates; the game
+// renders it isometrically.
 
 export type Rect = { x: number; y: number; w: number; h: number };
 export type Vec = { x: number; y: number };
-export type Door = { side: "top" | "bottom" | "left" | "right" };
 
-export type Decor = {
-  kind: "plant" | "cooler" | "board" | "shelf" | "rug";
-  x: number;
-  y: number;
-};
+export const CELL = { w: 300, h: 200 };
+export const GAP = 72;
+export const PAD = 60;
+const WALL_T = 10;
+const DOOR_W = 96;
 
-export type RoomDef = {
+export const PLAYER_RADIUS = 11;
+export const INTERACT_RADIUS = 78;
+
+export type RoomInput = {
+  id: string;
   key: string;
   name: string;
-  short: string;
-  accent: string; // rug / label tint (game world palette)
-  rect: Rect;
-  doors: Door[];
-  board: Vec;
-  desks: Rect[];
-  decor: Decor[];
+  kind: string;
+  clientName?: string | null;
+  posX: number;
+  posY: number;
+  missionCount: number;
 };
 
-const WALL_T = 9;
-const DOOR_W = 84;
+export type RoomGeom = RoomInput & {
+  rect: Rect;
+  board: Vec;
+  desks: Rect[];
+  accent: string;
+};
 
-function desksFor(r: Rect): Rect[] {
-  const dw = 74;
-  const dh = 34;
-  const y = r.y + r.h - dh - 26;
-  return [
-    { x: r.x + 26, y, w: dw, h: dh },
-    { x: r.x + r.w - dw - 26, y, w: dw, h: dh },
-  ];
-}
+export type Layout = {
+  world: { w: number; h: number };
+  rooms: RoomGeom[];
+  solids: Rect[];
+  spawn: Vec;
+};
 
-function room(
-  key: string,
-  name: string,
-  short: string,
-  accent: string,
-  rect: Rect,
-  doors: Door[],
-  decor: Decor[] = [],
-): RoomDef {
+const DEPT_ACCENT: Record<string, string> = {
+  developer: "#6f9ff0",
+  creative: "#63c98a",
+  "video-editing": "#e0a862",
+  "managing-heads": "#d98a8a",
+  "common-board": "#c9bfa6",
+  client: "#b18fe0",
+  creativity: "#e6cf6a",
+};
+const CLIENT_ACCENTS = ["#5bb9c9", "#c98fb0", "#8fb46a", "#d0a05a", "#7f9be0"];
+
+function roomRect(posX: number, posY: number): Rect {
   return {
-    key,
-    name,
-    short,
-    accent,
-    rect,
-    doors,
-    board: { x: rect.x + rect.w / 2, y: rect.y + 52 },
-    desks: desksFor(rect),
-    decor,
+    x: PAD + posX * (CELL.w + GAP),
+    y: PAD + posY * (CELL.h + GAP),
+    w: CELL.w,
+    h: CELL.h,
   };
 }
 
-export const ROOMS: RoomDef[] = [
-  room("developer", "Developer Room", "DEV", "#7db3e8", { x: 24, y: 24, w: 300, h: 196 }, [{ side: "bottom" }], [
-    { kind: "shelf", x: 40, y: 40 },
-    { kind: "plant", x: 290, y: 44 },
-  ]),
-  room("creative", "Creative Room", "CRE", "#8fd6a6", { x: 360, y: 24, w: 300, h: 196 }, [{ side: "bottom" }], [
-    { kind: "board", x: 470, y: 40 },
-    { kind: "plant", x: 630, y: 44 },
-  ]),
-  room("video-editing", "Video Editing", "VID", "#e0a86b", { x: 696, y: 24, w: 320, h: 196 }, [{ side: "bottom" }], [
-    { kind: "shelf", x: 712, y: 40 },
-    { kind: "cooler", x: 980, y: 44 },
-  ]),
-  room("managing-heads", "Managing Heads", "MGT", "#d68f8f", { x: 24, y: 268, w: 300, h: 196 }, [{ side: "top" }], [
-    { kind: "plant", x: 292, y: 430 },
-  ]),
-  room("common-board", "Common Board", "HUB", "#c7bda8", { x: 360, y: 268, w: 300, h: 196 }, [{ side: "top" }, { side: "bottom" }], [
-    { kind: "board", x: 470, y: 284 },
-    { kind: "cooler", x: 626, y: 430 },
-  ]),
-  room("client", "Client Room", "CLI", "#b79ce0", { x: 696, y: 268, w: 320, h: 196 }, [{ side: "top" }], [
-    { kind: "plant", x: 984, y: 288 },
-  ]),
-  room("creativity", "Creativity Room", "IDEA", "#e8cf7d", { x: 360, y: 512, w: 300, h: 124 }, [{ side: "top" }], [
-    { kind: "board", x: 470, y: 528 },
-  ]),
-];
+function desksFor(r: Rect): Rect[] {
+  const dw = 76;
+  const dh = 40;
+  const y = r.y + r.h - dh - 28;
+  return [
+    { x: r.x + 30, y, w: dw, h: dh },
+    { x: r.x + r.w - dw - 30, y, w: dw, h: dh },
+  ];
+}
 
-export const SPAWN: Vec = { x: 510, y: 366 }; // Common Board (hub)
-
-// Outer boundary walls.
-export const OUTER_WALLS: Rect[] = [
-  { x: 0, y: 0, w: WORLD.w, h: WALL_T },
-  { x: 0, y: WORLD.h - WALL_T, w: WORLD.w, h: WALL_T },
-  { x: 0, y: 0, w: WALL_T, h: WORLD.h },
-  { x: WORLD.w - WALL_T, y: 0, w: WALL_T, h: WORLD.h },
-];
-
-// Build wall segments for a room, leaving DOOR_W gaps where there are doors.
-function roomWalls(r: RoomDef): Rect[] {
-  const { x, y, w, h } = r.rect;
+// Four walls with a centred doorway gap on each side, so any two adjacent rooms
+// connect through the corridor between them.
+function roomWalls(r: Rect): Rect[] {
   const t = WALL_T;
-  const has = (side: Door["side"]) => r.doors.some((d) => d.side === side);
   const segs: Rect[] = [];
-
-  // top / bottom (horizontal walls)
-  for (const [side, wy] of [
-    ["top", y - t] as const,
-    ["bottom", y + h] as const,
-  ]) {
-    if (has(side)) {
-      const gapStart = x + w / 2 - DOOR_W / 2;
-      segs.push({ x: x - t, y: wy, w: gapStart - (x - t), h: t });
-      segs.push({ x: gapStart + DOOR_W, y: wy, w: x + w + t - (gapStart + DOOR_W), h: t });
-    } else {
-      segs.push({ x: x - t, y: wy, w: w + t * 2, h: t });
-    }
+  const gx = r.x + r.w / 2 - DOOR_W / 2;
+  const gy = r.y + r.h / 2 - DOOR_W / 2;
+  // top & bottom
+  for (const wy of [r.y - t, r.y + r.h]) {
+    segs.push({ x: r.x - t, y: wy, w: gx - (r.x - t), h: t });
+    segs.push({ x: gx + DOOR_W, y: wy, w: r.x + r.w + t - (gx + DOOR_W), h: t });
   }
-  // left / right (vertical walls)
-  for (const [side, wx] of [
-    ["left", x - t] as const,
-    ["right", x + w] as const,
-  ]) {
-    if (has(side)) {
-      const gapStart = y + h / 2 - DOOR_W / 2;
-      segs.push({ x: wx, y: y - t, w: t, h: gapStart - (y - t) });
-      segs.push({ x: wx, y: gapStart + DOOR_W, w: t, h: y + h + t - (gapStart + DOOR_W) });
-    } else {
-      segs.push({ x: wx, y: y - t, w: t, h: h + t * 2 });
-    }
+  // left & right
+  for (const wx of [r.x - t, r.x + r.w]) {
+    segs.push({ x: wx, y: r.y - t, w: t, h: gy - (r.y - t) });
+    segs.push({ x: wx, y: gy + DOOR_W, w: t, h: r.y + r.h + t - (gy + DOOR_W) });
   }
   return segs;
 }
 
-export const ROOM_WALLS: Rect[] = ROOMS.flatMap(roomWalls);
+export function buildLayout(rooms: RoomInput[]): Layout {
+  const maxX = Math.max(0, ...rooms.map((r) => r.posX));
+  const maxY = Math.max(0, ...rooms.map((r) => r.posY));
+  const world = {
+    w: PAD * 2 + (maxX + 1) * CELL.w + maxX * GAP,
+    h: PAD * 2 + (maxY + 1) * CELL.h + maxY * GAP,
+  };
 
-// Everything an avatar collides with.
-export const SOLIDS: Rect[] = [
-  ...OUTER_WALLS,
-  ...ROOM_WALLS,
-  ...ROOMS.flatMap((r) => r.desks),
-];
+  let clientIdx = 0;
+  const geoms: RoomGeom[] = rooms.map((r) => {
+    const rect = roomRect(r.posX, r.posY);
+    const accent =
+      r.kind === "client"
+        ? CLIENT_ACCENTS[clientIdx++ % CLIENT_ACCENTS.length]
+        : (DEPT_ACCENT[r.key] ?? "#9aa0aa");
+    return {
+      ...r,
+      rect,
+      board: { x: rect.x + rect.w / 2, y: rect.y + 46 },
+      desks: desksFor(rect),
+      accent,
+    };
+  });
 
-export const PLAYER_RADIUS = 11;
-export const INTERACT_RADIUS = 72;
+  const outer: Rect[] = [
+    { x: 0, y: 0, w: world.w, h: WALL_T },
+    { x: 0, y: world.h - WALL_T, w: world.w, h: WALL_T },
+    { x: 0, y: 0, w: WALL_T, h: world.h },
+    { x: world.w - WALL_T, y: 0, w: WALL_T, h: world.h },
+  ];
+  const solids: Rect[] = [
+    ...outer,
+    ...geoms.flatMap((g) => roomWalls(g.rect)),
+    ...geoms.flatMap((g) => g.desks),
+  ];
 
-export function roomKeyAt(x: number, y: number): string | null {
-  for (const r of ROOMS) {
+  const hub =
+    geoms.find((g) => g.key === "common-board") ?? geoms[0] ?? null;
+  const spawn: Vec = hub
+    ? { x: hub.rect.x + hub.rect.w / 2, y: hub.rect.y + hub.rect.h / 2 }
+    : { x: world.w / 2, y: world.h / 2 };
+
+  return { world, rooms: geoms, solids, spawn };
+}
+
+export function roomKeyAt(rooms: RoomGeom[], x: number, y: number): string | null {
+  for (const r of rooms) {
     if (
       x >= r.rect.x &&
       x <= r.rect.x + r.rect.w &&
       y >= r.rect.y &&
       y <= r.rect.y + r.rect.h
-    ) {
+    )
       return r.key;
-    }
   }
   return null;
 }
 
-export function nearestBoard(x: number, y: number): RoomDef | null {
-  let best: RoomDef | null = null;
+export function roomIdAt(rooms: RoomGeom[], x: number, y: number): string | null {
+  const key = roomKeyAt(rooms, x, y);
+  return key ? (rooms.find((r) => r.key === key)?.id ?? null) : null;
+}
+
+export function nearestBoard(rooms: RoomGeom[], x: number, y: number): RoomGeom | null {
+  let best: RoomGeom | null = null;
   let bestD = INTERACT_RADIUS;
-  for (const r of ROOMS) {
+  for (const r of rooms) {
     const d = Math.hypot(r.board.x - x, r.board.y - y);
     if (d < bestD) {
       bestD = d;
@@ -175,31 +166,32 @@ export function nearestBoard(x: number, y: number): RoomDef | null {
   return best;
 }
 
-// Per-axis collision resolution; player is a box of half-size PLAYER_RADIUS.
 export function resolveCollision(
+  solids: Rect[],
   fromX: number,
   fromY: number,
   toX: number,
   toY: number,
+  world: { w: number; h: number },
 ): Vec {
   const hs = PLAYER_RADIUS;
   let x = toX;
   let y = fromY;
-  for (const s of SOLIDS) {
+  for (const s of solids) {
     if (overlap(x, y, hs, s)) {
       if (toX > fromX) x = s.x - hs;
       else if (toX < fromX) x = s.x + s.w + hs;
     }
   }
   y = toY;
-  for (const s of SOLIDS) {
+  for (const s of solids) {
     if (overlap(x, y, hs, s)) {
       if (toY > fromY) y = s.y - hs;
       else if (toY < fromY) y = s.y + s.h + hs;
     }
   }
-  x = Math.max(WALL_T + hs, Math.min(WORLD.w - WALL_T - hs, x));
-  y = Math.max(WALL_T + hs, Math.min(WORLD.h - WALL_T - hs, y));
+  x = Math.max(WALL_T + hs, Math.min(world.w - WALL_T - hs, x));
+  y = Math.max(WALL_T + hs, Math.min(world.h - WALL_T - hs, y));
   return { x, y };
 }
 
@@ -209,7 +201,6 @@ function overlap(cx: number, cy: number, hs: number, s: Rect): boolean {
   );
 }
 
-// Deterministic per-user color for character shirts.
 export function userHue(id: string): number {
   let h = 0;
   for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) % 360;

@@ -69,13 +69,13 @@ async function main() {
 
   // Department rooms (the base office floor). Client areas are added by the admin.
   const roomDefs = [
-    { key: "developer", name: "Developer Room", department: "Engineering" },
-    { key: "creative", name: "Creative Room", department: "Design & Marketing" },
-    { key: "video-editing", name: "Video Editing Room", department: "Media" },
-    { key: "managing-heads", name: "Managing Heads Room", department: "Leadership" },
-    { key: "common-board", name: "Common Board Room", department: "All-hands" },
-    { key: "client", name: "Client Room", department: "Client Success" },
-    { key: "creativity", name: "Creativity Room", department: "Ideation" },
+    { key: "developer", name: "Developer Room", department: "Engineering", posX: 0, posY: 0 },
+    { key: "creative", name: "Creative Room", department: "Design & Marketing", posX: 1, posY: 0 },
+    { key: "video-editing", name: "Video Editing Room", department: "Media", posX: 2, posY: 0 },
+    { key: "managing-heads", name: "Managing Heads Room", department: "Leadership", posX: 0, posY: 1 },
+    { key: "common-board", name: "Common Board Room", department: "All-hands", posX: 1, posY: 1 },
+    { key: "client", name: "Client Room", department: "Client Success", posX: 2, posY: 1 },
+    { key: "creativity", name: "Creativity Room", department: "Ideation", posX: 1, posY: 2 },
   ];
   const rooms: Record<string, string> = {};
   for (const r of roomDefs) {
@@ -96,7 +96,7 @@ async function main() {
       department: "Leadership",
       roleId: roles.Admin,
       avatar: {
-        create: { roomId: rooms["managing-heads"], x: 174, y: 372, status: "online" },
+        create: { roomId: rooms["common-board"], x: 550, y: 400, status: "online" },
       },
     },
   });
