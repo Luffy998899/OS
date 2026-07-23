@@ -1,0 +1,26 @@
+import Link from "next/link";
+import { Wordmark } from "@/components/brand/logo";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { NavContent } from "./nav-content";
+import { UserBadge } from "./user-badge";
+import type { CurrentUser } from "@/lib/auth/types";
+
+export function Sidebar({ user }: { user: CurrentUser }) {
+  return (
+    <div className="flex h-full w-[260px] flex-col border-r border-border bg-sidebar">
+      <div className="flex h-16 shrink-0 items-center px-5">
+        <Link href="/dashboard" aria-label="Auxa home">
+          <Wordmark />
+        </Link>
+      </div>
+      <ScrollArea className="flex-1 px-3">
+        <div className="py-2">
+          <NavContent permissions={user.permissions} />
+        </div>
+      </ScrollArea>
+      <div className="shrink-0 border-t border-border p-3">
+        <UserBadge user={user} />
+      </div>
+    </div>
+  );
+}
