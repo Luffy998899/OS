@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { Sparkles, Loader2, X, Gamepad2, Keyboard, Check, Play, Trophy } from "lucide-react";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/app/page-header";
@@ -12,67 +12,59 @@ import { trpc } from "@/lib/trpc/client";
 import { useCurrentUser } from "@/components/app/user-context";
 import {
   WORLD,
+  TILE,
   ROOMS,
+  ROOM_WALLS,
+  OUTER_WALLS,
   SPAWN,
   nearestBoard,
   roomKeyAt,
   resolveCollision,
+  userHue,
   type RoomDef,
+  type Rect,
 } from "@/lib/workspace-map";
 import { levelInfo } from "@/lib/xp";
 import { initials } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
-type Palette = {
-  bg: string;
-  fg: string;
-  muted: string;
-  mutedFg: string;
-  border: string;
-  card: string;
-  success: string;
-  warning: string;
+// Fixed "game world" palette (independent of app light/dark theme).
+const GAME = {
+  floorA: "#ece5d6",
+  floorB: "#e4ddcb",
+  roomFloor: "#f3eee2",
+  wallSide: "#a7a08b",
+  wallTop: "#d3ccb8",
+  wallLine: "#83795f",
+  deskTop: "#b98a5f",
+  deskSide: "#8c6240",
+  monitor: "#2e2d31",
+  screen: "#8fd3e6",
+  chair: "#43424a",
+  potColor: "#9e6c43",
+  leaf: "#57a466",
+  skin: "#f1c49b",
+  hair: "#3b2f27",
+  ink: "#26241f",
+  paper: "#fbf8f0",
+  shadow: "rgba(0,0,0,0.14)",
+  online: "#4fae5a",
+  busy: "#e0a13a",
+  away: "#9a9384",
+} as const;
+
+const STATUS_COLOR: Record<string, string> = {
+  online: GAME.online,
+  busy: GAME.busy,
+  away: GAME.away,
 };
-
-function readPalette(): Palette {
-  const s = getComputedStyle(document.documentElement);
-  const v = (n: string, f: string) => s.getPropertyValue(n).trim() || f;
-  return {
-    bg: v("--background", "#ffffff"),
-    fg: v("--foreground", "#0b0b0c"),
-    muted: v("--muted", "#f1f1f2"),
-    mutedFg: v("--muted-foreground", "#71717a"),
-    border: v("--border", "#e5e5e7"),
-    card: v("--card", "#ffffff"),
-    success: v("--success", "#3f9142"),
-    warning: v("--warning", "#b4791f"),
-  };
-}
-
-const STATUS_COLORS = (p: Palette): Record<string, string> => ({
-  online: p.success,
-  busy: p.warning,
-  away: p.mutedFg,
-});
-
 const STATUSES = ["online", "busy", "away"] as const;
-
-type Player = {
-  userId: string;
-  name: string;
-  x: number;
-  y: number;
-  status: string;
-  isMe: boolean;
-};
+type Facing = "down" | "up" | "left" | "right";
 
 export function WorkspaceGame() {
   const currentUser = useCurrentUser();
   const utils = trpc.useUtils();
-  const state = trpc.workspace.state.useQuery(undefined, {
-    refetchInterval: 4000,
-  });
-
+  const state = trpc.workspace.state.useQuery(undefined, { refetchInterval: 4000 });
   const move = trpc.workspace.move.useMutation();
   const setStatus = trpc.workspace.setStatus.useMutation({
     onSuccess: () => utils.workspace.state.invalidate(),
@@ -83,39 +75,26 @@ export function WorkspaceGame() {
   const [points, setPoints] = useState(currentUser.points);
   const [myStatus, setMyStatus] = useState("online");
 
-  // Mutable game state (kept out of React render to avoid per-frame updates).
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const meRef = useRef({ x: SPAWN.x, y: SPAWN.y });
-  const targetRef = useRef<{ x: number; y: number } | null>(null);
-  const keysRef = useRef<Set<string>>(new Set());
-  const othersRef = useRef<Player[]>([]);
-  const paletteRef = useRef<Palette | null>(null);
-  const initializedRef = useRef(false);
-  const lastSaveRef = useRef(0);
-  const movedRef = useRef(false);
-  const nearKeyRef = useRef<string | null>(null);
-  const roomsRef = useRef<{ key: string; id: string; missionCount: number }[]>([]);
+  // Mutable game state.
+  const [canvasEl, setCanvasEl] = useState<HTMLCanvasElement | null>(null);
+  const R = useStateRef();
 
-  // Sync server state into refs.
+  // Sync server data into refs.
   useEffect(() => {
     if (!state.data) return;
-    roomsRef.current = state.data.rooms.map((r) => ({
-      key: r.key,
-      id: r.id,
-      missionCount: r.missionCount,
-    }));
+    R.rooms = state.data.rooms.map((r) => ({ key: r.key, id: r.id, missionCount: r.missionCount }));
     const me = state.data.me;
     if (me) {
       setPoints(me.points);
       setMyStatus(me.status);
-      if (!initializedRef.current) {
-        meRef.current = { x: me.x || SPAWN.x, y: me.y || SPAWN.y };
-        initializedRef.current = true;
+      if (!R.initialized) {
+        R.me = { x: me.x || SPAWN.x, y: me.y || SPAWN.y };
+        R.initialized = true;
       }
-    } else if (!initializedRef.current) {
-      initializedRef.current = true;
+    } else if (!R.initialized) {
+      R.initialized = true;
     }
-    othersRef.current = state.data.players
+    R.others = state.data.players
       .filter((p) => !p.isMe)
       .map((p) => ({
         userId: p.userId,
@@ -123,50 +102,35 @@ export function WorkspaceGame() {
         x: p.x || SPAWN.x,
         y: p.y || SPAWN.y,
         status: p.status,
-        isMe: false,
       }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.data]);
 
-  // Palette + theme observer.
-  useEffect(() => {
-    paletteRef.current = readPalette();
-    const obs = new MutationObserver(() => {
-      paletteRef.current = readPalette();
-    });
-    obs.observe(document.documentElement, {
-      attributes: true,
-      attributeFilter: ["class"],
-    });
-    return () => obs.disconnect();
-  }, []);
-
-  // Keyboard controls.
+  // Keyboard.
   useEffect(() => {
     const down = (e: KeyboardEvent) => {
       const k = e.key.toLowerCase();
-      if (["arrowup", "arrowdown", "arrowleft", "arrowright", " "].includes(k)) {
-        e.preventDefault();
-      }
+      if (["arrowup", "arrowdown", "arrowleft", "arrowright", " "].includes(k)) e.preventDefault();
       if (k === "e") {
-        const near = nearKeyRef.current;
-        setPanelRoomKey((cur) => (cur === near ? null : near));
+        setPanelRoomKey((cur) => (cur === R.nearKey ? null : R.nearKey));
         return;
       }
-      keysRef.current.add(k);
-      targetRef.current = null; // keyboard overrides click-move
+      R.keys.add(k);
+      R.target = null;
     };
-    const up = (e: KeyboardEvent) => keysRef.current.delete(e.key.toLowerCase());
+    const up = (e: KeyboardEvent) => R.keys.delete(e.key.toLowerCase());
     window.addEventListener("keydown", down);
     window.addEventListener("keyup", up);
     return () => {
       window.removeEventListener("keydown", down);
       window.removeEventListener("keyup", up);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Game loop.
   useEffect(() => {
-    const canvas = canvasRef.current;
+    const canvas = canvasEl;
     if (!canvas) return;
     const dpr = Math.min(2, window.devicePixelRatio || 1);
     canvas.width = WORLD.w * dpr;
@@ -174,6 +138,7 @@ export function WorkspaceGame() {
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
     ctx.scale(dpr, dpr);
+    ctx.imageSmoothingEnabled = false;
 
     let raf = 0;
     let last = performance.now();
@@ -187,8 +152,8 @@ export function WorkspaceGame() {
     };
 
     const update = (dt: number, now: number) => {
-      const speed = 2.7 * dt;
-      const keys = keysRef.current;
+      const speed = 2.6 * dt;
+      const keys = R.keys;
       let dx = 0;
       let dy = 0;
       if (keys.has("arrowup") || keys.has("w")) dy -= 1;
@@ -196,160 +161,116 @@ export function WorkspaceGame() {
       if (keys.has("arrowleft") || keys.has("a")) dx -= 1;
       if (keys.has("arrowright") || keys.has("d")) dx += 1;
 
-      const me = meRef.current;
+      let moving = false;
+      const me = R.me;
       if (dx !== 0 || dy !== 0) {
         const len = Math.hypot(dx, dy) || 1;
-        const next = resolveCollision(
-          me.x,
-          me.y,
-          me.x + (dx / len) * speed,
-          me.y + (dy / len) * speed,
-        );
-        if (next.x !== me.x || next.y !== me.y) movedRef.current = true;
-        meRef.current = next;
-      } else if (targetRef.current) {
-        const t = targetRef.current;
+        const nx = me.x + (dx / len) * speed;
+        const ny = me.y + (dy / len) * speed;
+        const next = resolveCollision(me.x, me.y, nx, ny);
+        if (Math.abs(dx) > Math.abs(dy)) R.facing = dx > 0 ? "right" : "left";
+        else R.facing = dy > 0 ? "down" : "up";
+        if (next.x !== me.x || next.y !== me.y) {
+          R.moved = true;
+          moving = true;
+        }
+        R.me = next;
+      } else if (R.target) {
+        const t = R.target;
         const ddx = t.x - me.x;
         const ddy = t.y - me.y;
         const dist = Math.hypot(ddx, ddy);
-        if (dist < 3) {
-          targetRef.current = null;
-        } else {
+        if (dist < 3) R.target = null;
+        else {
           const step = Math.min(speed, dist);
-          const next = resolveCollision(
-            me.x,
-            me.y,
-            me.x + (ddx / dist) * step,
-            me.y + (ddy / dist) * step,
-          );
-          if (next.x === me.x && next.y === me.y) targetRef.current = null;
-          else movedRef.current = true;
-          meRef.current = next;
+          const next = resolveCollision(me.x, me.y, me.x + (ddx / dist) * step, me.y + (ddy / dist) * step);
+          if (Math.abs(ddx) > Math.abs(ddy)) R.facing = ddx > 0 ? "right" : "left";
+          else R.facing = ddy > 0 ? "down" : "up";
+          if (next.x === me.x && next.y === me.y) R.target = null;
+          else {
+            R.moved = true;
+            moving = true;
+          }
+          R.me = next;
         }
       }
+      R.moving = moving;
 
-      // Nearest interactable board.
       const near = nearestBoard(me.x, me.y);
       const nk = near?.key ?? null;
-      if (nk !== nearKeyRef.current) {
-        nearKeyRef.current = nk;
+      if (nk !== R.nearKey) {
+        R.nearKey = nk;
         setNearRoomKey(nk);
       }
 
-      // Throttled position save.
-      if (movedRef.current && now - lastSaveRef.current > 1100) {
-        lastSaveRef.current = now;
-        movedRef.current = false;
+      if (R.moved && now - R.lastSave > 1000) {
+        R.lastSave = now;
+        R.moved = false;
         const key = roomKeyAt(me.x, me.y);
-        const roomId = key
-          ? (roomsRef.current.find((r) => r.key === key)?.id ?? null)
-          : null;
+        const roomId = key ? (R.rooms.find((r) => r.key === key)?.id ?? null) : null;
         move.mutate({ x: Math.round(me.x), y: Math.round(me.y), roomId });
       }
     };
 
     const draw = (now: number) => {
-      const p = paletteRef.current ?? readPalette();
-      const statusColors = STATUS_COLORS(p);
-      ctx.clearRect(0, 0, WORLD.w, WORLD.h);
-
-      // Floor
-      ctx.fillStyle = p.bg;
-      ctx.fillRect(0, 0, WORLD.w, WORLD.h);
-      // Floor grid
-      ctx.strokeStyle = p.border;
-      ctx.globalAlpha = 0.5;
-      ctx.lineWidth = 1;
-      for (let gx = 0; gx <= WORLD.w; gx += 32) {
-        ctx.beginPath();
-        ctx.moveTo(gx, 0);
-        ctx.lineTo(gx, WORLD.h);
-        ctx.stroke();
+      // Floor tiles (checker)
+      for (let gy = 0; gy < WORLD.h; gy += TILE) {
+        for (let gx = 0; gx < WORLD.w; gx += TILE) {
+          ctx.fillStyle = ((gx / TILE + gy / TILE) % 2 === 0) ? GAME.floorA : GAME.floorB;
+          ctx.fillRect(gx, gy, TILE, TILE);
+        }
       }
-      for (let gy = 0; gy <= WORLD.h; gy += 32) {
-        ctx.beginPath();
-        ctx.moveTo(0, gy);
-        ctx.lineTo(WORLD.w, gy);
-        ctx.stroke();
-      }
-      ctx.globalAlpha = 1;
 
-      // Outer walls
-      ctx.fillStyle = p.fg;
-      ctx.fillRect(0, 0, WORLD.w, 14);
-      ctx.fillRect(0, WORLD.h - 14, WORLD.w, 14);
-      ctx.fillRect(0, 0, 14, WORLD.h);
-      ctx.fillRect(WORLD.w - 14, 0, 14, WORLD.h);
-
-      const roomMeta = (key: string) =>
-        roomsRef.current.find((r) => r.key === key);
-
-      // Rooms
+      // Room floors + rugs + labels
+      const roomMeta = (key: string) => R.rooms.find((r) => r.key === key);
       for (const r of ROOMS) {
-        // zone
-        ctx.fillStyle = p.muted;
-        ctx.globalAlpha = 0.55;
-        roundRect(ctx, r.rect.x, r.rect.y, r.rect.w, r.rect.h, 10);
+        ctx.fillStyle = GAME.roomFloor;
+        ctx.fillRect(r.rect.x, r.rect.y, r.rect.w, r.rect.h);
+        // accent rug
+        ctx.globalAlpha = 0.22;
+        ctx.fillStyle = r.accent;
+        roundRect(ctx, r.rect.x + 20, r.rect.y + r.rect.h - 74, r.rect.w - 40, 56, 8);
         ctx.fill();
         ctx.globalAlpha = 1;
-        ctx.strokeStyle = p.border;
-        ctx.lineWidth = 1.5;
-        roundRect(ctx, r.rect.x, r.rect.y, r.rect.w, r.rect.h, 10);
-        ctx.stroke();
+        for (const d of r.decor) drawDecor(ctx, d);
+        for (const d of r.desks) drawDesk(ctx, d);
+        drawBoard(ctx, r, R.nearKey === r.key, now);
+      }
 
-        // label tab
-        const label = r.name.toUpperCase();
-        ctx.font = "600 11px ui-sans-serif, system-ui";
-        const tw = ctx.measureText(label).width;
+      // Walls (2.5D)
+      for (const w of OUTER_WALLS) drawWall(ctx, w);
+      for (const w of ROOM_WALLS) drawWall(ctx, w);
+
+      // Room labels (on top of walls)
+      for (const r of ROOMS) {
         const count = roomMeta(r.key)?.missionCount ?? 0;
-        const tabW = tw + 22 + (count > 0 ? 22 : 0);
-        ctx.fillStyle = p.fg;
-        roundRect(ctx, r.rect.x + 10, r.rect.y + 10, tabW, 20, 6);
-        ctx.fill();
-        ctx.fillStyle = p.bg;
-        ctx.textBaseline = "middle";
-        ctx.fillText(label, r.rect.x + 20, r.rect.y + 21);
-        if (count > 0) {
-          ctx.fillStyle = p.warning;
-          ctx.beginPath();
-          ctx.arc(r.rect.x + tabW - 2, r.rect.y + 20, 8, 0, Math.PI * 2);
-          ctx.fill();
-          ctx.fillStyle = "#fff";
-          ctx.font = "700 10px ui-sans-serif, system-ui";
-          ctx.textAlign = "center";
-          ctx.fillText(String(count), r.rect.x + tabW - 2, r.rect.y + 21);
-          ctx.textAlign = "left";
-        }
-
-        // desks
-        for (const d of r.desks) drawDesk(ctx, d, p);
-
-        // mission board / kiosk
-        drawBoard(ctx, r, p, nearKeyRef.current === r.key, now);
+        drawSign(ctx, r, count);
       }
 
-      // Players (others first)
-      for (const o of othersRef.current) {
-        drawAvatar(ctx, o.x, o.y, initials(o.name), o.name, false, statusColors[o.status] ?? p.mutedFg, o.status, p, now);
+      // Characters (others first, sorted by y for depth)
+      const drawList = [
+        ...R.others.map((o) => ({ ...o, isMe: false, facing: "down" as Facing, moving: false })),
+        { userId: currentUser.id, name: currentUser.name, x: R.me.x, y: R.me.y, status: myStatus, isMe: true, facing: R.facing, moving: R.moving },
+      ].sort((a, b) => a.y - b.y);
+      for (const c of drawList) {
+        drawCharacter(ctx, c.x, c.y, c.name, c.isMe, userHue(c.userId), c.status, c.facing, c.moving, now);
       }
-      // Me on top
-      const me = meRef.current;
-      drawAvatar(ctx, me.x, me.y, initials(currentUser.name), "You", true, statusColors[myStatus] ?? p.success, myStatus, p, now);
     };
 
     raf = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(raf);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [myStatus]);
+  }, [canvasEl, myStatus]);
 
   const onCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    const canvas = canvasRef.current;
+    const canvas = canvasEl;
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
-    const x = ((e.clientX - rect.left) / rect.width) * WORLD.w;
-    const y = ((e.clientY - rect.top) / rect.height) * WORLD.h;
-    targetRef.current = { x, y };
-    keysRef.current.clear();
+    R.target = {
+      x: ((e.clientX - rect.left) / rect.width) * WORLD.w,
+      y: ((e.clientY - rect.top) / rect.height) * WORLD.h,
+    };
+    R.keys.clear();
   };
 
   const nearRoom = ROOMS.find((r) => r.key === nearRoomKey) ?? null;
@@ -360,7 +281,7 @@ export function WorkspaceGame() {
       <PageHeader
         eyebrow="Virtual office"
         title="Gamified Workspace"
-        description="Walk the floor, visit a room's mission board, and complete the missions the owner assigned you to earn XP."
+        description="Walk the floor as your character, visit a room's mission board, and complete the missions the owner assigned you to earn XP."
       >
         <div className="flex items-center gap-1 rounded-md border border-border p-0.5">
           {STATUSES.map((s) => (
@@ -372,9 +293,7 @@ export function WorkspaceGame() {
               }}
               className={cn(
                 "flex items-center gap-1.5 rounded px-2.5 py-1 text-xs font-medium capitalize transition-colors",
-                myStatus === s
-                  ? "bg-foreground text-background"
-                  : "text-muted-foreground hover:text-foreground",
+                myStatus === s ? "bg-foreground text-background" : "text-muted-foreground hover:text-foreground",
               )}
             >
               {s}
@@ -394,19 +313,12 @@ export function WorkspaceGame() {
                     {lvl.level}
                   </span>
                   <div>
-                    <p className="text-xs font-semibold leading-none">
-                      Level {lvl.level}
-                    </p>
+                    <p className="text-xs font-semibold leading-none">Level {lvl.level}</p>
                     <div className="mt-1 flex items-center gap-1.5">
                       <div className="h-1.5 w-24 overflow-hidden rounded-full bg-muted">
-                        <div
-                          className="h-full rounded-full bg-foreground transition-all"
-                          style={{ width: `${lvl.progress * 100}%` }}
-                        />
+                        <div className="h-full rounded-full bg-foreground transition-all" style={{ width: `${lvl.progress * 100}%` }} />
                       </div>
-                      <span className="font-mono text-[0.65rem] text-muted-foreground">
-                        {lvl.into}/{lvl.span} XP
-                      </span>
+                      <span className="font-mono text-[0.65rem] text-muted-foreground">{lvl.into}/{lvl.span} XP</span>
                     </div>
                   </div>
                 </div>
@@ -415,21 +327,14 @@ export function WorkspaceGame() {
                 <Trophy className="size-3.5 text-muted-foreground" />
                 <span className="font-semibold tabular-nums">{points}</span>
                 <span className="text-muted-foreground">·</span>
-                <span className="text-muted-foreground">
-                  {state.data?.online ?? 0} online
-                </span>
+                <span className="text-muted-foreground">{state.data?.online ?? 0} online</span>
               </div>
             </div>
 
-            {/* Interaction prompt */}
             {nearRoom ? (
               <div className="pointer-events-none absolute inset-x-0 bottom-14 z-10 flex justify-center">
                 <button
-                  onClick={() =>
-                    setPanelRoomKey((cur) =>
-                      cur === nearRoom.key ? null : nearRoom.key,
-                    )
-                  }
+                  onClick={() => setPanelRoomKey((cur) => (cur === nearRoom.key ? null : nearRoom.key))}
                   className="pointer-events-auto flex items-center gap-2 rounded-full bg-foreground px-3.5 py-1.5 text-xs font-medium text-background shadow-lg"
                 >
                   <Keyboard className="size-3.5" />
@@ -438,27 +343,23 @@ export function WorkspaceGame() {
               </div>
             ) : null}
 
-            {/* Controls hint */}
             <div className="pointer-events-none absolute bottom-3 left-3 z-10 flex items-center gap-1.5 rounded-md bg-card/80 px-2 py-1 text-[0.65rem] text-muted-foreground backdrop-blur">
               <Gamepad2 className="size-3" />
               WASD / arrows to move · click to walk · E to interact
             </div>
 
             <canvas
-              ref={canvasRef}
+              ref={setCanvasEl}
               onClick={onCanvasClick}
               className="block w-full cursor-pointer touch-none select-none"
-              style={{ aspectRatio: `${WORLD.w} / ${WORLD.h}` }}
+              style={{ aspectRatio: `${WORLD.w} / ${WORLD.h}`, imageRendering: "pixelated" }}
               aria-label="Virtual office floor"
             />
 
-            {/* Missions panel */}
             {panelRoomKey ? (
               <RoomMissionsPanel
                 roomKey={panelRoomKey}
-                roomId={
-                  roomsRef.current.find((r) => r.key === panelRoomKey)?.id ?? ""
-                }
+                roomId={R.rooms.find((r) => r.key === panelRoomKey)?.id ?? ""}
                 onClose={() => setPanelRoomKey(null)}
                 onCompleted={(gained) => {
                   utils.workspace.state.invalidate();
@@ -473,20 +374,15 @@ export function WorkspaceGame() {
           </Card>
         </div>
 
-        {/* AI floor manager */}
         <div className="space-y-6">
           <Card className="gap-2">
             <div className="flex items-center gap-2 px-4">
               <Sparkles className="size-4" />
-              <h2 className="font-heading text-sm font-semibold">
-                AI floor manager
-              </h2>
+              <h2 className="font-heading text-sm font-semibold">AI floor manager</h2>
             </div>
             {state.data?.ai ? (
               <div className="space-y-3 px-4">
-                <p className="text-sm text-muted-foreground">
-                  {state.data.ai.summary}
-                </p>
+                <p className="text-sm text-muted-foreground">{state.data.ai.summary}</p>
                 {state.data.ai.importantTasks.length > 0 ? (
                   <ul className="space-y-1">
                     {state.data.ai.importantTasks.map((t) => (
@@ -499,9 +395,7 @@ export function WorkspaceGame() {
                 ) : null}
               </div>
             ) : (
-              <p className="px-4 text-sm text-muted-foreground">
-                No check-in yet today.
-              </p>
+              <p className="px-4 text-sm text-muted-foreground">No check-in yet today.</p>
             )}
           </Card>
 
@@ -511,21 +405,11 @@ export function WorkspaceGame() {
             </div>
             <ul className="divide-y divide-border">
               {(state.data?.rooms ?? []).map((r) => (
-                <li
-                  key={r.id}
-                  className="flex items-center justify-between px-4 py-2 text-sm"
-                >
+                <li key={r.id} className="flex items-center justify-between px-4 py-2 text-sm">
                   <span>{r.name}</span>
                   <span className="flex items-center gap-2 text-xs text-muted-foreground">
-                    {
-                      (state.data?.players ?? []).filter(
-                        (p) => p.roomId === r.id,
-                      ).length
-                    }{" "}
-                    here
-                    {r.missionCount > 0 ? (
-                      <Badge variant="secondary">{r.missionCount}</Badge>
-                    ) : null}
+                    {(state.data?.players ?? []).filter((p) => p.roomId === r.id).length} here
+                    {r.missionCount > 0 ? <Badge variant="secondary">{r.missionCount}</Badge> : null}
                   </span>
                 </li>
               ))}
@@ -535,6 +419,24 @@ export function WorkspaceGame() {
       </div>
     </>
   );
+}
+
+// A single mutable "refs bag" so the render loop reads/writes without re-renders.
+function useStateRef() {
+  const [bag] = useState(() => ({
+    me: { x: SPAWN.x, y: SPAWN.y },
+    target: null as { x: number; y: number } | null,
+    keys: new Set<string>(),
+    others: [] as { userId: string; name: string; x: number; y: number; status: string }[],
+    rooms: [] as { key: string; id: string; missionCount: number }[],
+    facing: "down" as Facing,
+    moving: false,
+    moved: false,
+    lastSave: 0,
+    nearKey: null as string | null,
+    initialized: false,
+  }));
+  return bag;
 }
 
 function RoomMissionsPanel({
@@ -550,26 +452,17 @@ function RoomMissionsPanel({
 }) {
   const currentUser = useCurrentUser();
   const room = ROOMS.find((r) => r.key === roomKey);
-  const missions = trpc.workspace.roomMissions.useQuery(
-    { roomId },
-    { enabled: !!roomId },
-  );
+  const missions = trpc.workspace.roomMissions.useQuery({ roomId }, { enabled: !!roomId });
   const utils = trpc.useUtils();
-  const update = trpc.task.updateStatus.useMutation({
-    onError: (e) => toast.error(e.message),
-  });
+  const update = trpc.task.updateStatus.useMutation({ onError: (e) => toast.error(e.message) });
 
-  const act = (
-    id: string,
-    status: "in_progress" | "done",
-    points: number,
-  ) => {
+  const act = (id: string, status: "in_progress" | "done", pts: number) => {
     update.mutate(
       { id, status },
       {
         onSuccess: () => {
           utils.workspace.roomMissions.invalidate({ roomId });
-          if (status === "done") onCompleted(points);
+          if (status === "done") onCompleted(pts);
         },
       },
     );
@@ -580,9 +473,7 @@ function RoomMissionsPanel({
       <div className="flex items-center justify-between border-b border-border p-4">
         <div>
           <p className="font-heading text-sm font-semibold">{room?.name}</p>
-          <p className="text-xs text-muted-foreground">
-            Missions assigned by the owner
-          </p>
+          <p className="text-xs text-muted-foreground">Missions & XP set by the owner</p>
         </div>
         <Button variant="ghost" size="icon-sm" onClick={onClose}>
           <X className="size-4" />
@@ -594,56 +485,37 @@ function RoomMissionsPanel({
             <Loader2 className="size-4 animate-spin text-muted-foreground" />
           </div>
         ) : (missions.data?.length ?? 0) === 0 ? (
-          <p className="py-10 text-center text-sm text-muted-foreground">
-            No missions in this room yet.
-          </p>
+          <p className="py-10 text-center text-sm text-muted-foreground">No missions in this room yet.</p>
         ) : (
           <ul className="space-y-2">
             {missions.data?.map((m) => {
               const mine = m.assignee?.id === currentUser.id;
               const done = m.status === "done";
               return (
-                <li
-                  key={m.id}
-                  className="rounded-lg border border-border p-3"
-                >
+                <li key={m.id} className="rounded-lg border border-border p-3">
                   <div className="flex items-start justify-between gap-2">
                     <p className="text-sm font-medium">{m.title}</p>
                     <TaskStatusBadge status={m.status} />
                   </div>
                   <div className="mt-1 flex items-center justify-between">
                     <span className="text-xs text-muted-foreground">
-                      {m.assignee ? m.assignee.name : "Unassigned"} · {m.points}{" "}
-                      XP
+                      {m.assignee ? m.assignee.name : "Unassigned"} · {m.points} XP
                     </span>
                     {mine && !done ? (
                       <div className="flex gap-1.5">
                         {m.status !== "in_progress" ? (
-                          <Button
-                            size="xs"
-                            variant="outline"
-                            disabled={update.isPending}
-                            onClick={() =>
-                              act(m.id, "in_progress", m.points)
-                            }
-                          >
+                          <Button size="xs" variant="outline" disabled={update.isPending} onClick={() => act(m.id, "in_progress", m.points)}>
                             <Play className="size-3" />
                             Start
                           </Button>
                         ) : null}
-                        <Button
-                          size="xs"
-                          disabled={update.isPending}
-                          onClick={() => act(m.id, "done", m.points)}
-                        >
+                        <Button size="xs" disabled={update.isPending} onClick={() => act(m.id, "done", m.points)}>
                           <Check className="size-3" />
                           Complete
                         </Button>
                       </div>
                     ) : mine && done ? (
-                      <span className="text-xs font-medium text-success">
-                        Completed
-                      </span>
+                      <span className="text-xs font-medium text-success">Completed</span>
                     ) : null}
                   </div>
                 </li>
@@ -656,164 +528,256 @@ function RoomMissionsPanel({
   );
 }
 
-// ---- canvas drawing helpers -------------------------------------------------
+// ---- canvas drawing --------------------------------------------------------
 
-function roundRect(
-  ctx: CanvasRenderingContext2D,
-  x: number,
-  y: number,
-  w: number,
-  h: number,
-  r: number,
-) {
+function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
   ctx.beginPath();
   ctx.roundRect(x, y, w, h, r);
 }
 
-function drawDesk(
-  ctx: CanvasRenderingContext2D,
-  d: { x: number; y: number; w: number; h: number },
-  p: Palette,
-) {
-  // shadow
-  ctx.fillStyle = "rgba(0,0,0,0.08)";
-  roundRect(ctx, d.x + 2, d.y + 3, d.w, d.h, 6);
-  ctx.fill();
-  // body
-  ctx.fillStyle = p.card;
-  ctx.strokeStyle = p.mutedFg;
-  ctx.lineWidth = 1.5;
-  roundRect(ctx, d.x, d.y, d.w, d.h, 6);
-  ctx.fill();
-  ctx.stroke();
+function drawWall(ctx: CanvasRenderingContext2D, w: Rect) {
+  ctx.fillStyle = GAME.wallSide;
+  ctx.fillRect(w.x, w.y, w.w, w.h);
+  // top highlight (pseudo-3D)
+  ctx.fillStyle = GAME.wallTop;
+  ctx.fillRect(w.x, w.y, w.w, Math.min(4, w.h));
+  ctx.strokeStyle = GAME.wallLine;
+  ctx.lineWidth = 1;
+  ctx.strokeRect(w.x + 0.5, w.y + 0.5, w.w - 1, w.h - 1);
+}
+
+function drawDesk(ctx: CanvasRenderingContext2D, d: Rect) {
+  ctx.fillStyle = GAME.shadow;
+  ctx.fillRect(d.x + 2, d.y + 4, d.w, d.h);
+  ctx.fillStyle = GAME.deskSide;
+  ctx.fillRect(d.x, d.y, d.w, d.h);
+  ctx.fillStyle = GAME.deskTop;
+  ctx.fillRect(d.x, d.y, d.w, d.h - 5);
   // monitor
-  ctx.fillStyle = p.fg;
-  roundRect(ctx, d.x + d.w / 2 - 14, d.y + 6, 28, 16, 3);
+  ctx.fillStyle = GAME.monitor;
+  ctx.fillRect(d.x + d.w / 2 - 11, d.y + 5, 22, 13);
+  ctx.fillStyle = GAME.screen;
+  ctx.fillRect(d.x + d.w / 2 - 9, d.y + 7, 18, 9);
+  // chair
+  ctx.fillStyle = GAME.chair;
+  roundRect(ctx, d.x + d.w / 2 - 7, d.y + d.h + 4, 14, 9, 3);
   ctx.fill();
 }
 
-function drawBoard(
-  ctx: CanvasRenderingContext2D,
-  r: RoomDef,
-  p: Palette,
-  near: boolean,
-  now: number,
-) {
+function drawDecor(ctx: CanvasRenderingContext2D, d: { kind: string; x: number; y: number }) {
+  if (d.kind === "plant") {
+    ctx.fillStyle = GAME.potColor;
+    ctx.fillRect(d.x - 6, d.y + 6, 12, 10);
+    ctx.fillStyle = GAME.leaf;
+    ctx.beginPath();
+    ctx.arc(d.x, d.y, 10, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "#4a9459";
+    ctx.beginPath();
+    ctx.arc(d.x - 4, d.y + 2, 5, 0, Math.PI * 2);
+    ctx.arc(d.x + 4, d.y + 2, 5, 0, Math.PI * 2);
+    ctx.fill();
+  } else if (d.kind === "cooler") {
+    ctx.fillStyle = "#dfe7ee";
+    roundRect(ctx, d.x - 8, d.y - 4, 16, 26, 3);
+    ctx.fill();
+    ctx.fillStyle = "#8fc7e6";
+    roundRect(ctx, d.x - 6, d.y - 8, 12, 10, 3);
+    ctx.fill();
+  } else if (d.kind === "shelf") {
+    ctx.fillStyle = GAME.deskSide;
+    ctx.fillRect(d.x - 14, d.y - 8, 28, 26);
+    ctx.fillStyle = "#c76b5a";
+    ctx.fillRect(d.x - 12, d.y - 6, 6, 10);
+    ctx.fillStyle = "#5a86c7";
+    ctx.fillRect(d.x - 4, d.y - 6, 6, 10);
+    ctx.fillStyle = "#c7a15a";
+    ctx.fillRect(d.x + 4, d.y - 6, 6, 10);
+  } else if (d.kind === "board") {
+    ctx.fillStyle = "#f7f5ee";
+    ctx.fillRect(d.x - 16, d.y - 10, 32, 22);
+    ctx.strokeStyle = GAME.wallLine;
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(d.x - 16, d.y - 10, 32, 22);
+    ctx.fillStyle = "#c76b5a";
+    ctx.fillRect(d.x - 12, d.y - 6, 10, 3);
+    ctx.fillStyle = "#5a86c7";
+    ctx.fillRect(d.x - 12, d.y, 16, 3);
+    ctx.fillStyle = "#5aa768";
+    ctx.fillRect(d.x - 12, d.y + 6, 8, 3);
+  }
+}
+
+function drawBoard(ctx: CanvasRenderingContext2D, r: RoomDef, near: boolean, now: number) {
   const bx = r.board.x;
-  const by = r.board.y + 22;
+  const by = r.board.y + 20;
   if (near) {
-    const pulse = 10 + Math.sin(now / 200) * 3;
-    ctx.strokeStyle = p.warning;
-    ctx.globalAlpha = 0.6;
+    const pulse = 8 + Math.sin(now / 200) * 3;
+    ctx.strokeStyle = GAME.busy;
+    ctx.globalAlpha = 0.7;
     ctx.lineWidth = 2;
     ctx.beginPath();
-    ctx.arc(bx, by, 20 + pulse, 0, Math.PI * 2);
+    ctx.arc(bx, by, 18 + pulse, 0, Math.PI * 2);
     ctx.stroke();
     ctx.globalAlpha = 1;
   }
-  // stand
-  ctx.fillStyle = p.fg;
-  roundRect(ctx, bx - 16, by - 14, 32, 26, 5);
+  // legs
+  ctx.fillStyle = GAME.wallLine;
+  ctx.fillRect(bx - 12, by + 6, 3, 10);
+  ctx.fillRect(bx + 9, by + 6, 3, 10);
+  // board panel
+  ctx.fillStyle = GAME.ink;
+  roundRect(ctx, bx - 16, by - 16, 32, 26, 4);
   ctx.fill();
-  // "screen" lines (clipboard)
-  ctx.strokeStyle = p.bg;
+  ctx.strokeStyle = GAME.paper;
   ctx.lineWidth = 2;
   for (let i = 0; i < 3; i++) {
     ctx.beginPath();
-    ctx.moveTo(bx - 9, by - 7 + i * 6);
-    ctx.lineTo(bx + 9, by - 7 + i * 6);
+    ctx.moveTo(bx - 9, by - 9 + i * 6);
+    ctx.lineTo(bx + 9, by - 9 + i * 6);
     ctx.stroke();
   }
 }
 
-function drawAvatar(
+function drawSign(ctx: CanvasRenderingContext2D, r: RoomDef, count: number) {
+  const label = r.name.toUpperCase();
+  ctx.font = "600 10px ui-sans-serif, system-ui";
+  const tw = ctx.measureText(label).width;
+  const w = tw + 20 + (count > 0 ? 20 : 0);
+  const x = r.rect.x + 8;
+  const y = r.rect.y + 6;
+  ctx.fillStyle = GAME.ink;
+  roundRect(ctx, x, y, w, 18, 5);
+  ctx.fill();
+  ctx.fillStyle = GAME.paper;
+  ctx.textAlign = "left";
+  ctx.textBaseline = "middle";
+  ctx.fillText(label, x + 8, y + 10);
+  if (count > 0) {
+    ctx.fillStyle = GAME.busy;
+    ctx.beginPath();
+    ctx.arc(x + w - 10, y + 9, 7, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "#3a2a10";
+    ctx.font = "700 9px ui-sans-serif, system-ui";
+    ctx.textAlign = "center";
+    ctx.fillText(String(count), x + w - 10, y + 10);
+  }
+  ctx.textAlign = "left";
+}
+
+function drawCharacter(
   ctx: CanvasRenderingContext2D,
   x: number,
   y: number,
-  init: string,
   name: string,
   isMe: boolean,
-  statusColor: string,
+  hue: number,
   status: string,
-  p: Palette,
+  facing: Facing,
+  moving: boolean,
   now: number,
 ) {
-  const bob = Math.sin(now / 260 + x) * 1.2;
-  const cy = y + bob;
-  const R = 13;
+  const bob = moving ? Math.abs(Math.sin(now / 90)) * 2 : Math.sin(now / 500 + x) * 0.6;
+  const cy = y - bob;
+  const shirt = `hsl(${hue} 48% 52%)`;
+  const shirtDark = `hsl(${hue} 45% 42%)`;
 
   // shadow
-  ctx.fillStyle = "rgba(0,0,0,0.12)";
+  ctx.fillStyle = GAME.shadow;
   ctx.beginPath();
-  ctx.ellipse(x, y + R - 1, R * 0.85, R * 0.4, 0, 0, Math.PI * 2);
+  ctx.ellipse(x, y + 8, 10, 4, 0, 0, Math.PI * 2);
   ctx.fill();
 
   if (isMe) {
-    ctx.strokeStyle = p.fg;
-    ctx.globalAlpha = 0.25;
-    ctx.lineWidth = 3;
+    ctx.strokeStyle = "#1c1a16";
+    ctx.globalAlpha = 0.35;
+    ctx.lineWidth = 2;
     ctx.beginPath();
-    ctx.arc(x, cy, R + 4, 0, Math.PI * 2);
+    ctx.ellipse(x, y + 8, 12, 5, 0, 0, Math.PI * 2);
     ctx.stroke();
     ctx.globalAlpha = 1;
   }
 
-  // token
-  ctx.beginPath();
-  ctx.arc(x, cy, R, 0, Math.PI * 2);
-  ctx.fillStyle = isMe ? p.fg : p.card;
-  ctx.fill();
-  ctx.lineWidth = 2;
-  ctx.strokeStyle = isMe ? p.fg : p.mutedFg;
-  ctx.stroke();
+  // legs
+  const legShift = moving ? Math.sin(now / 90) * 1.5 : 0;
+  ctx.fillStyle = "#3a3630";
+  ctx.fillRect(x - 4, cy + 2 + legShift, 3, 6);
+  ctx.fillRect(x + 1, cy + 2 - legShift, 3, 6);
 
-  // initials
-  ctx.fillStyle = isMe ? p.bg : p.fg;
-  ctx.font = "700 11px ui-sans-serif, system-ui";
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-  ctx.fillText(init, x, cy + 0.5);
+  // arms
+  ctx.fillStyle = shirtDark;
+  ctx.fillRect(x - 9, cy - 8, 3, 9);
+  ctx.fillRect(x + 6, cy - 8, 3, 9);
+
+  // body
+  ctx.fillStyle = shirt;
+  roundRect(ctx, x - 7, cy - 9, 14, 13, 4);
+  ctx.fill();
+
+  // head
+  ctx.fillStyle = GAME.skin;
+  ctx.beginPath();
+  ctx.arc(x, cy - 15, 6, 0, Math.PI * 2);
+  ctx.fill();
+  // hair
+  ctx.fillStyle = GAME.hair;
+  ctx.beginPath();
+  ctx.arc(x, cy - 16, 6, Math.PI, Math.PI * 2);
+  ctx.fill();
+  ctx.fillRect(x - 6, cy - 17, 12, 3);
+
+  // eyes (by facing)
+  if (facing !== "up") {
+    ctx.fillStyle = GAME.ink;
+    const ex = facing === "left" ? -1.5 : facing === "right" ? 1.5 : 0;
+    ctx.fillRect(x - 3 + ex, cy - 15, 1.6, 1.8);
+    ctx.fillRect(x + 1.4 + ex, cy - 15, 1.6, 1.8);
+  }
 
   // status dot
   ctx.beginPath();
-  ctx.arc(x + R - 2, cy + R - 4, 4, 0, Math.PI * 2);
-  ctx.fillStyle = statusColor;
+  ctx.arc(x + 7, cy - 18, 3, 0, Math.PI * 2);
+  ctx.fillStyle = STATUS_COLOR[status] ?? GAME.away;
   ctx.fill();
-  ctx.lineWidth = 1.5;
-  ctx.strokeStyle = p.card;
+  ctx.strokeStyle = GAME.paper;
+  ctx.lineWidth = 1;
   ctx.stroke();
 
-  // busy emote bubble
+  // busy emote
   if (status === "busy") {
-    ctx.fillStyle = p.card;
-    ctx.strokeStyle = p.border;
+    ctx.fillStyle = GAME.paper;
+    ctx.strokeStyle = GAME.wallLine;
     ctx.lineWidth = 1;
-    roundRect(ctx, x + 8, cy - R - 14, 18, 12, 4);
+    roundRect(ctx, x + 8, cy - 30, 18, 12, 4);
     ctx.fill();
     ctx.stroke();
-    ctx.fillStyle = p.warning;
+    ctx.fillStyle = GAME.busy;
     for (let i = 0; i < 3; i++) {
       ctx.beginPath();
-      ctx.arc(x + 12 + i * 5, cy - R - 8, 1.3, 0, Math.PI * 2);
+      ctx.arc(x + 12 + i * 5, cy - 24, 1.3, 0, Math.PI * 2);
       ctx.fill();
     }
   }
 
   // nameplate
   ctx.font = "600 10px ui-sans-serif, system-ui";
-  const nw = ctx.measureText(name).width + 12;
-  ctx.fillStyle = isMe ? p.fg : p.card;
-  ctx.globalAlpha = isMe ? 1 : 0.92;
-  roundRect(ctx, x - nw / 2, cy - R - 16, nw, 14, 7);
+  const nm = isMe ? "You" : name.split(" ")[0];
+  const nw = ctx.measureText(nm).width + 12;
+  ctx.fillStyle = isMe ? GAME.ink : GAME.paper;
+  ctx.globalAlpha = isMe ? 1 : 0.94;
+  roundRect(ctx, x - nw / 2, cy - 34, nw, 14, 7);
   ctx.fill();
   ctx.globalAlpha = 1;
   if (!isMe) {
-    ctx.strokeStyle = p.border;
+    ctx.strokeStyle = GAME.wallLine;
     ctx.lineWidth = 1;
-    roundRect(ctx, x - nw / 2, cy - R - 16, nw, 14, 7);
+    roundRect(ctx, x - nw / 2, cy - 34, nw, 14, 7);
     ctx.stroke();
   }
-  ctx.fillStyle = isMe ? p.bg : p.fg;
-  ctx.fillText(name, x, cy - R - 9);
+  ctx.fillStyle = isMe ? GAME.paper : GAME.ink;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(nm, x, cy - 27);
   ctx.textAlign = "left";
 }

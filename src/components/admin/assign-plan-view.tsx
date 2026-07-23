@@ -445,7 +445,7 @@ function NewMissionDialog({
             />
           </div>
           <div className="space-y-2">
-            <Label htmlFor="m-points">Points</Label>
+            <Label htmlFor="m-points">XP reward</Label>
             <Input
               id="m-points"
               type="number"

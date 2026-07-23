@@ -75,13 +75,13 @@ async function main() {
   // World-space centers of each room (matches src/lib/workspace-map.ts) so
   // seeded avatars spawn inside their rooms in the Gamified Workspace game.
   const ROOM_CENTER: Record<string, { x: number; y: number }> = {
-    developer: { x: 170, y: 130 },
-    creative: { x: 500, y: 130 },
-    "video-editing": { x: 830, y: 130 },
-    "managing-heads": { x: 170, y: 350 },
-    "common-board": { x: 500, y: 350 },
-    client: { x: 830, y: 350 },
-    creativity: { x: 500, y: 545 },
+    developer: { x: 174, y: 130 },
+    creative: { x: 510, y: 130 },
+    "video-editing": { x: 856, y: 130 },
+    "managing-heads": { x: 174, y: 372 },
+    "common-board": { x: 510, y: 372 },
+    client: { x: 856, y: 372 },
+    creativity: { x: 510, y: 578 },
   };
 
   // Rooms (the gamified office floor)
