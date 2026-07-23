@@ -65,18 +65,28 @@ export const documentRouter = router({
         title: z.string().min(1),
         type: z.enum(["whiteboard", "doc"]).default("whiteboard"),
         visibility: z.enum(["private", "team", "public"]).default("private"),
+        template: z.string().optional(),
       }),
     )
-    .mutation(({ ctx, input }) =>
-      ctx.db.document.create({
+    .mutation(({ ctx, input }) => {
+      // Whiteboard templates are stored as a marker and materialized into real
+      // tldraw shapes the first time the owner opens the board.
+      const content =
+        input.type === "whiteboard" &&
+        input.template &&
+        input.template !== "blank"
+          ? JSON.stringify({ __auxaTemplate: input.template })
+          : null;
+      return ctx.db.document.create({
         data: {
           title: input.title.trim(),
           type: input.type,
           visibility: input.visibility,
+          content,
           ownerId: ctx.user.id,
         },
-      }),
-    ),
+      });
+    }),
 
   updateContent: protectedProcedure
     .input(z.object({ id: z.string(), content: z.string() }))
