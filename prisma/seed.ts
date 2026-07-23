@@ -72,6 +72,18 @@ async function main() {
 
   const passwordHash = await bcrypt.hash("auxa1234", 10);
 
+  // World-space centers of each room (matches src/lib/workspace-map.ts) so
+  // seeded avatars spawn inside their rooms in the Gamified Workspace game.
+  const ROOM_CENTER: Record<string, { x: number; y: number }> = {
+    developer: { x: 170, y: 130 },
+    creative: { x: 500, y: 130 },
+    "video-editing": { x: 830, y: 130 },
+    "managing-heads": { x: 170, y: 350 },
+    "common-board": { x: 500, y: 350 },
+    client: { x: 830, y: 350 },
+    creativity: { x: 500, y: 545 },
+  };
+
   // Rooms (the gamified office floor)
   const roomDefs = [
     { key: "developer", name: "Developer Room", department: "Engineering", description: "Website, web, app & software development.", posX: 0, posY: 0 },
@@ -114,8 +126,8 @@ async function main() {
         avatar: {
           create: {
             roomId: rooms[u.roomKey],
-            x: 40 + Math.random() * 200,
-            y: 40 + Math.random() * 140,
+            x: (ROOM_CENTER[u.roomKey]?.x ?? 500) + (Math.random() * 80 - 40),
+            y: (ROOM_CENTER[u.roomKey]?.y ?? 335) + (Math.random() * 50 - 25),
             status: "online",
           },
         },

@@ -1,8 +1,8 @@
 import type { Metadata } from "next";
-import { WorkspaceView } from "@/components/workspace/workspace-view";
+import { WorkspaceGame } from "@/components/workspace/workspace-game";
 
 export const metadata: Metadata = { title: "Gamified Workspace" };
 
 export default function WorkspacePage() {
-  return <WorkspaceView />;
+  return <WorkspaceGame />;
 }

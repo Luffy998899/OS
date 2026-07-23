@@ -38,6 +38,8 @@ import {
 import { trpc } from "@/lib/trpc/client";
 import type { RouterOutputs } from "@/lib/trpc/types";
 import { relativeTime } from "@/lib/format";
+import { TEMPLATES } from "@/lib/whiteboard-templates";
+import { cn } from "@/lib/utils";
 
 type DocRow = RouterOutputs["document"]["list"][number];
 
@@ -191,6 +193,70 @@ function DocCard({
   );
 }
 
+function TemplatePreview({ templateKey }: { templateKey: string }) {
+  const cols = (n: number, notes = 2) => (
+    <div className="flex h-full w-full items-stretch gap-1">
+      {Array.from({ length: n }).map((_, i) => (
+        <div
+          key={i}
+          className="flex flex-1 flex-col gap-1 rounded-sm border border-border/70 bg-background p-1"
+        >
+          {Array.from({ length: notes }).map((__, j) => (
+            <div key={j} className="h-1.5 rounded-[2px] bg-muted-foreground/40" />
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+
+  let inner: React.ReactNode;
+  switch (templateKey) {
+    case "kanban":
+      inner = cols(3);
+      break;
+    case "retro":
+      inner = cols(3, 1);
+      break;
+    case "roadmap":
+      inner = cols(4, 1);
+      break;
+    case "brainstorm":
+    case "mindmap":
+      inner = (
+        <div className="relative h-full w-full">
+          <div className="absolute left-1/2 top-1/2 size-5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-foreground" />
+          {[
+            "left-1 top-1",
+            "right-1 top-1",
+            "bottom-1 left-1",
+            "bottom-1 right-1",
+          ].map((pos) => (
+            <div
+              key={pos}
+              className={cn(
+                "absolute size-2.5 rounded-[3px] bg-muted-foreground/50",
+                pos,
+              )}
+            />
+          ))}
+        </div>
+      );
+      break;
+    default:
+      inner = (
+        <div className="flex h-full w-full items-center justify-center rounded-sm border border-dashed border-border">
+          <span className="text-[0.6rem] text-muted-foreground">Empty</span>
+        </div>
+      );
+  }
+
+  return (
+    <div className="h-16 w-full overflow-hidden rounded-md bg-muted/50 p-1.5">
+      {inner}
+    </div>
+  );
+}
+
 function NewDocDialog({
   open,
   onOpenChange,
@@ -202,6 +268,7 @@ function NewDocDialog({
   const [title, setTitle] = useState("");
   const [type, setType] = useState("whiteboard");
   const [visibility, setVisibility] = useState("private");
+  const [template, setTemplate] = useState("blank");
 
   const create = trpc.document.create.useMutation({
     onSuccess: () => {
@@ -209,13 +276,14 @@ function NewDocDialog({
       toast.success("Document created.");
       onOpenChange(false);
       setTitle("");
+      setTemplate("blank");
     },
     onError: (e) => toast.error(e.message),
   });
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
+      <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>New document</DialogTitle>
           <DialogDescription>
@@ -256,6 +324,34 @@ function NewDocDialog({
             />
           </div>
         </div>
+
+        {type === "whiteboard" ? (
+          <div className="space-y-2">
+            <Label>Start from a template</Label>
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+              {TEMPLATES.map((t) => (
+                <button
+                  key={t.key}
+                  type="button"
+                  onClick={() => setTemplate(t.key)}
+                  className={cn(
+                    "rounded-lg border p-2.5 text-left transition-colors",
+                    template === t.key
+                      ? "border-foreground ring-2 ring-foreground/20"
+                      : "border-border hover:border-foreground/40",
+                  )}
+                >
+                  <TemplatePreview templateKey={t.key} />
+                  <p className="mt-1.5 text-xs font-medium">{t.name}</p>
+                  <p className="line-clamp-1 text-[0.7rem] text-muted-foreground">
+                    {t.description}
+                  </p>
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : null}
+
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Cancel
@@ -267,6 +363,7 @@ function NewDocDialog({
                 title,
                 type: type as "whiteboard" | "doc",
                 visibility: visibility as "private" | "team" | "public",
+                template: type === "whiteboard" ? template : undefined,
               })
             }
           >

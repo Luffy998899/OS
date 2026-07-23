@@ -35,24 +35,24 @@ export const workspaceRouter = router({
       key: r.key,
       name: r.name,
       department: r.department,
-      description: r.description,
-      posX: r.posX,
-      posY: r.posY,
       missionCount: countFor(r.id),
-      occupants: avatars
-        .filter((a) => a.roomId === r.id)
-        .map((a) => ({
-          id: a.user.id,
-          name: a.user.name,
-          avatarUrl: a.user.avatarUrl,
-          title: a.user.title,
-          department: a.user.department,
-          status: a.status,
-          isMe: a.user.id === ctx.user.id,
-        })),
     }));
 
-    const me = avatars.find((a) => a.userId === ctx.user.id);
+    const players = avatars.map((a) => ({
+      userId: a.user.id,
+      name: a.user.name,
+      avatarUrl: a.user.avatarUrl,
+      title: a.user.title,
+      department: a.user.department,
+      x: a.x,
+      y: a.y,
+      roomId: a.roomId,
+      status: a.status,
+      points: a.user.points,
+      isMe: a.user.id === ctx.user.id,
+    }));
+
+    const me = players.find((p) => p.isMe) ?? null;
 
     let importantTasks: string[] = [];
     if (aiCheckin?.importantTasks) {
@@ -65,8 +65,8 @@ export const workspaceRouter = router({
 
     return {
       rooms: roomsOut,
-      myRoomId: me?.roomId ?? null,
-      myStatus: me?.status ?? "online",
+      players,
+      me,
       online: avatars.filter((a) => a.status !== "away").length,
       totalOpen: openByRoom.reduce((s, o) => s + o._count._all, 0),
       ai: aiCheckin
@@ -82,10 +82,9 @@ export const workspaceRouter = router({
         where: {
           roomId: input.roomId,
           approvalStatus: "approved",
-          status: { not: "done" },
         },
-        orderBy: [{ priority: "desc" }, { dueAt: "asc" }],
-        take: 20,
+        orderBy: [{ status: "asc" }, { priority: "desc" }],
+        take: 30,
         include: {
           assignee: { select: { id: true, name: true, avatarUrl: true } },
         },
@@ -95,26 +94,26 @@ export const workspaceRouter = router({
   move: protectedProcedure
     .input(
       z.object({
-        roomId: z.string().nullable(),
+        x: z.number(),
+        y: z.number(),
+        roomId: z.string().nullable().optional(),
         status: z.enum(["online", "away", "busy"]).optional(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      const x = 15 + Math.random() * 60;
-      const y = 20 + Math.random() * 50;
       await ctx.db.avatarState.upsert({
         where: { userId: ctx.user.id },
         create: {
           userId: ctx.user.id,
-          roomId: input.roomId,
-          x,
-          y,
+          x: input.x,
+          y: input.y,
+          roomId: input.roomId ?? null,
           status: input.status ?? "online",
         },
         update: {
-          roomId: input.roomId,
-          x,
-          y,
+          x: input.x,
+          y: input.y,
+          roomId: input.roomId ?? null,
           ...(input.status ? { status: input.status } : {}),
         },
       });
