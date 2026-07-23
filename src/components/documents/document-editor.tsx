@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { FormSelect } from "@/components/app/form-select";
+import { ErrorBoundary } from "@/components/ui/error-boundary";
 import { trpc } from "@/lib/trpc/client";
 import type { RouterOutputs } from "@/lib/trpc/types";
 
@@ -114,21 +115,37 @@ export function DocumentEditor({ initial }: { initial: Doc }) {
         </div>
       </div>
 
-      {initial.type === "whiteboard" ? (
-        <WhiteboardCanvas
-          docId={initial.id}
-          content={initial.content}
-          canEdit={initial.canEdit}
-          onSaving={setSaving}
-        />
-      ) : (
-        <NotesEditor
-          docId={initial.id}
-          content={initial.content}
-          canEdit={initial.canEdit}
-          onSaving={setSaving}
-        />
-      )}
+      <ErrorBoundary
+        fallback={
+          <div className="flex h-[74vh] min-h-[520px] flex-col items-center justify-center gap-3 rounded-xl border border-border text-sm text-muted-foreground">
+            <p>Couldn&rsquo;t render this board.</p>
+            <button
+              onClick={() => window.location.reload()}
+              className="rounded-md bg-foreground px-3 py-1.5 text-background"
+            >
+              Reload
+            </button>
+          </div>
+        }
+      >
+        {initial.type === "whiteboard" ? (
+          <WhiteboardCanvas
+            key={initial.id}
+            docId={initial.id}
+            content={initial.content}
+            canEdit={initial.canEdit}
+            onSaving={setSaving}
+          />
+        ) : (
+          <NotesEditor
+            key={initial.id}
+            docId={initial.id}
+            content={initial.content}
+            canEdit={initial.canEdit}
+            onSaving={setSaving}
+          />
+        )}
+      </ErrorBoundary>
     </>
   );
 }

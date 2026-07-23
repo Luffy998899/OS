@@ -93,42 +93,50 @@ export default function WhiteboardCanvas({
   }, []);
 
   const handleMount = (editor: Editor) => {
-    if (!canEdit) {
-      editor.updateInstanceState({ isReadonly: true });
-      return;
-    }
+    try {
+      if (!canEdit) {
+        editor.updateInstanceState({ isReadonly: true });
+        return;
+      }
 
-    // Save on any user edit (debounced).
-    editor.store.listen(
-      () => {
-        onSaving?.(true);
-        if (timer.current) clearTimeout(timer.current);
-        timer.current = setTimeout(() => {
+      // Save on any user edit (debounced).
+      editor.store.listen(
+        () => {
+          onSaving?.(true);
+          if (timer.current) clearTimeout(timer.current);
+          timer.current = setTimeout(() => {
+            try {
+              const snap = getSnapshot(editor.store);
+              save.mutate(
+                { id: docId, content: JSON.stringify(snap) },
+                { onSettled: () => onSaving?.(false) },
+              );
+            } catch (err) {
+              console.error("[whiteboard] save failed", err);
+              onSaving?.(false);
+            }
+          }, 1200);
+        },
+        { scope: "document", source: "user" },
+      );
+
+      // Materialize a template into real shapes the first time it's opened.
+      if (parsed.kind === "template") {
+        const tpl = getTemplate(parsed.templateKey);
+        if (tpl && tpl.shapes.length > 0) {
+          editor.createShapes(templateToPartials(tpl.shapes));
+          editor.selectNone();
+          editor.zoomToFit();
+          onSaving?.(true);
           const snap = getSnapshot(editor.store);
           save.mutate(
             { id: docId, content: JSON.stringify(snap) },
             { onSettled: () => onSaving?.(false) },
           );
-        }, 1200);
-      },
-      { scope: "document", source: "user" },
-    );
-
-    // Materialize a template into real shapes the first time it's opened.
-    if (parsed.kind === "template") {
-      const tpl = getTemplate(parsed.templateKey);
-      if (tpl && tpl.shapes.length > 0) {
-        editor.createShapes(templateToPartials(tpl.shapes));
-        editor.selectNone();
-        editor.zoomToFit();
-        // Persist immediately so viewers see the materialized board.
-        onSaving?.(true);
-        const snap = getSnapshot(editor.store);
-        save.mutate(
-          { id: docId, content: JSON.stringify(snap) },
-          { onSettled: () => onSaving?.(false) },
-        );
+        }
       }
+    } catch (err) {
+      console.error("[whiteboard] mount failed", err);
     }
   };
 
