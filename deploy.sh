@@ -146,10 +146,9 @@ wait_for_ready() {
 print_ready() {
   echo
   echo "${BOLD}Auxa is running${RESET} at ${BOLD}${BASE}${RESET}"
-  echo "  Sign in with a seeded account (password: auxa1234):"
-  echo "    admin@auxa.app    (owner)"
-  echo "    manager@auxa.app  (manager)"
-  echo "    rohan@auxa.app    (employee)"
+  echo "  Sign in as the owner (password: auxa1234):"
+  echo "    admin@auxa.app"
+  echo "  Then create your team, clients, services and tasks from the app."
 }
 
 # ---- smoke test mode --------------------------------------------------------

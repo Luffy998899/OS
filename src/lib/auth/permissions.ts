@@ -10,6 +10,7 @@ export const PERMISSIONS = {
   REPORTS_VIEW: "reports:view", // reports & workload
   SETTINGS_MANAGE: "settings:manage", // integrations (WhatsApp, email, AI)
   REWARDS_MANAGE: "rewards:manage",
+  BILLING_MANAGE: "billing:manage", // invoices, ledger, expenses, services
 } as const;
 
 export type PermissionKey = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];
@@ -25,6 +26,7 @@ export const PERMISSION_LABELS: Record<PermissionKey, string> = {
   [PERMISSIONS.REPORTS_VIEW]: "View reports & workload",
   [PERMISSIONS.SETTINGS_MANAGE]: "Manage settings & integrations",
   [PERMISSIONS.REWARDS_MANAGE]: "Manage rewards",
+  [PERMISSIONS.BILLING_MANAGE]: "Manage invoices, ledger & expenses",
 };
 
 // Default permission sets for the three system roles.

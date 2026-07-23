@@ -13,6 +13,11 @@ import { documentRouter } from "./document";
 import { settingRouter } from "./setting";
 import { workspaceRouter } from "./workspace";
 import { leaderboardRouter } from "./leaderboard";
+import { serviceRouter } from "./service";
+import { expenseRouter } from "./expense";
+import { invoiceRouter } from "./invoice";
+import { ledgerRouter } from "./ledger";
+import { journalRouter } from "./journal";
 
 export const appRouter = router({
   health: publicProcedure.query(() => ({ ok: true, service: "auxa" })),
@@ -31,6 +36,11 @@ export const appRouter = router({
   setting: settingRouter,
   workspace: workspaceRouter,
   leaderboard: leaderboardRouter,
+  service: serviceRouter,
+  expense: expenseRouter,
+  invoice: invoiceRouter,
+  ledger: ledgerRouter,
+  journal: journalRouter,
 });
 
 export type AppRouter = typeof appRouter;

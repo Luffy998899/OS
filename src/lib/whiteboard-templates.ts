@@ -315,10 +315,212 @@ export const TEMPLATES: Template[] = [
     description: "Warm up the room.",
     shapes: [
       { kind: "geo", x: 440, y: 300, w: 260, h: 130, geo: "ellipse", color: "black", fill: "semi", text: "How are you arriving today?" },
-      { kind: "note", x: 180, y: 200, text: "😀", color: "yellow" },
-      { kind: "note", x: 780, y: 200, text: "🚀", color: "green" },
-      { kind: "note", x: 180, y: 470, text: "🌧️", color: "blue" },
-      { kind: "note", x: 780, y: 470, text: "☕", color: "orange" },
+      { kind: "note", x: 180, y: 200, text: "Energised", color: "yellow" },
+      { kind: "note", x: 780, y: 200, text: "Focused", color: "green" },
+      { kind: "note", x: 180, y: 470, text: "Stretched", color: "blue" },
+      { kind: "note", x: 780, y: 470, text: "Curious", color: "orange" },
+    ],
+  },
+
+  // ---- More frameworks (original layouts) ----
+  {
+    key: "six-hats",
+    name: "Six thinking hats",
+    category: "Ideation & brainstorming",
+    thumb: "grid3",
+    description: "Look at a topic from six angles.",
+    shapes: [
+      title("Six thinking hats"),
+      ...grid(120, 150, 300, 170, 24, 3, [
+        { title: "Facts", color: "blue" },
+        { title: "Feelings", color: "red" },
+        { title: "Cautions", color: "grey" },
+        { title: "Benefits", color: "green" },
+        { title: "Creativity", color: "orange" },
+        { title: "Process", color: "black" },
+      ]),
+    ],
+  },
+  {
+    key: "crazy8s",
+    name: "Crazy 8s",
+    category: "Ideation & brainstorming",
+    thumb: "sections",
+    description: "Eight quick ideas, one per box.",
+    shapes: [
+      title("Crazy 8s"),
+      ...grid(
+        120,
+        150,
+        200,
+        150,
+        16,
+        4,
+        Array.from({ length: 8 }, (_, i) => ({ title: `Idea ${i + 1}` })),
+      ),
+    ],
+  },
+  {
+    key: "how-might-we",
+    name: "How might we",
+    category: "Ideation & brainstorming",
+    thumb: "rows",
+    description: "Reframe problems as opportunities.",
+    shapes: [
+      title("How might we…"),
+      { kind: "geo", x: 140, y: 150, w: 760, h: 90, color: "black", fill: "semi", text: "Problem statement" },
+      { kind: "note", x: 160, y: 280, text: "HMW …?", color: "yellow" },
+      { kind: "note", x: 420, y: 280, text: "HMW …?", color: "green" },
+      { kind: "note", x: 680, y: 280, text: "HMW …?", color: "blue" },
+    ],
+  },
+  {
+    key: "story-map",
+    name: "User story map",
+    category: "Agile workflows",
+    thumb: "columns4",
+    description: "Activities across the top, stories below.",
+    shapes: [
+      title("User story map"),
+      ...["Discover", "Sign up", "Use", "Retain"].flatMap((t, i) => [
+        { kind: "geo", x: 120 + i * 230, y: 150, w: 200, h: 56, color: "black", fill: "semi", text: t } as TemplateShape,
+        { kind: "note", x: 130 + i * 230, y: 230, text: "Story…", color: "yellow" } as TemplateShape,
+        { kind: "note", x: 130 + i * 230, y: 350, text: "Story…", color: "blue" } as TemplateShape,
+      ]),
+    ],
+  },
+  {
+    key: "team-charter",
+    name: "Team charter",
+    category: "Agile workflows",
+    thumb: "grid2x2",
+    description: "Mission, values, roles, norms.",
+    shapes: [
+      title("Team charter"),
+      ...grid(140, 150, 360, 240, 24, 2, [
+        { title: "Mission", color: "black" },
+        { title: "Values", color: "green" },
+        { title: "Roles", color: "blue" },
+        { title: "Working norms", color: "orange" },
+      ]),
+    ],
+  },
+  {
+    key: "weekly-planner",
+    name: "Weekly planner",
+    category: "Agile workflows",
+    thumb: "columns4",
+    description: "Mon–Fri with 2-hour time slots.",
+    shapes: [
+      title("Weekly planner"),
+      ...["Mon", "Tue", "Wed", "Thu", "Fri"].flatMap((day, i) => {
+        const x = 120 + i * 240;
+        return [
+          { kind: "geo", x, y: 150, w: 210, h: 560, color: "grey", fill: "none" } as TemplateShape,
+          { kind: "text", x: x + 14, y: 162, text: day, size: "l" } as TemplateShape,
+          ...["9–11", "11–1", "2–4", "4–6"].map(
+            (slot, j) =>
+              ({ kind: "note", x: x + 16, y: 220 + j * 120, text: slot, color: ["yellow", "green", "blue", "orange"][j] }) as TemplateShape,
+          ),
+        ];
+      }),
+    ],
+  },
+  {
+    key: "lean-canvas",
+    name: "Lean canvas",
+    category: "Strategy & planning",
+    thumb: "sections",
+    description: "One-page startup model.",
+    shapes: [
+      title("Lean canvas"),
+      ...grid(120, 150, 250, 200, 16, 3, [
+        { title: "Problem", color: "red" },
+        { title: "Solution", color: "green" },
+        { title: "Unique value", color: "black" },
+        { title: "Key metrics" },
+        { title: "Channels" },
+        { title: "Customer segments" },
+        { title: "Cost structure", color: "orange" },
+        { title: "Revenue streams", color: "green" },
+        { title: "Unfair advantage" },
+      ]),
+    ],
+  },
+  {
+    key: "five-forces",
+    name: "Porter's five forces",
+    category: "Strategy & planning",
+    thumb: "central",
+    description: "Competitive analysis.",
+    shapes: [
+      { kind: "geo", x: 440, y: 320, w: 240, h: 110, geo: "ellipse", color: "black", fill: "semi", text: "Rivalry" },
+      { kind: "geo", x: 460, y: 120, w: 200, h: 80, color: "blue", text: "New entrants" },
+      { kind: "geo", x: 460, y: 560, w: 200, h: 80, color: "orange", text: "Substitutes" },
+      { kind: "geo", x: 150, y: 330, w: 200, h: 80, color: "green", text: "Buyer power" },
+      { kind: "geo", x: 780, y: 330, w: 200, h: 80, color: "red", text: "Supplier power" },
+    ],
+  },
+  {
+    key: "risk-matrix",
+    name: "Risk matrix",
+    category: "Strategy & planning",
+    thumb: "grid2x2",
+    description: "Likelihood vs impact.",
+    shapes: [
+      title("Risk matrix"),
+      ...grid(140, 150, 360, 240, 24, 2, [
+        { title: "Monitor", color: "grey" },
+        { title: "Mitigate", color: "orange" },
+        { title: "Accept", color: "green" },
+        { title: "Act now", color: "red" },
+      ]),
+    ],
+  },
+  {
+    key: "persona",
+    name: "User persona",
+    category: "Research & design",
+    thumb: "grid2x2",
+    description: "Goals, frustrations, bio, behaviours.",
+    shapes: [
+      title("User persona"),
+      ...grid(140, 150, 360, 240, 24, 2, [
+        { title: "Bio", color: "black" },
+        { title: "Goals", color: "green" },
+        { title: "Frustrations", color: "red" },
+        { title: "Behaviours", color: "blue" },
+      ]),
+    ],
+  },
+  {
+    key: "feedback-grid",
+    name: "Feedback grid",
+    category: "Research & design",
+    thumb: "grid2x2",
+    description: "Likes, criticisms, questions, ideas.",
+    shapes: [
+      title("Feedback grid"),
+      ...grid(140, 150, 360, 240, 24, 2, [
+        { title: "Likes", color: "green" },
+        { title: "Criticisms", color: "red" },
+        { title: "Questions", color: "blue" },
+        { title: "Ideas", color: "orange" },
+      ]),
+    ],
+  },
+  {
+    key: "project-kickoff",
+    name: "Project kickoff",
+    category: "Meetings & workshops",
+    thumb: "rows",
+    description: "Goals, scope, timeline, risks.",
+    shapes: [
+      title("Project kickoff"),
+      { kind: "geo", x: 140, y: 150, w: 760, h: 90, color: "black", fill: "semi", text: "Goals" },
+      { kind: "geo", x: 140, y: 260, w: 760, h: 90, color: "blue", text: "Scope" },
+      { kind: "geo", x: 140, y: 370, w: 760, h: 90, color: "green", text: "Timeline" },
+      { kind: "geo", x: 140, y: 480, w: 760, h: 90, color: "red", text: "Risks" },
     ],
   },
 ];

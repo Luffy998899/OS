@@ -30,6 +30,34 @@ const taskInclude = {
   room: { select: { id: true, name: true, key: true } },
 } as const;
 
+// Which department room a mission lands in, based on its vertical.
+export const VERTICAL_ROOM_KEY: Record<string, string> = {
+  "website-dev": "developer",
+  "digital-marketing": "creative",
+  roadmap: "managing-heads",
+  "client-outreach": "client",
+  billing: "managing-heads",
+};
+
+async function resolveRoomId(
+  db: typeof import("@/lib/db").db,
+  opts: { vertical: string; clientId?: string | null; provided?: string | null },
+): Promise<string | null> {
+  if (opts.provided) return opts.provided;
+  // A client's own area takes precedence, so their missions land there.
+  if (opts.clientId) {
+    const clientRoom = await db.room.findFirst({
+      where: { clientId: opts.clientId },
+      select: { id: true },
+    });
+    if (clientRoom) return clientRoom.id;
+  }
+  const key = VERTICAL_ROOM_KEY[opts.vertical];
+  if (!key) return null;
+  const room = await db.room.findUnique({ where: { key }, select: { id: true } });
+  return room?.id ?? null;
+}
+
 export const taskRouter = router({
   myWork: protectedProcedure.query(({ ctx }) =>
     ctx.db.task.findMany({
@@ -101,6 +129,11 @@ export const taskRouter = router({
       }),
     )
     .mutation(async ({ ctx, input }) => {
+      const roomId = await resolveRoomId(ctx.db, {
+        vertical: input.vertical,
+        clientId: input.clientId,
+        provided: input.roomId,
+      });
       const task = await ctx.db.task.create({
         data: {
           title: input.title,
@@ -110,7 +143,7 @@ export const taskRouter = router({
           points: input.points,
           assigneeId: input.assigneeId || null,
           clientId: input.clientId || null,
-          roomId: input.roomId || null,
+          roomId,
           dueAt: input.dueAt,
           estimateMinutes: input.estimateMinutes,
           createdById: ctx.user.id,
@@ -145,6 +178,14 @@ export const taskRouter = router({
       );
       if (!isAssignee && !canManage) {
         throw new TRPCError({ code: "FORBIDDEN" });
+      }
+      // Employees publish work for review; only a manager approves completion
+      // (which awards XP). This is the "publish for further review" step.
+      if (input.status === "done" && !canManage) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "Publish for review — a manager approves completion.",
+        });
       }
 
       const prev = task.status;
@@ -228,6 +269,66 @@ export const taskRouter = router({
       include: taskInclude,
     }),
   ),
+
+  // Work employees published for review (status "review") awaiting owner approval.
+  completions: permissionProcedure(PERMISSIONS.TASKS_ASSIGN).query(({ ctx }) =>
+    ctx.db.task.findMany({
+      where: { status: "review", approvalStatus: "approved" },
+      orderBy: [{ priority: "desc" }, { updatedAt: "desc" }],
+      include: taskInclude,
+    }),
+  ),
+
+  approveCompletion: permissionProcedure(PERMISSIONS.TASKS_ASSIGN)
+    .input(z.object({ id: z.string(), approve: z.boolean() }))
+    .mutation(async ({ ctx, input }) => {
+      // Reuse the same status transition (which awards/reverses XP on done).
+      const status = input.approve ? "done" : "in_progress";
+      const task = await ctx.db.task.findUnique({ where: { id: input.id } });
+      if (!task) throw new TRPCError({ code: "NOT_FOUND" });
+      if (task.status !== "review") return task;
+
+      const completing = status === "done";
+      return ctx.db.$transaction(async (tx) => {
+        const t = await tx.task.update({
+          where: { id: task.id },
+          data: {
+            status,
+            completedAt: completing ? new Date() : null,
+          },
+        });
+        await tx.taskActivity.create({
+          data: {
+            taskId: task.id,
+            type: completing ? "approved" : "sent_back",
+            actorId: ctx.user.id,
+          },
+        });
+        if (completing && task.assigneeId) {
+          await tx.pointsLedger.create({
+            data: {
+              userId: task.assigneeId,
+              delta: task.points,
+              reason: `Completed mission: ${task.title}`,
+              taskId: task.id,
+            },
+          });
+          await tx.user.update({
+            where: { id: task.assigneeId },
+            data: { points: { increment: task.points } },
+          });
+          await tx.notification.create({
+            data: {
+              userId: task.assigneeId,
+              type: "reward",
+              title: "Mission approved",
+              body: `${task.title} — +${task.points} XP`,
+            },
+          });
+        }
+        return t;
+      });
+    }),
 
   review: permissionProcedure(PERMISSIONS.TASKS_REVIEW)
     .input(

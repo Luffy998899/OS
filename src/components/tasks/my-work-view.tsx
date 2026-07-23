@@ -48,9 +48,20 @@ export function MyWorkView() {
   });
 
   const grouped = useMemo(() => {
+    const rank: Record<string, number> = { urgent: 0, high: 1, medium: 2, low: 3 };
     const map: Record<string, Task[]> = {};
     for (const s of TASK_STATUSES) map[s.value] = [];
     for (const t of myWork.data ?? []) (map[t.status] ??= []).push(t);
+    // Urgent/critical first, then by due date.
+    for (const k of Object.keys(map)) {
+      map[k].sort((a, b) => {
+        const r = (rank[a.priority] ?? 2) - (rank[b.priority] ?? 2);
+        if (r !== 0) return r;
+        const da = a.dueAt ? new Date(a.dueAt).getTime() : Infinity;
+        const db = b.dueAt ? new Date(b.dueAt).getTime() : Infinity;
+        return da - db;
+      });
+    }
     return map;
   }, [myWork.data]);
 
@@ -162,12 +173,18 @@ function BoardCard({
 }) {
   const due = task.dueAt ? new Date(task.dueAt) : null;
   const overdue = due && due < new Date() && task.status !== "done";
+  const urgent = task.priority === "urgent";
   return (
-    <div className="rounded-lg border border-border bg-card p-3 ring-1 ring-transparent transition-shadow hover:ring-foreground/10">
+    <div
+      className={cn(
+        "rounded-xl border bg-card p-4 ring-1 ring-transparent transition-shadow hover:ring-foreground/10",
+        urgent ? "border-l-4 border-l-destructive border-border" : "border-border",
+      )}
+    >
       <div className="flex items-start justify-between gap-2">
         <button
           onClick={onOpen}
-          className="line-clamp-2 flex-1 text-left text-sm font-medium hover:underline"
+          className="line-clamp-3 flex-1 text-left text-[0.95rem] leading-snug font-semibold hover:underline"
         >
           {task.title}
         </button>
@@ -184,15 +201,15 @@ function BoardCard({
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
-      <div className="mt-2 flex flex-wrap items-center gap-1.5">
+      <div className="mt-3 flex flex-wrap items-center gap-1.5">
         <PriorityBadge priority={task.priority} />
         <VerticalBadge vertical={task.vertical} />
       </div>
-      <div className="mt-2 flex items-center justify-between text-xs text-muted-foreground">
+      <div className="mt-3 flex items-center justify-between border-t border-border/60 pt-2.5 text-xs text-muted-foreground">
         <span className={cn(overdue && "font-medium text-destructive")}>
           {due ? format(due, "MMM d") : "No due date"}
         </span>
-        <span className="tabular-nums">{task.points} pts</span>
+        <span className="font-medium tabular-nums">{task.points} XP</span>
       </div>
     </div>
   );

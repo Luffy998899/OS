@@ -27,7 +27,7 @@ async function shoot(viewport, tag) {
   await page.fill('input[name="email"]', email);
   await page.fill('input[name="password"]', password);
   await Promise.all([
-    page.waitForURL(`${BASE}/dashboard`, { timeout: 15000 }).catch(() => {}),
+    page.waitForURL(`${BASE}/workspace`, { timeout: 15000 }).catch(() => {}),
     page.click('button[type="submit"]'),
   ]);
   await page.waitForTimeout(800);

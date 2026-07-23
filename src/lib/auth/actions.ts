@@ -59,7 +59,7 @@ export async function signInAction(
     data: { lastLoginAt: new Date() },
   });
 
-  redirect("/dashboard");
+  redirect("/workspace");
 }
 
 export async function signOutAction(): Promise<void> {

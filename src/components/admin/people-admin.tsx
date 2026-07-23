@@ -313,18 +313,22 @@ export function PeopleAdmin() {
         </TabsContent>
       </Tabs>
 
-      <UserDialog
-        key={userDialog.user?.id ?? "new"}
-        state={userDialog}
-        roles={roles.data ?? []}
-        onClose={() => setUserDialog({ open: false, user: null })}
-      />
+      {userDialog.open ? (
+        <UserDialog
+          key={userDialog.user?.id ?? "new"}
+          state={userDialog}
+          roles={roles.data ?? []}
+          onClose={() => setUserDialog({ open: false, user: null })}
+        />
+      ) : null}
       <ResetPasswordDialog user={pwUser} onClose={() => setPwUser(null)} />
-      <RoleDialog
-        key={roleDialog.role?.id ?? "new-role"}
-        state={roleDialog}
-        onClose={() => setRoleDialog({ open: false, role: null })}
-      />
+      {roleDialog.open ? (
+        <RoleDialog
+          key={roleDialog.role?.id ?? "new-role"}
+          state={roleDialog}
+          onClose={() => setRoleDialog({ open: false, role: null })}
+        />
+      ) : null}
       <ConfirmDialog
         open={!!removeUser}
         onOpenChange={(v) => !v && setRemoveUser(null)}

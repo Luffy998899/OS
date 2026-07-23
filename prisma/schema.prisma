@@ -59,6 +59,7 @@ model User {
   avatar         AvatarState?
   managedClients Client[]           @relation("ClientManager")
   journals       DailyJournal[]
+  createdInvoices Invoice[]         @relation("InvoiceCreator")
 }
 
 // ---------------------------------------------------------------------------
@@ -71,6 +72,8 @@ model Client {
   ownerName   String?
   email       String?
   phone       String?
+  gstin       String?
+  address     String?
   category    String? // New Customer | Active | Enterprise | ...
   status      String        @default("new") // new | active | suspended | churned
   temperature String        @default("cold") // hot | warm | cold (outreach)
@@ -80,6 +83,8 @@ model Client {
   tasks       Task[]
   outreach    OutreachLog[]
   timeEntries TimeEntry[]
+  invoices    Invoice[]
+  rooms       Room[] // dedicated office area(s) for this client
   createdAt   DateTime      @default(now())
   updatedAt   DateTime      @updatedAt
 }
@@ -233,10 +238,13 @@ model DocumentShare {
 
 model Room {
   id          String        @id @default(cuid())
-  key         String        @unique // developer | creative | managing-heads | ...
+  key         String        @unique // developer | creative | managing-heads | client:<id> ...
   name        String
   department  String?
   description String?
+  kind        String        @default("department") // department | client
+  clientId    String?
+  client      Client?       @relation(fields: [clientId], references: [id])
   capacity    Int           @default(12)
   posX        Int           @default(0) // layout position on the office map grid
   posY        Int           @default(0)
@@ -337,4 +345,75 @@ model Setting {
   key       String   @unique
   value     String // JSON
   updatedAt DateTime @updatedAt
+}
+
+// ---------------------------------------------------------------------------
+// Billing & finance
+// ---------------------------------------------------------------------------
+
+model Service {
+  id          String   @id @default(cuid())
+  name        String
+  category    String?
+  description String?
+  hsnSac      String?
+  basePrice   Float    @default(0)
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model Expense {
+  id          String   @id @default(cuid())
+  title       String
+  category    String?
+  amount      Float
+  notes       String?
+  date        String // YYYY-MM-DD
+  createdById String?
+  createdAt   DateTime @default(now())
+}
+
+model Invoice {
+  id           String        @id @default(cuid())
+  number       String        @unique // INV/2026-27/021
+  clientId     String?
+  client       Client?       @relation(fields: [clientId], references: [id])
+  // Bill-to snapshot (kept even if the client record changes later)
+  billToName    String
+  billToEmail   String?
+  billToPhone   String?
+  billToGstin   String?
+  billToAddress String?
+  invoiceDate  String
+  dueDate      String?
+  paymentTerms String        @default("net_30") // due_on_receipt | net_15 | net_30 | net_45
+  poNumber     String?
+  taxType      String        @default("igst") // igst | cgst_sgst | none
+  taxRate      Float         @default(18)
+  discount     Float         @default(0)
+  subtotal     Float         @default(0)
+  taxAmount    Float         @default(0)
+  total        Float         @default(0)
+  status       String        @default("draft") // draft | sent | paid | overdue | cancelled
+  notes        String?
+  items        InvoiceItem[]
+  createdById  String
+  createdBy    User          @relation("InvoiceCreator", fields: [createdById], references: [id])
+  sentAt       DateTime?
+  paidAt       DateTime?
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+}
+
+model InvoiceItem {
+  id          String  @id @default(cuid())
+  invoiceId   String
+  invoice     Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  description String
+  hsnSac      String?
+  qty         Float   @default(1)
+  rate        Float   @default(0)
+  amount      Float   @default(0)
+  position    Int     @default(0)
 }

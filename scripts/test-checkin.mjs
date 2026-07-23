@@ -9,7 +9,7 @@ async function login(email, password) {
   await page.fill('input[name="email"]', email);
   await page.fill('input[name="password"]', password);
   await page.click('button[type="submit"]');
-  await page.waitForURL(`${BASE}/dashboard`);
+  await page.waitForURL(`${BASE}/workspace`);
 }
 
 // Use manager (no seeded active shift) to test the full cycle

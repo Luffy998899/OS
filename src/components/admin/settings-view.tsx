@@ -10,6 +10,10 @@ import {
   Copy,
   Send,
   Check,
+  Building2,
+  Palette,
+  Landmark,
+  Scale,
 } from "lucide-react";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/app/page-header";
@@ -74,6 +78,14 @@ export function SettingsView() {
       ) : (
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
           <div className="lg:col-span-2">
+            <OrgSection data={data} />
+          </div>
+          <BrandingSection data={data} />
+          <BankSection data={data} />
+          <div className="lg:col-span-2">
+            <LegalSection data={data} />
+          </div>
+          <div className="lg:col-span-2">
             <WhatsAppSection data={data} />
           </div>
           <AiSection data={data} />
@@ -81,6 +93,167 @@ export function SettingsView() {
         </div>
       )}
     </>
+  );
+}
+
+function Field({
+  label,
+  value,
+  onChange,
+  placeholder,
+  type,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+  type?: string;
+}) {
+  return (
+    <div className="space-y-2">
+      <Label>{label}</Label>
+      <Input
+        type={type}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+      />
+    </div>
+  );
+}
+
+function SaveRow({ pending, onClick }: { pending: boolean; onClick: () => void }) {
+  return (
+    <div className="flex justify-end">
+      <Button onClick={onClick} disabled={pending}>
+        {pending ? <Loader2 className="size-4 animate-spin" /> : null}
+        Save
+      </Button>
+    </div>
+  );
+}
+
+function OrgSection({ data }: { data: Settings }) {
+  const utils = trpc.useUtils();
+  const [f, setF] = useState(data.org);
+  const save = trpc.setting.updateOrg.useMutation({
+    onSuccess: () => {
+      utils.setting.get.invalidate();
+      toast.success("Organisation saved.");
+    },
+    onError: (e) => toast.error(e.message),
+  });
+  return (
+    <SectionCard
+      icon={Building2}
+      title="Organisation"
+      description="Appears in the invoice header."
+    >
+      <Field label="Name" value={f.name} onChange={(v) => setF({ ...f, name: v })} />
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <Field label="GSTIN" value={f.gstin} onChange={(v) => setF({ ...f, gstin: v })} />
+        <Field label="Phone" value={f.phone} onChange={(v) => setF({ ...f, phone: v })} />
+      </div>
+      <Field label="Email" value={f.email} onChange={(v) => setF({ ...f, email: v })} />
+      <div className="space-y-2">
+        <Label>Address</Label>
+        <Textarea value={f.address} onChange={(e) => setF({ ...f, address: e.target.value })} rows={2} />
+      </div>
+      <SaveRow pending={save.isPending} onClick={() => save.mutate(f)} />
+    </SectionCard>
+  );
+}
+
+function BrandingSection({ data }: { data: Settings }) {
+  const utils = trpc.useUtils();
+  const [f, setF] = useState(data.branding);
+  const save = trpc.setting.updateBranding.useMutation({
+    onSuccess: () => {
+      utils.setting.get.invalidate();
+      toast.success("Branding saved.");
+    },
+    onError: (e) => toast.error(e.message),
+  });
+  return (
+    <SectionCard icon={Palette} title="Branding" description="Accent colour for the invoice PDF.">
+      <Field
+        label="Logo URL"
+        value={f.logoUrl}
+        onChange={(v) => setF({ ...f, logoUrl: v })}
+        placeholder="https://…"
+      />
+      <div className="space-y-2">
+        <Label>Primary colour</Label>
+        <div className="flex items-center gap-2">
+          <input
+            type="color"
+            value={f.primaryColor || "#6184d6"}
+            onChange={(e) => setF({ ...f, primaryColor: e.target.value })}
+            className="size-9 shrink-0 cursor-pointer rounded-md border border-border bg-transparent"
+            aria-label="Primary colour"
+          />
+          <Input value={f.primaryColor} onChange={(e) => setF({ ...f, primaryColor: e.target.value })} />
+        </div>
+      </div>
+      <SaveRow pending={save.isPending} onClick={() => save.mutate(f)} />
+    </SectionCard>
+  );
+}
+
+function BankSection({ data }: { data: Settings }) {
+  const utils = trpc.useUtils();
+  const [f, setF] = useState(data.bank);
+  const save = trpc.setting.updateBank.useMutation({
+    onSuccess: () => {
+      utils.setting.get.invalidate();
+      toast.success("Bank details saved.");
+    },
+    onError: (e) => toast.error(e.message),
+  });
+  return (
+    <SectionCard icon={Landmark} title="Bank details" description="Shown in the invoice payment section.">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <Field label="Bank name" value={f.bankName} onChange={(v) => setF({ ...f, bankName: v })} />
+        <Field label="Account holder" value={f.accountHolder} onChange={(v) => setF({ ...f, accountHolder: v })} />
+        <Field label="Account number" value={f.accountNumber} onChange={(v) => setF({ ...f, accountNumber: v })} />
+        <Field label="IFSC" value={f.ifsc} onChange={(v) => setF({ ...f, ifsc: v })} />
+      </div>
+      <SaveRow pending={save.isPending} onClick={() => save.mutate(f)} />
+    </SectionCard>
+  );
+}
+
+function LegalSection({ data }: { data: Settings }) {
+  const utils = trpc.useUtils();
+  const [f, setF] = useState(data.legal);
+  const save = trpc.setting.updateLegal.useMutation({
+    onSuccess: () => {
+      utils.setting.get.invalidate();
+      toast.success("Legal details saved.");
+    },
+    onError: (e) => toast.error(e.message),
+  });
+  return (
+    <SectionCard
+      icon={Scale}
+      title="Legal & compliance"
+      description="Sensitive entity records — visible only to admins."
+    >
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <Field label="Registered entity name" value={f.entityName} onChange={(v) => setF({ ...f, entityName: v })} />
+        <Field label="PAN" value={f.pan} onChange={(v) => setF({ ...f, pan: v })} />
+        <Field label="CIN" value={f.cin} onChange={(v) => setF({ ...f, cin: v })} />
+      </div>
+      <div className="space-y-2">
+        <Label>Registered address</Label>
+        <Textarea value={f.registeredAddress} onChange={(e) => setF({ ...f, registeredAddress: e.target.value })} rows={2} />
+      </div>
+      <div className="space-y-2">
+        <Label>Notes</Label>
+        <Textarea value={f.notes} onChange={(e) => setF({ ...f, notes: e.target.value })} rows={2} />
+      </div>
+      <SaveRow pending={save.isPending} onClick={() => save.mutate(f)} />
+    </SectionCard>
   );
 }
 

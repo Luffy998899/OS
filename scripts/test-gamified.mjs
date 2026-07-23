@@ -8,7 +8,7 @@ async function login(page, email) {
   await page.fill('input[name="email"]', email);
   await page.fill('input[name="password"]', "auxa1234");
   await page.click('button[type="submit"]');
-  await page.waitForURL(`${BASE}/dashboard`);
+  await page.waitForURL(`${BASE}/workspace`);
 }
 
 // 1) Redeem a reward as rohan (980 pts)

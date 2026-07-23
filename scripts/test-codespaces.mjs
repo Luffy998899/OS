@@ -24,7 +24,7 @@ await page.fill('input[name="password"]', "auxa1234");
 await page.click('button[type="submit"]');
 
 const reached = await page
-  .waitForURL(`${BASE}/dashboard`, { timeout: 8000 })
+  .waitForURL(`${BASE}/workspace`, { timeout: 8000 })
   .then(() => true)
   .catch(() => false);
 
