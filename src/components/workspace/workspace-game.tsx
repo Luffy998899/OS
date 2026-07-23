@@ -46,30 +46,32 @@ import { hasPermission, PERMISSIONS } from "@/lib/auth/permissions";
 import { cn } from "@/lib/utils";
 
 const VIEW = { w: 1024, h: 620 };
-// Isometric projection (2:1), pre-scaled.
-const A = 0.42;
-const B = 0.21;
-const WALL_H = 34;
-const DESK_H = 20;
-const BOARD_H = 30;
-const CHAR_H = 40;
+// Isometric projection (2:1), pre-scaled. Bigger = more zoomed in.
+const A = 0.52;
+const B = 0.26;
+// Short, low dividers instead of tall towers — keeps everything readable.
+const WALL_H = 15;
+const DESK_H = 12;
+const BOARD_H = 20;
+const CHAR_H = 46;
 
 const GAME = {
-  ground: "#d9d2c2",
-  groundLine: "#cabfa8",
-  roomFloor: "#efe9db",
-  wallTop: "#e2dbc7",
-  wallL: "#b7ad95",
-  wallR: "#9b917a",
-  deskTop: "#c08a5b",
-  deskL: "#9c6a41",
-  deskR: "#84582f",
-  monitor: "#2f2d31",
+  bg: "#cdc6b5",
+  ground: "#e6dfce",
+  roomFloor: "#f5f0e6",
+  roomFloorLine: "#e6ded0",
+  wallTop: "#efe9dc",
+  wallL: "#dcd4c1",
+  wallR: "#c8bda6",
+  deskTop: "#d09b6c",
+  deskL: "#b98a5f",
+  deskR: "#a2764c",
+  monitor: "#3a3940",
   screen: "#8fd3e6",
   skin: "#f1c49b",
   hair: "#3b2f27",
   ink: "#26241f",
-  paper: "#fbf8f0",
+  paper: "#fdfbf5",
   online: "#4fae5a",
   busy: "#e0a13a",
   away: "#9a9384",
@@ -292,10 +294,21 @@ export function WorkspaceGame() {
       // Room floors + rugs + labels
       for (const r of L.rooms) {
         const a = proj(r.rect.x, r.rect.y), b = proj(r.rect.x + r.rect.w, r.rect.y), c = proj(r.rect.x + r.rect.w, r.rect.y + r.rect.h), d = proj(r.rect.x, r.rect.y + r.rect.h);
-        quad([a, b, c, d], GAME.roomFloor, GAME.groundLine);
-        // rug
-        ctx.globalAlpha = 0.25;
-        const rx = r.rect.x + 26, ry = r.rect.y + r.rect.h - 80, rw = r.rect.w - 52, rh = 58;
+        quad([a, b, c, d], GAME.roomFloor, GAME.roomFloorLine);
+        // subtle iso tile lines for texture
+        ctx.strokeStyle = GAME.roomFloorLine;
+        ctx.lineWidth = 1;
+        for (let gx = r.rect.x + 50; gx < r.rect.x + r.rect.w; gx += 50) {
+          const p1 = proj(gx, r.rect.y), p2 = proj(gx, r.rect.y + r.rect.h);
+          ctx.beginPath(); ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.stroke();
+        }
+        for (let gy = r.rect.y + 50; gy < r.rect.y + r.rect.h; gy += 50) {
+          const p1 = proj(r.rect.x, gy), p2 = proj(r.rect.x + r.rect.w, gy);
+          ctx.beginPath(); ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.stroke();
+        }
+        // accent rug
+        ctx.globalAlpha = 0.22;
+        const rx = r.rect.x + 30, ry = r.rect.y + r.rect.h - 78, rw = r.rect.w - 60, rh = 54;
         quad([proj(rx, ry), proj(rx + rw, ry), proj(rx + rw, ry + rh), proj(rx, ry + rh)], r.accent);
         ctx.globalAlpha = 1;
       }
@@ -312,7 +325,6 @@ export function WorkspaceGame() {
         }
         const near = R.nearId === r.id;
         items.push({ depth: r.board.x + r.board.y, draw: () => drawBoard(r, near, now) });
-        items.push({ depth: r.rect.x + 12 + (r.rect.y + 10), draw: () => drawSign(r) });
       }
       for (const o of R.others)
         items.push({ depth: o.x + o.y, draw: () => drawChar(o.x, o.y, o.name, false, userHue(o.userId), o.status, "down", false, now) });
@@ -320,65 +332,94 @@ export function WorkspaceGame() {
 
       items.sort((p, q) => p.depth - q.depth);
       for (const it of items) it.draw();
+
+      // Floating room labels — drawn last so they're always readable.
+      for (const r of L.rooms) drawLabel(r);
     };
 
     const drawDesk = (dk: { x: number; y: number; w: number; h: number }) => {
       isoBox(dk, DESK_H, GAME.deskTop, GAME.deskL, GAME.deskR);
-      // monitor on top
-      const mx = dk.x + dk.w / 2 - 12, my = dk.y + dk.h / 2 - 8;
-      const m = { x: mx, y: my, w: 24, h: 16 };
-      isoBox({ x: m.x, y: m.y, w: m.w, h: 4 }, DESK_H + 16, GAME.monitor, GAME.monitor, GAME.monitor);
-      const top = proj(m.x, m.y);
+      // flat monitor sitting on the desktop (no tall tower)
+      const t = proj(dk.x + dk.w / 2, dk.y + dk.h / 2);
+      ctx.fillStyle = GAME.monitor;
+      roundRect(ctx, t.x - 10, t.y - DESK_H - 10, 20, 12, 2);
+      ctx.fill();
       ctx.fillStyle = GAME.screen;
-      ctx.fillRect(top.x - 8, top.y - DESK_H - 15, 16, 8);
+      ctx.fillRect(t.x - 8, t.y - DESK_H - 8, 16, 8);
     };
 
     const drawBoard = (r: RoomGeom, near: boolean, now: number) => {
-      const b = { x: r.board.x - 14, y: r.board.y - 8, w: 28, h: 16 };
+      const p = proj(r.board.x, r.board.y);
       if (near) {
-        const p = proj(r.board.x, r.board.y);
         ctx.strokeStyle = GAME.busy;
-        ctx.globalAlpha = 0.7;
+        ctx.globalAlpha = 0.8;
         ctx.lineWidth = 3;
-        const pulse = 6 + Math.sin(now / 200) * 3;
+        const pulse = 5 + Math.sin(now / 200) * 3;
         ctx.beginPath();
-        ctx.ellipse(p.x, p.y, 26 + pulse, 13 + pulse / 2, 0, 0, Math.PI * 2);
+        ctx.ellipse(p.x, p.y, 22 + pulse, 11 + pulse / 2, 0, 0, Math.PI * 2);
         ctx.stroke();
         ctx.globalAlpha = 1;
       }
-      isoBox(b, BOARD_H, GAME.ink, "#3a352c", "#2c2822");
-      const t = proj(r.board.x, r.board.y);
+      // short stand
+      const stand = { x: r.board.x - 3, y: r.board.y - 3, w: 6, h: 6 };
+      isoBox(stand, 14, "#6b6152", "#5a5144", "#4b4338");
+      // billboard sign panel
+      ctx.fillStyle = r.missionCount > 0 ? GAME.busy : "#7d8790";
+      roundRect(ctx, p.x - 11, p.y - 40, 22, 18, 3);
+      ctx.fill();
       ctx.strokeStyle = GAME.paper;
-      ctx.lineWidth = 2;
+      ctx.lineWidth = 1.5;
       for (let i = 0; i < 3; i++) {
         ctx.beginPath();
-        ctx.moveTo(t.x - 7, t.y - BOARD_H - 6 + i * 5);
-        ctx.lineTo(t.x + 7, t.y - BOARD_H - 6 + i * 5);
+        ctx.moveTo(p.x - 6, p.y - 35 + i * 4);
+        ctx.lineTo(p.x + 6, p.y - 35 + i * 4);
         ctx.stroke();
       }
     };
 
-    const drawSign = (r: RoomGeom) => {
-      const p = proj(r.rect.x + 14, r.rect.y + 10);
-      const label = (r.kind === "client" ? "★ " : "") + r.name;
+    const drawLabel = (r: RoomGeom) => {
+      const p = proj(r.rect.x + r.rect.w / 2, r.rect.y + r.rect.h / 2);
+      const lx = p.x;
+      const ly = p.y - 74;
+      const isClient = r.kind === "client";
+      const label = r.name;
       ctx.font = "600 12px ui-sans-serif, system-ui";
-      const w = ctx.measureText(label).width + 18 + (r.missionCount > 0 ? 20 : 0);
-      ctx.fillStyle = r.kind === "client" ? "#3b2d55" : GAME.ink;
-      roundRect(ctx, p.x, p.y - 10, w, 20, 5);
+      const tw = ctx.measureText(label).width;
+      const w = tw + 20 + (r.missionCount > 0 ? 20 : 0) + (isClient ? 14 : 0);
+      const h = 22;
+      // shadow + pill
+      ctx.fillStyle = "rgba(0,0,0,0.18)";
+      roundRect(ctx, lx - w / 2, ly - h / 2 + 2, w, h, 11);
       ctx.fill();
       ctx.fillStyle = GAME.paper;
-      ctx.textBaseline = "middle";
+      roundRect(ctx, lx - w / 2, ly - h / 2, w, h, 11);
+      ctx.fill();
+      ctx.strokeStyle = "rgba(0,0,0,0.12)";
+      ctx.lineWidth = 1;
+      roundRect(ctx, lx - w / 2, ly - h / 2, w, h, 11);
+      ctx.stroke();
+      let tx = lx - w / 2 + 10;
+      if (isClient) {
+        ctx.fillStyle = "#8a6bd6";
+        ctx.beginPath();
+        ctx.arc(tx + 3, ly, 3.5, 0, Math.PI * 2);
+        ctx.fill();
+        tx += 12;
+      }
+      ctx.fillStyle = GAME.ink;
       ctx.textAlign = "left";
-      ctx.fillText(label, p.x + 8, p.y);
+      ctx.textBaseline = "middle";
+      ctx.fillText(label, tx, ly + 0.5);
       if (r.missionCount > 0) {
+        const bx = lx + w / 2 - 12;
         ctx.fillStyle = GAME.busy;
         ctx.beginPath();
-        ctx.arc(p.x + w - 10, p.y, 7, 0, Math.PI * 2);
+        ctx.arc(bx, ly, 8, 0, Math.PI * 2);
         ctx.fill();
         ctx.fillStyle = "#3a2a10";
-        ctx.font = "700 9px ui-sans-serif, system-ui";
+        ctx.font = "700 10px ui-sans-serif, system-ui";
         ctx.textAlign = "center";
-        ctx.fillText(String(r.missionCount), p.x + w - 10, p.y + 0.5);
+        ctx.fillText(String(r.missionCount), bx, ly + 0.5);
       }
       ctx.textAlign = "left";
     };
@@ -416,54 +457,64 @@ export function WorkspaceGame() {
         ctx.globalAlpha = 1;
       }
 
-      const legShift = moving ? Math.sin(now / 90) * 1.5 : 0;
+      // legs
+      const legShift = moving ? Math.sin(now / 90) * 2 : 0;
       ctx.fillStyle = "#3a3630";
-      ctx.fillRect(foot.x - 4, cy - 8 + legShift, 3, 8);
-      ctx.fillRect(foot.x + 1, cy - 8 - legShift, 3, 8);
-      // body
+      ctx.fillRect(foot.x - 5, cy - 11 + legShift, 4, 11);
+      ctx.fillRect(foot.x + 1, cy - 11 - legShift, 4, 11);
+      // arms
       ctx.fillStyle = shirtDark;
-      ctx.fillRect(foot.x - 9, cy - 22, 3, 12);
-      ctx.fillRect(foot.x + 6, cy - 22, 3, 12);
+      ctx.fillRect(foot.x - 12, cy - 30, 4, 16);
+      ctx.fillRect(foot.x + 8, cy - 30, 4, 16);
+      // body
       ctx.fillStyle = shirt;
-      roundRect(ctx, foot.x - 7, cy - 24, 14, 16, 4);
+      roundRect(ctx, foot.x - 9, cy - 32, 18, 22, 5);
       ctx.fill();
+      ctx.strokeStyle = "rgba(0,0,0,0.12)";
+      ctx.lineWidth = 1;
+      roundRect(ctx, foot.x - 9, cy - 32, 18, 22, 5);
+      ctx.stroke();
       // head
       ctx.fillStyle = GAME.skin;
       ctx.beginPath();
-      ctx.arc(foot.x, cy - 31, 6.5, 0, Math.PI * 2);
+      ctx.arc(foot.x, cy - 41, 8.5, 0, Math.PI * 2);
       ctx.fill();
+      ctx.strokeStyle = "rgba(0,0,0,0.1)";
+      ctx.stroke();
+      // hair
       ctx.fillStyle = GAME.hair;
       ctx.beginPath();
-      ctx.arc(foot.x, cy - 32, 6.5, Math.PI, Math.PI * 2);
+      ctx.arc(foot.x, cy - 42, 8.5, Math.PI, Math.PI * 2);
       ctx.fill();
-      ctx.fillRect(foot.x - 6.5, cy - 33, 13, 3);
+      ctx.fillRect(foot.x - 8.5, cy - 43, 17, 4);
       if (facing !== "up") {
         ctx.fillStyle = GAME.ink;
-        const ex = facing === "left" ? -1.6 : facing === "right" ? 1.6 : 0;
-        ctx.fillRect(foot.x - 3 + ex, cy - 31, 1.7, 2);
-        ctx.fillRect(foot.x + 1.3 + ex, cy - 31, 1.7, 2);
+        const ex = facing === "left" ? -2 : facing === "right" ? 2 : 0;
+        ctx.fillRect(foot.x - 4 + ex, cy - 41, 2, 2.5);
+        ctx.fillRect(foot.x + 2 + ex, cy - 41, 2, 2.5);
       }
-      // status
+      // status dot
       ctx.beginPath();
-      ctx.arc(foot.x + 7, cy - 34, 3, 0, Math.PI * 2);
+      ctx.arc(foot.x + 9, cy - 45, 3.5, 0, Math.PI * 2);
       ctx.fillStyle = STATUS_COLOR[status] ?? GAME.away;
       ctx.fill();
       ctx.strokeStyle = GAME.paper;
-      ctx.lineWidth = 1;
+      ctx.lineWidth = 1.5;
       ctx.stroke();
       // nameplate
-      ctx.font = "600 10px ui-sans-serif, system-ui";
+      ctx.font = "600 11px ui-sans-serif, system-ui";
       const nm = isMe ? "You" : name.split(" ")[0];
-      const nw = ctx.measureText(nm).width + 12;
-      ctx.fillStyle = isMe ? GAME.ink : GAME.paper;
-      ctx.globalAlpha = isMe ? 1 : 0.94;
-      roundRect(ctx, foot.x - nw / 2, cy - 50, nw, 14, 7);
+      const nw = ctx.measureText(nm).width + 14;
+      ctx.fillStyle = "rgba(0,0,0,0.18)";
+      roundRect(ctx, foot.x - nw / 2, cy - 64, nw, 17, 8);
       ctx.fill();
-      ctx.globalAlpha = 1;
+      ctx.fillStyle = isMe ? GAME.ink : GAME.paper;
+      roundRect(ctx, foot.x - nw / 2, cy - 65, nw, 17, 8);
+      ctx.fill();
       ctx.fillStyle = isMe ? GAME.paper : GAME.ink;
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
-      ctx.fillText(nm, foot.x, cy - 43);
+      ctx.fillText(nm, foot.x, cy - 56);
       ctx.textAlign = "left";
     };
 
