@@ -10,6 +10,11 @@ import {
   BarChart3,
   UserCog,
   Settings,
+  ReceiptText,
+  BookText,
+  Wallet,
+  Package,
+  NotebookPen,
   type LucideIcon,
 } from "lucide-react";
 import { PERMISSIONS, type PermissionKey } from "@/lib/auth/permissions";
@@ -29,9 +34,10 @@ export type NavSection = {
 export const NAV: NavSection[] = [
   {
     items: [
+      { title: "Gamified Workspace", href: "/workspace", icon: Gamepad2 },
       { title: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
       { title: "My Work", href: "/my-work", icon: ListChecks },
-      { title: "Gamified Workspace", href: "/workspace", icon: Gamepad2 },
+      { title: "Daily check-in", href: "/journal", icon: NotebookPen },
       { title: "Timesheet", href: "/timesheet", icon: Clock },
       { title: "Documents", href: "/documents", icon: FileText },
       { title: "Clients", href: "/clients", icon: Users2 },
@@ -52,6 +58,30 @@ export const NAV: NavSection[] = [
         href: "/admin/reports",
         icon: BarChart3,
         permission: PERMISSIONS.REPORTS_VIEW,
+      },
+      {
+        title: "Invoices",
+        href: "/admin/invoices",
+        icon: ReceiptText,
+        permission: PERMISSIONS.BILLING_MANAGE,
+      },
+      {
+        title: "Ledger",
+        href: "/admin/ledger",
+        icon: BookText,
+        permission: PERMISSIONS.BILLING_MANAGE,
+      },
+      {
+        title: "Expenses",
+        href: "/admin/expenses",
+        icon: Wallet,
+        permission: PERMISSIONS.BILLING_MANAGE,
+      },
+      {
+        title: "Services",
+        href: "/admin/services",
+        icon: Package,
+        permission: PERMISSIONS.BILLING_MANAGE,
       },
       {
         title: "People & Role",

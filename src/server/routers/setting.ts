@@ -22,6 +22,15 @@ type EmailCfg = {
   timezone: string;
   enabled: boolean;
 };
+type OrgCfg = { name: string; gstin: string; phone: string; email: string; address: string };
+type BrandingCfg = { logoUrl: string; primaryColor: string };
+type BankCfg = { bankName: string; accountHolder: string; accountNumber: string; ifsc: string };
+type LegalCfg = { entityName: string; pan: string; cin: string; registeredAddress: string; notes: string };
+
+const ORG_DEFAULT: OrgCfg = { name: "", gstin: "", phone: "", email: "", address: "" };
+const BRANDING_DEFAULT: BrandingCfg = { logoUrl: "", primaryColor: "#6184d6" };
+const BANK_DEFAULT: BankCfg = { bankName: "", accountHolder: "", accountNumber: "", ifsc: "" };
+const LEGAL_DEFAULT: LegalCfg = { entityName: "", pan: "", cin: "", registeredAddress: "", notes: "" };
 
 export const settingRouter = router({
   get: permissionProcedure(PERMISSIONS.SETTINGS_MANAGE).query(
@@ -40,6 +49,10 @@ export const settingRouter = router({
           timezone: "Asia/Kolkata",
           enabled: true,
         }),
+        org: parseJson<OrgCfg>(map.org, ORG_DEFAULT),
+        branding: parseJson<BrandingCfg>(map.branding, BRANDING_DEFAULT),
+        bank: parseJson<BankCfg>(map.bank, BANK_DEFAULT),
+        legal: parseJson<LegalCfg>(map.legal, LEGAL_DEFAULT),
         env: {
           aiEnabled: !!process.env.ANTHROPIC_API_KEY,
           emailEnabled: !!process.env.RESEND_API_KEY,
@@ -84,6 +97,61 @@ export const settingRouter = router({
         create: { key: "email", value },
         update: { value },
       });
+      return { ok: true };
+    }),
+
+  updateOrg: permissionProcedure(PERMISSIONS.SETTINGS_MANAGE)
+    .input(
+      z.object({
+        name: z.string(),
+        gstin: z.string(),
+        phone: z.string(),
+        email: z.string(),
+        address: z.string(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const value = JSON.stringify(input);
+      await ctx.db.setting.upsert({ where: { key: "org" }, create: { key: "org", value }, update: { value } });
+      return { ok: true };
+    }),
+
+  updateBranding: permissionProcedure(PERMISSIONS.SETTINGS_MANAGE)
+    .input(z.object({ logoUrl: z.string(), primaryColor: z.string() }))
+    .mutation(async ({ ctx, input }) => {
+      const value = JSON.stringify(input);
+      await ctx.db.setting.upsert({ where: { key: "branding" }, create: { key: "branding", value }, update: { value } });
+      return { ok: true };
+    }),
+
+  updateBank: permissionProcedure(PERMISSIONS.SETTINGS_MANAGE)
+    .input(
+      z.object({
+        bankName: z.string(),
+        accountHolder: z.string(),
+        accountNumber: z.string(),
+        ifsc: z.string(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const value = JSON.stringify(input);
+      await ctx.db.setting.upsert({ where: { key: "bank" }, create: { key: "bank", value }, update: { value } });
+      return { ok: true };
+    }),
+
+  updateLegal: permissionProcedure(PERMISSIONS.SETTINGS_MANAGE)
+    .input(
+      z.object({
+        entityName: z.string(),
+        pan: z.string(),
+        cin: z.string(),
+        registeredAddress: z.string(),
+        notes: z.string(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const value = JSON.stringify(input);
+      await ctx.db.setting.upsert({ where: { key: "legal" }, create: { key: "legal", value }, update: { value } });
       return { ok: true };
     }),
 

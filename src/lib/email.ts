@@ -5,6 +5,7 @@ export type SendEmailArgs = {
   subject: string;
   html: string;
   text?: string;
+  attachments?: { filename: string; content: string /* base64 */ }[];
 };
 
 export type SendEmailResult = {
@@ -43,6 +44,7 @@ export async function sendEmail(
         subject: args.subject,
         html: args.html,
         text: args.text,
+        attachments: args.attachments,
       }),
     });
     if (!res.ok) {

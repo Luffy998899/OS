@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Sparkles, Loader2, X, Gamepad2, Keyboard, Check, Play, Trophy } from "lucide-react";
+import { Sparkles, Loader2, X, Gamepad2, Keyboard, Check, Play, Trophy, Timer } from "lucide-react";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/app/page-header";
 import { Card } from "@/components/ui/card";
@@ -25,7 +25,8 @@ import {
   type Rect,
 } from "@/lib/workspace-map";
 import { levelInfo } from "@/lib/xp";
-import { initials } from "@/lib/format";
+import { initials, relativeTime } from "@/lib/format";
+import { hasPermission, PERMISSIONS } from "@/lib/auth/permissions";
 import { cn } from "@/lib/utils";
 
 // Fixed "game world" palette (independent of app light/dark theme).
@@ -304,26 +305,24 @@ export function WorkspaceGame() {
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
         <div className="lg:col-span-2">
-          <Card className="relative gap-0 overflow-hidden p-0">
-            {/* HUD */}
-            <div className="pointer-events-none absolute inset-x-0 top-0 z-10 flex items-start justify-between p-3">
-              <div className="pointer-events-auto rounded-lg border border-border bg-card/90 px-3 py-2 shadow-sm backdrop-blur">
-                <div className="flex items-center gap-2">
-                  <span className="flex size-7 items-center justify-center rounded-md bg-foreground text-xs font-bold text-background">
-                    {lvl.level}
-                  </span>
-                  <div>
-                    <p className="text-xs font-semibold leading-none">Level {lvl.level}</p>
-                    <div className="mt-1 flex items-center gap-1.5">
-                      <div className="h-1.5 w-24 overflow-hidden rounded-full bg-muted">
-                        <div className="h-full rounded-full bg-foreground transition-all" style={{ width: `${lvl.progress * 100}%` }} />
-                      </div>
-                      <span className="font-mono text-[0.65rem] text-muted-foreground">{lvl.into}/{lvl.span} XP</span>
+          <Card className="gap-0 overflow-hidden p-0">
+            {/* Top bar — level / XP and points (no longer overlaps the map) */}
+            <div className="flex items-center justify-between gap-3 border-b border-border px-3 py-2.5">
+              <div className="flex items-center gap-2">
+                <span className="flex size-7 items-center justify-center rounded-md bg-foreground text-xs font-bold text-background">
+                  {lvl.level}
+                </span>
+                <div>
+                  <p className="text-xs font-semibold leading-none">Level {lvl.level}</p>
+                  <div className="mt-1 flex items-center gap-1.5">
+                    <div className="h-1.5 w-24 overflow-hidden rounded-full bg-muted">
+                      <div className="h-full rounded-full bg-foreground transition-all" style={{ width: `${lvl.progress * 100}%` }} />
                     </div>
+                    <span className="font-mono text-[0.65rem] text-muted-foreground">{lvl.into}/{lvl.span} XP</span>
                   </div>
                 </div>
               </div>
-              <div className="pointer-events-auto flex items-center gap-1.5 rounded-lg border border-border bg-card/90 px-2.5 py-1.5 text-xs shadow-sm backdrop-blur">
+              <div className="flex items-center gap-1.5 text-xs">
                 <Trophy className="size-3.5 text-muted-foreground" />
                 <span className="font-semibold tabular-nums">{points}</span>
                 <span className="text-muted-foreground">·</span>
@@ -331,46 +330,47 @@ export function WorkspaceGame() {
               </div>
             </div>
 
-            {nearRoom ? (
-              <div className="pointer-events-none absolute inset-x-0 bottom-14 z-10 flex justify-center">
-                <button
-                  onClick={() => setPanelRoomKey((cur) => (cur === nearRoom.key ? null : nearRoom.key))}
-                  className="pointer-events-auto flex items-center gap-2 rounded-full bg-foreground px-3.5 py-1.5 text-xs font-medium text-background shadow-lg"
-                >
-                  <Keyboard className="size-3.5" />
-                  Press <kbd className="font-mono">E</kbd> — {nearRoom.name} missions
-                </button>
+            {/* Map area (overlays are scoped to this box only) */}
+            <div className="relative">
+              {nearRoom ? (
+                <div className="pointer-events-none absolute inset-x-0 bottom-12 z-10 flex justify-center">
+                  <button
+                    onClick={() => setPanelRoomKey((cur) => (cur === nearRoom.key ? null : nearRoom.key))}
+                    className="pointer-events-auto flex items-center gap-2 rounded-full bg-foreground px-3.5 py-1.5 text-xs font-medium text-background shadow-lg"
+                  >
+                    <Keyboard className="size-3.5" />
+                    Press <kbd className="font-mono">E</kbd> — {nearRoom.name} missions
+                  </button>
+                </div>
+              ) : null}
+
+              <div className="pointer-events-none absolute bottom-2.5 left-2.5 z-10 flex items-center gap-1.5 rounded-md bg-card/80 px-2 py-1 text-[0.65rem] text-muted-foreground backdrop-blur">
+                <Gamepad2 className="size-3" />
+                WASD / arrows · click to walk · E to interact
               </div>
-            ) : null}
 
-            <div className="pointer-events-none absolute bottom-3 left-3 z-10 flex items-center gap-1.5 rounded-md bg-card/80 px-2 py-1 text-[0.65rem] text-muted-foreground backdrop-blur">
-              <Gamepad2 className="size-3" />
-              WASD / arrows to move · click to walk · E to interact
-            </div>
-
-            <canvas
-              ref={setCanvasEl}
-              onClick={onCanvasClick}
-              className="block w-full cursor-pointer touch-none select-none"
-              style={{ aspectRatio: `${WORLD.w} / ${WORLD.h}`, imageRendering: "pixelated" }}
-              aria-label="Virtual office floor"
-            />
-
-            {panelRoomKey ? (
-              <RoomMissionsPanel
-                roomKey={panelRoomKey}
-                roomId={R.rooms.find((r) => r.key === panelRoomKey)?.id ?? ""}
-                onClose={() => setPanelRoomKey(null)}
-                onCompleted={(gained) => {
-                  utils.workspace.state.invalidate();
-                  utils.task.myWork.invalidate();
-                  utils.dashboard.overview.invalidate();
-                  utils.me.invalidate();
-                  setPoints((p) => p + gained);
-                  toast.success(`Mission complete — +${gained} XP!`);
-                }}
+              <canvas
+                ref={setCanvasEl}
+                onClick={onCanvasClick}
+                className="block w-full cursor-pointer touch-none select-none"
+                style={{ aspectRatio: `${WORLD.w} / ${WORLD.h}`, imageRendering: "pixelated" }}
+                aria-label="Virtual office floor"
               />
-            ) : null}
+
+              {panelRoomKey ? (
+                <RoomMissionsPanel
+                  roomKey={panelRoomKey}
+                  roomId={R.rooms.find((r) => r.key === panelRoomKey)?.id ?? ""}
+                  onClose={() => setPanelRoomKey(null)}
+                  onChanged={() => {
+                    utils.workspace.state.invalidate();
+                    utils.task.myWork.invalidate();
+                    utils.dashboard.overview.invalidate();
+                    utils.me.invalidate();
+                  }}
+                />
+              ) : null}
+            </div>
           </Card>
         </div>
 
@@ -443,30 +443,32 @@ function RoomMissionsPanel({
   roomKey,
   roomId,
   onClose,
-  onCompleted,
+  onChanged,
 }: {
   roomKey: string;
   roomId: string;
   onClose: () => void;
-  onCompleted: (gained: number) => void;
+  onChanged: () => void;
 }) {
   const currentUser = useCurrentUser();
+  const canManage = hasPermission(currentUser.permissions, PERMISSIONS.TASKS_ASSIGN);
   const room = ROOMS.find((r) => r.key === roomKey);
   const missions = trpc.workspace.roomMissions.useQuery({ roomId }, { enabled: !!roomId });
   const utils = trpc.useUtils();
-  const update = trpc.task.updateStatus.useMutation({ onError: (e) => toast.error(e.message) });
 
-  const act = (id: string, status: "in_progress" | "done", pts: number) => {
-    update.mutate(
-      { id, status },
-      {
-        onSuccess: () => {
-          utils.workspace.roomMissions.invalidate({ roomId });
-          if (status === "done") onCompleted(pts);
-        },
-      },
-    );
-  };
+  const update = trpc.task.updateStatus.useMutation({
+    onSuccess: () => {
+      utils.workspace.roomMissions.invalidate({ roomId });
+      onChanged();
+    },
+    onError: (e) => toast.error(e.message),
+  });
+
+  const act = (
+    id: string,
+    status: "todo" | "in_progress" | "review" | "done",
+    msg: string,
+  ) => update.mutate({ id, status }, { onSuccess: () => toast.success(msg) });
 
   return (
     <div className="absolute inset-y-0 right-0 z-20 flex w-full max-w-sm flex-col border-l border-border bg-card shadow-2xl">
@@ -487,35 +489,63 @@ function RoomMissionsPanel({
         ) : (missions.data?.length ?? 0) === 0 ? (
           <p className="py-10 text-center text-sm text-muted-foreground">No missions in this room yet.</p>
         ) : (
-          <ul className="space-y-2">
+          <ul className="space-y-2.5">
             {missions.data?.map((m) => {
               const mine = m.assignee?.id === currentUser.id;
-              const done = m.status === "done";
+              const overdue = m.dueAt && new Date(m.dueAt) < new Date() && m.status !== "done";
               return (
-                <li key={m.id} className="rounded-lg border border-border p-3">
+                <li key={m.id} className="rounded-lg border border-border p-3.5">
                   <div className="flex items-start justify-between gap-2">
                     <p className="text-sm font-medium">{m.title}</p>
                     <TaskStatusBadge status={m.status} />
                   </div>
-                  <div className="mt-1 flex items-center justify-between">
-                    <span className="text-xs text-muted-foreground">
-                      {m.assignee ? m.assignee.name : "Unassigned"} · {m.points} XP
-                    </span>
-                    {mine && !done ? (
-                      <div className="flex gap-1.5">
-                        {m.status !== "in_progress" ? (
-                          <Button size="xs" variant="outline" disabled={update.isPending} onClick={() => act(m.id, "in_progress", m.points)}>
-                            <Play className="size-3" />
-                            Start
-                          </Button>
-                        ) : null}
-                        <Button size="xs" disabled={update.isPending} onClick={() => act(m.id, "done", m.points)}>
-                          <Check className="size-3" />
-                          Complete
-                        </Button>
-                      </div>
-                    ) : mine && done ? (
+                  <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+                    <span>{m.assignee ? m.assignee.name : "Unassigned"}</span>
+                    <span>· {m.points} XP</span>
+                    {m.priority === "urgent" || m.priority === "high" ? (
+                      <span className={cn("rounded px-1.5 py-0.5 font-medium", m.priority === "urgent" ? "bg-destructive/10 text-destructive" : "bg-warning/10 text-warning")}>
+                        {m.priority}
+                      </span>
+                    ) : null}
+                    {m.status === "in_progress" && m.dueAt ? (
+                      <span className={cn("flex items-center gap-1", overdue && "font-medium text-destructive")}>
+                        <Timer className="size-3" />
+                        {overdue ? "overdue " : "due "}
+                        {relativeTime(m.dueAt)}
+                      </span>
+                    ) : null}
+                  </div>
+
+                  <div className="mt-2.5 flex flex-wrap justify-end gap-1.5">
+                    {mine && m.status === "todo" ? (
+                      <Button size="xs" disabled={update.isPending} onClick={() => act(m.id, "in_progress", "Started — timer running.")}>
+                        <Play className="size-3" />
+                        Start
+                      </Button>
+                    ) : null}
+                    {mine && m.status === "in_progress" ? (
+                      <Button size="xs" disabled={update.isPending} onClick={() => act(m.id, "review", "Published for review.")}>
+                        <Check className="size-3" />
+                        Publish for review
+                      </Button>
+                    ) : null}
+                    {mine && m.status === "review" ? (
+                      <span className="text-xs font-medium text-warning">Awaiting review</span>
+                    ) : null}
+                    {mine && m.status === "done" ? (
                       <span className="text-xs font-medium text-success">Completed</span>
+                    ) : null}
+
+                    {canManage && m.status === "review" ? (
+                      <>
+                        <Button size="xs" variant="outline" disabled={update.isPending} onClick={() => act(m.id, "in_progress", "Sent back.")}>
+                          Send back
+                        </Button>
+                        <Button size="xs" disabled={update.isPending} onClick={() => act(m.id, "done", "Approved — XP awarded.")}>
+                          <Check className="size-3" />
+                          Approve
+                        </Button>
+                      </>
                     ) : null}
                   </div>
                 </li>

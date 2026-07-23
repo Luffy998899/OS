@@ -10,7 +10,7 @@ async function check(email, path, expectRedirectTo) {
   await page.fill('input[name="email"]', email);
   await page.fill('input[name="password"]', "auxa1234");
   await page.click('button[type="submit"]');
-  await page.waitForURL(`${BASE}/dashboard`);
+  await page.waitForURL(`${BASE}/workspace`);
   await page.goto(`${BASE}${path}`, { waitUntil: "networkidle" });
   await page.waitForTimeout(500);
   const url = page.url().replace(BASE, "");

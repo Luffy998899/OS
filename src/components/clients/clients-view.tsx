@@ -169,7 +169,7 @@ export function ClientsView({ canManage }: { canManage: boolean }) {
         </Table>
       </Card>
 
-      {canManage ? (
+      {canManage && dialog.open ? (
         <ClientDialog
           key={dialog.client?.id ?? "new"}
           state={dialog}

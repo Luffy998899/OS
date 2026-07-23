@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 import { router, protectedProcedure, permissionProcedure } from "../trpc";
-import { PERMISSIONS } from "@/lib/auth/permissions";
+import { PERMISSIONS, hasPermission } from "@/lib/auth/permissions";
 
 const clientInclude = {
   manager: { select: { id: true, name: true, avatarUrl: true } },
@@ -12,16 +12,46 @@ const statusEnum = z.enum(["new", "active", "suspended", "churned"]);
 const tempEnum = z.enum(["hot", "warm", "cold"]);
 
 export const clientRouter = router({
-  list: protectedProcedure.query(({ ctx }) =>
-    ctx.db.client.findMany({
+  list: protectedProcedure.query(({ ctx }) => {
+    // Employees only see clients they manage or are assigned tasks for.
+    const canSeeAll = hasPermission(
+      ctx.user.permissions,
+      PERMISSIONS.CLIENTS_MANAGE,
+    );
+    return ctx.db.client.findMany({
+      where: canSeeAll
+        ? {}
+        : {
+            OR: [
+              { managerId: ctx.user.id },
+              { tasks: { some: { assigneeId: ctx.user.id } } },
+            ],
+          },
       orderBy: { createdAt: "asc" },
       include: clientInclude,
-    }),
-  ),
+    });
+  }),
 
   byId: protectedProcedure
     .input(z.object({ id: z.string() }))
     .query(async ({ ctx, input }) => {
+      const canSeeAll = hasPermission(
+        ctx.user.permissions,
+        PERMISSIONS.CLIENTS_MANAGE,
+      );
+      if (!canSeeAll) {
+        const allowed = await ctx.db.client.findFirst({
+          where: {
+            id: input.id,
+            OR: [
+              { managerId: ctx.user.id },
+              { tasks: { some: { assigneeId: ctx.user.id } } },
+            ],
+          },
+          select: { id: true },
+        });
+        if (!allowed) throw new TRPCError({ code: "FORBIDDEN" });
+      }
       const client = await ctx.db.client.findUnique({
         where: { id: input.id },
         include: {

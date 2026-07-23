@@ -8,7 +8,7 @@ await page.goto(`${BASE}/sign-in`, { waitUntil: "networkidle" });
 await page.fill('input[name="email"]', "admin@auxa.app");
 await page.fill('input[name="password"]', "auxa1234");
 await page.click('button[type="submit"]');
-await page.waitForURL(`${BASE}/dashboard`);
+await page.waitForURL(`${BASE}/workspace`);
 
 await page.goto(`${BASE}/documents`, { waitUntil: "networkidle" });
 await page.getByRole("button", { name: /^New$/ }).click();

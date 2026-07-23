@@ -249,8 +249,9 @@ export function AssignPlanView() {
           ) : null}
         </div>
 
-        {/* Review queue */}
-        <div className="lg:col-span-2">
+        {/* Review + completions */}
+        <div className="space-y-6 lg:col-span-2">
+          <CompletionsQueue />
           <Card className="gap-0 py-0">
             <div className="flex items-center gap-2 border-b border-border px-4 py-3">
               <Inbox className="size-4" />
@@ -283,6 +284,69 @@ export function AssignPlanView() {
         assigneeOptions={assigneeOptions}
       />
     </>
+  );
+}
+
+function CompletionsQueue() {
+  const utils = trpc.useUtils();
+  const completions = trpc.task.completions.useQuery();
+  const approve = trpc.task.approveCompletion.useMutation({
+    onSuccess: (_r, v) => {
+      utils.task.completions.invalidate();
+      utils.dashboard.overview.invalidate();
+      utils.report.data.invalidate();
+      toast.success(v.approve ? "Approved — XP awarded." : "Sent back.");
+    },
+    onError: (e) => toast.error(e.message),
+  });
+
+  const items = completions.data ?? [];
+  if (items.length === 0) return null;
+
+  return (
+    <Card className="gap-0 py-0">
+      <div className="flex items-center gap-2 border-b border-border px-4 py-3">
+        <Check className="size-4" />
+        <h2 className="font-heading text-sm font-semibold">Completions to approve</h2>
+        <Badge className="ml-auto">{items.length}</Badge>
+      </div>
+      <div className="divide-y divide-border">
+        {items.map((t) => (
+          <div key={t.id} className="space-y-2 px-4 py-3">
+            <div className="flex items-start justify-between gap-2">
+              <p className="text-sm font-medium">{t.title}</p>
+              <span className="shrink-0 text-xs text-muted-foreground">{t.points} XP</span>
+            </div>
+            <div className="flex flex-wrap items-center gap-1.5">
+              <PriorityBadge priority={t.priority} />
+              <VerticalBadge vertical={t.vertical} />
+              <span className="text-xs text-muted-foreground">
+                {t.assignee ? t.assignee.name : "Unassigned"}
+              </span>
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button
+                size="sm"
+                variant="ghost"
+                disabled={approve.isPending}
+                onClick={() => approve.mutate({ id: t.id, approve: false })}
+              >
+                <X className="size-4" />
+                Send back
+              </Button>
+              <Button
+                size="sm"
+                disabled={approve.isPending}
+                onClick={() => approve.mutate({ id: t.id, approve: true })}
+              >
+                <Check className="size-4" />
+                Approve
+              </Button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </Card>
   );
 }
 
