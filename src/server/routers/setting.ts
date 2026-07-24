@@ -2,6 +2,7 @@ import { z } from "zod";
 import { router, permissionProcedure } from "../trpc";
 import { PERMISSIONS } from "@/lib/auth/permissions";
 import { ingestWhatsAppTask } from "@/lib/whatsapp";
+import { getAppUrl } from "@/lib/app-url";
 
 function parseJson<T>(v: string | undefined, fallback: T): T {
   if (!v) return fallback;
@@ -58,7 +59,8 @@ export const settingRouter = router({
           emailEnabled: !!process.env.RESEND_API_KEY,
           whatsappConfigured: !!process.env.TWILIO_ACCOUNT_SID,
           verifyToken: process.env.WHATSAPP_VERIFY_TOKEN || "auxa-verify",
-          appUrl: process.env.APP_URL || "http://localhost:3000",
+          appUrl: getAppUrl(),
+          appUrlAutoDetected: !process.env.APP_URL?.trim(),
           webhookPath: "/api/webhooks/whatsapp",
         },
       };

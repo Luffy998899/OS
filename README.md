@@ -112,6 +112,22 @@ Aborting the action."* Auxa pre‑allows localhost plus common tunnels
 ALLOWED_ORIGINS="your-space.app.github.dev" ./deploy.sh
 ```
 
+**Public URL for emails & webhooks.** In Codespaces the server listens on
+`localhost:3000` but is reached through a forwarded URL like
+`https://<name>-3000.app.github.dev`. Auxa **auto‑detects** that address (from
+the `CODESPACE_NAME` + `GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN` vars Codespaces
+injects, and `VERCEL_URL` on Vercel), so links inside report‑reminder emails and
+the WhatsApp webhook URL point to the public host instead of `localhost` — no
+manual `APP_URL` needed. Two things to check:
+
+- In the **Ports** tab, set port `3000` visibility to **Public** so recipients
+  can open emailed links without a GitHub login.
+- Settings → Report reminders shows the exact URL links will use; if it still
+  reads `localhost`, set `APP_URL` explicitly and restart.
+
+Set `APP_URL` yourself only for a custom domain (it always wins over
+auto‑detection).
+
 ### Demo logins (password `auxa1234`)
 
 | Email | Role |
@@ -144,6 +160,21 @@ Everything runs without these — features degrade gracefully and the UI shows a
 | `TWILIO_*` / WhatsApp Cloud API + `WHATSAPP_VERIFY_TOKEN` | Inbound WhatsApp task intake |
 | `DEEPGRAM_API_KEY` | (Reserved) voice‑to‑task |
 | `CRON_SECRET` | Protects the reminder cron endpoint |
+
+**Sending real email (Resend).** Emails degrade to in‑app notifications until
+you add a key. To send for real:
+
+1. Create a [Resend](https://resend.com) API key and add a **domain** (e.g.
+   `send.yourdomain.com`), then add the MX/SPF/DKIM/DMARC DNS records Resend
+   shows and wait for it to verify.
+2. Set `RESEND_API_KEY` and `EMAIL_FROM` (e.g. `Auxa <invoices@send.yourdomain.com>`,
+   using a verified domain) in `.env` — or, in Codespaces, as repo/Codespace
+   **Secrets** — then restart.
+
+Sending works from any host (Codespaces included) because Resend delivers from
+its own servers; only the **links inside** the email depend on `APP_URL`, which
+Auxa auto‑detects (see the Codespaces note above). Settings → Report reminders
+shows a green "Resend connected" badge and the URL your links will use.
 
 **Report reminder** is scheduled via `vercel.json` (`25 12 * * *` UTC = 17:55 IST)
 hitting `GET /api/cron/report-reminder`. You can trigger it manually:

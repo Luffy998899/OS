@@ -505,6 +505,24 @@ function EmailSection({ data }: { data: Settings }) {
           Default 17:55 (5:55 PM). Scheduled via cron in production.
         </p>
       </div>
+      <div className="rounded-md border border-border bg-muted/30 p-3">
+        <p className="text-xs font-medium">Links in emails point to</p>
+        <p className="mt-0.5 break-all font-mono text-xs text-muted-foreground">
+          {data.env.appUrl}
+        </p>
+        {data.env.appUrl.includes("localhost") ? (
+          <p className="mt-1.5 text-xs text-amber-600 dark:text-amber-500">
+            Running on localhost — recipients can&apos;t open these links. Set{" "}
+            <code className="font-mono">APP_URL</code> to your public URL (in
+            Codespaces it&apos;s auto-detected once the port is forwarded).
+          </p>
+        ) : data.env.appUrlAutoDetected ? (
+          <p className="mt-1.5 text-xs text-muted-foreground">
+            Auto-detected from your environment. Make sure the port is set to{" "}
+            <strong>Public</strong> so recipients can open the link.
+          </p>
+        ) : null}
+      </div>
       <div className="flex justify-end">
         <Button
           onClick={() =>
