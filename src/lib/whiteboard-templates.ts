@@ -1,6 +1,15 @@
 // Miro-style whiteboard templates. Pure data (no tldraw import) so the picker can
 // render metadata; the canvas turns `shapes` into real tldraw shapes on first open.
 
+export type GeoKind =
+  | "rectangle"
+  | "ellipse"
+  | "diamond"
+  | "triangle"
+  | "hexagon"
+  | "cloud"
+  | "oval";
+
 export type TemplateShape =
   | { kind: "text"; x: number; y: number; text: string; size?: "m" | "l" | "xl" }
   | { kind: "note"; x: number; y: number; text: string; color?: string }
@@ -13,7 +22,7 @@ export type TemplateShape =
       text?: string;
       color?: string;
       fill?: "none" | "semi" | "solid" | "pattern";
-      geo?: "rectangle" | "ellipse";
+      geo?: GeoKind;
     };
 
 export type Template = {
@@ -521,6 +530,139 @@ export const TEMPLATES: Template[] = [
       { kind: "geo", x: 140, y: 260, w: 760, h: 90, color: "blue", text: "Scope" },
       { kind: "geo", x: 140, y: 370, w: 760, h: 90, color: "green", text: "Timeline" },
       { kind: "geo", x: 140, y: 480, w: 760, h: 90, color: "red", text: "Risks" },
+    ],
+  },
+
+  // ---- Diagrams & flows ----
+  {
+    key: "flowchart",
+    name: "Flowchart",
+    category: "Strategy & planning",
+    thumb: "rows",
+    description: "Start, steps, a decision and outcomes.",
+    shapes: [
+      title("Flowchart"),
+      { kind: "geo", x: 380, y: 150, w: 200, h: 70, geo: "oval", color: "green", fill: "semi", text: "Start" },
+      { kind: "geo", x: 380, y: 270, w: 200, h: 80, color: "blue", text: "Do the thing" },
+      { kind: "geo", x: 360, y: 400, w: 240, h: 130, geo: "diamond", color: "orange", fill: "semi", text: "OK?" },
+      { kind: "geo", x: 120, y: 600, w: 200, h: 80, color: "red", text: "Fix it" },
+      { kind: "geo", x: 640, y: 600, w: 200, h: 70, geo: "oval", color: "black", fill: "semi", text: "Done" },
+    ],
+  },
+  {
+    key: "timeline",
+    name: "Timeline",
+    category: "Strategy & planning",
+    thumb: "columns4",
+    description: "Milestones across a horizontal line.",
+    shapes: [
+      title("Timeline"),
+      { kind: "geo", x: 120, y: 400, w: 1080, h: 8, color: "black", fill: "solid" },
+      ...["Kickoff", "Milestone 1", "Milestone 2", "Launch"].flatMap((t, i) => {
+        const x = 160 + i * 340;
+        const up = i % 2 === 0;
+        return [
+          { kind: "geo", x: x - 10, y: 388, w: 32, h: 32, geo: "ellipse", color: "blue", fill: "solid" } as TemplateShape,
+          { kind: "note", x: x - 60, y: up ? 200 : 470, text: t, color: ["yellow", "green", "blue", "orange"][i] } as TemplateShape,
+        ];
+      }),
+    ],
+  },
+  {
+    key: "fishbone",
+    name: "Fishbone (Ishikawa)",
+    category: "Research & design",
+    thumb: "central",
+    description: "Root-cause analysis of a problem.",
+    shapes: [
+      title("Fishbone diagram"),
+      { kind: "geo", x: 120, y: 380, w: 780, h: 8, color: "black", fill: "solid" },
+      { kind: "geo", x: 940, y: 330, w: 240, h: 110, color: "red", fill: "semi", text: "Problem" },
+      { kind: "note", x: 180, y: 200, text: "People", color: "blue" },
+      { kind: "note", x: 460, y: 200, text: "Process", color: "green" },
+      { kind: "note", x: 740, y: 200, text: "Tools", color: "violet" },
+      { kind: "note", x: 180, y: 470, text: "Environment", color: "orange" },
+      { kind: "note", x: 460, y: 470, text: "Materials", color: "yellow" },
+      { kind: "note", x: 740, y: 470, text: "Measurement", color: "grey" },
+    ],
+  },
+  {
+    key: "content-calendar",
+    name: "Content calendar",
+    category: "Meetings & workshops",
+    thumb: "columns4",
+    description: "Plan posts across the week.",
+    shapes: [
+      title("Content calendar"),
+      ...["Mon", "Tue", "Wed", "Thu", "Fri"].flatMap((day, i) => {
+        const x = 120 + i * 240;
+        return [
+          { kind: "geo", x, y: 150, w: 210, h: 520, color: "grey", fill: "none" } as TemplateShape,
+          { kind: "text", x: x + 14, y: 162, text: day, size: "l" } as TemplateShape,
+          { kind: "note", x: x + 16, y: 220, text: "Idea…", color: ["yellow", "green", "blue", "orange", "violet"][i] } as TemplateShape,
+          { kind: "note", x: x + 16, y: 430, text: "Channel…", color: "grey" } as TemplateShape,
+        ];
+      }),
+    ],
+  },
+  {
+    key: "org-chart",
+    name: "Org chart",
+    category: "Strategy & planning",
+    thumb: "central",
+    description: "Reporting lines for a team.",
+    shapes: [
+      title("Org chart"),
+      { kind: "geo", x: 500, y: 150, w: 220, h: 80, color: "black", fill: "semi", text: "Founder" },
+      { kind: "geo", x: 200, y: 330, w: 200, h: 80, color: "blue", text: "Lead A" },
+      { kind: "geo", x: 500, y: 330, w: 200, h: 80, color: "green", text: "Lead B" },
+      { kind: "geo", x: 800, y: 330, w: 200, h: 80, color: "orange", text: "Lead C" },
+      { kind: "geo", x: 200, y: 500, w: 200, h: 70, color: "grey", text: "Member" },
+      { kind: "geo", x: 500, y: 500, w: 200, h: 70, color: "grey", text: "Member" },
+      { kind: "geo", x: 800, y: 500, w: 200, h: 70, color: "grey", text: "Member" },
+    ],
+  },
+  {
+    key: "moodboard",
+    name: "Moodboard",
+    category: "Research & design",
+    thumb: "grid3",
+    description: "Collect visual references & vibes.",
+    shapes: [
+      title("Moodboard"),
+      ...grid(120, 150, 260, 200, 24, 3, [
+        { title: "Reference", color: "blue" },
+        { title: "Palette", color: "green" },
+        { title: "Type", color: "orange" },
+        { title: "Texture", color: "violet" },
+        { title: "Layout", color: "red" },
+        { title: "Inspo", color: "grey" },
+      ]),
+    ],
+  },
+  {
+    key: "start-stop-continue",
+    name: "Start / Stop / Continue",
+    category: "Agile workflows",
+    thumb: "columns3",
+    description: "Fast, focused team retro.",
+    shapes: [
+      title("Start · Stop · Continue"),
+      ...lane(120, "Start", "green", [{ text: "Begin doing…", color: "green" }]),
+      ...lane(430, "Stop", "red", [{ text: "Stop doing…", color: "red" }]),
+      ...lane(740, "Continue", "blue", [{ text: "Keep doing…", color: "blue" }]),
+    ],
+  },
+  {
+    key: "pros-cons",
+    name: "Pros & cons",
+    category: "Ideation & brainstorming",
+    thumb: "columns3",
+    description: "Weigh a decision quickly.",
+    shapes: [
+      title("Pros & cons"),
+      ...lane(220, "Pros", "green", [{ text: "Upside…", color: "green" }, { text: "Upside…", color: "green" }]),
+      ...lane(620, "Cons", "red", [{ text: "Downside…", color: "red" }, { text: "Downside…", color: "red" }]),
     ],
   },
 ];

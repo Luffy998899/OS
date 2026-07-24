@@ -103,11 +103,12 @@ export const documentRouter = router({
         );
       if (!canEdit) throw new TRPCError({ code: "FORBIDDEN" });
 
-      await ctx.db.document.update({
+      const updated = await ctx.db.document.update({
         where: { id: input.id },
         data: { content: input.content },
+        select: { updatedAt: true },
       });
-      return { ok: true };
+      return { ok: true, updatedAt: updated.updatedAt.getTime() };
     }),
 
   updateMeta: protectedProcedure
