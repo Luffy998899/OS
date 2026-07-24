@@ -38,7 +38,12 @@ import {
 import { trpc } from "@/lib/trpc/client";
 import type { RouterOutputs } from "@/lib/trpc/types";
 import { relativeTime } from "@/lib/format";
-import { TEMPLATES, CATEGORIES } from "@/lib/whiteboard-templates";
+import {
+  TEMPLATES,
+  CATEGORIES,
+  type Template,
+  type TemplateShape,
+} from "@/lib/whiteboard-templates";
 import { cn } from "@/lib/utils";
 
 type DocRow = RouterOutputs["document"]["list"][number];
@@ -125,7 +130,7 @@ export function DocumentsView() {
                 className="w-40 shrink-0 rounded-lg border border-border p-2 text-left transition-colors hover:border-foreground/40"
               >
                 <div className="relative">
-                  <TemplatePreview thumb={t.thumb} />
+                  <TemplateThumbnail template={t} />
                   {creatingKey === t.key ? (
                     <div className="absolute inset-0 flex items-center justify-center rounded-md bg-background/60">
                       <Loader2 className="size-4 animate-spin" />
@@ -252,80 +257,172 @@ function DocCard({
   );
 }
 
-function TemplatePreview({ thumb }: { thumb: string }) {
-  const box = "rounded-[3px] border border-border/70 bg-background";
-  const bar = "rounded-[2px] bg-muted-foreground/40";
+// tldraw palette → CSS, so a template card shows a true colour miniature of
+// what you'll get (much closer to Miro's real thumbnails).
+const GEO_STROKE: Record<string, string> = {
+  black: "#2b2b2b",
+  grey: "#8b96a5",
+  blue: "#4465e9",
+  green: "#0a9d78",
+  red: "#e03131",
+  orange: "#ef8c00",
+  violet: "#ae3ec9",
+  yellow: "#d6a419",
+};
+const GEO_FILL: Record<string, string> = {
+  black: "#e7e7e7",
+  grey: "#eef1f4",
+  blue: "#dbe4ff",
+  green: "#d3f9e6",
+  red: "#ffe3e3",
+  orange: "#ffeccc",
+  violet: "#f3e0fb",
+  yellow: "#fff3d6",
+};
+const NOTE_FILL: Record<string, string> = {
+  yellow: "#fde08a",
+  green: "#b2f2bb",
+  blue: "#a5d8ff",
+  red: "#ffc9c9",
+  orange: "#ffd8a8",
+  violet: "#eebefa",
+  grey: "#dee2e6",
+  black: "#ced4da",
+};
 
-  const cols = (n: number, notes = 2) => (
-    <div className="flex h-full w-full items-stretch gap-1">
-      {Array.from({ length: n }).map((_, i) => (
-        <div key={i} className={cn("flex flex-1 flex-col gap-1 p-1", box)}>
-          {Array.from({ length: notes }).map((__, j) => (
-            <div key={j} className={cn("h-1.5", bar)} />
-          ))}
-        </div>
-      ))}
-    </div>
-  );
+const NOTE_W = 190;
+const NOTE_H = 120;
+const TEXT_H = 34;
 
-  const gridN = (cols: number, rows: number) => (
-    <div
-      className="grid h-full w-full gap-1"
-      style={{
-        gridTemplateColumns: `repeat(${cols}, 1fr)`,
-        gridTemplateRows: `repeat(${rows}, 1fr)`,
-      }}
-    >
-      {Array.from({ length: cols * rows }).map((_, i) => (
-        <div key={i} className={box} />
-      ))}
-    </div>
-  );
+function shapeBox(s: TemplateShape) {
+  if (s.kind === "geo") return { x: s.x, y: s.y, w: s.w, h: s.h };
+  if (s.kind === "note") return { x: s.x, y: s.y, w: NOTE_W, h: NOTE_H };
+  const w = (s.text?.length ?? 6) * (s.size === "xl" ? 26 : s.size === "l" ? 18 : 12);
+  return { x: s.x, y: s.y, w: Math.min(w, 700), h: TEXT_H };
+}
 
-  let inner: React.ReactNode;
-  switch (thumb) {
-    case "columns3":
-      inner = cols(3);
-      break;
-    case "columns4":
-      inner = cols(4, 1);
-      break;
-    case "grid2x2":
-      inner = gridN(2, 2);
-      break;
-    case "grid3":
-      inner = gridN(3, 2);
-      break;
-    case "sections":
-      inner = gridN(3, 3);
-      break;
-    case "rows":
-      inner = (
-        <div className="flex h-full w-full flex-col gap-1">
-          {Array.from({ length: 3 }).map((_, i) => (
-            <div key={i} className={cn("flex-1", box)} />
-          ))}
-        </div>
-      );
-      break;
-    case "central":
-    default:
-      inner = (
-        <div className="relative h-full w-full">
-          <div className="absolute left-1/2 top-1/2 size-5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-foreground" />
-          {["left-1 top-1", "right-1 top-1", "bottom-1 left-1", "bottom-1 right-1"].map(
-            (pos) => (
-              <div
-                key={pos}
-                className={cn("absolute size-2.5 rounded-[3px] bg-muted-foreground/50", pos)}
-              />
-            ),
-          )}
-        </div>
-      );
+function TemplateThumbnail({ template }: { template: Template }) {
+  const shapes = template.shapes;
+
+  if (shapes.length === 0) {
+    return (
+      <div className="flex h-20 w-full items-center justify-center rounded-md border border-dashed border-border bg-muted/40">
+        <Plus className="size-5 text-muted-foreground" />
+      </div>
+    );
   }
 
-  return <div className="h-20 w-full overflow-hidden rounded-md bg-muted/50 p-2">{inner}</div>;
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const s of shapes) {
+    const b = shapeBox(s);
+    minX = Math.min(minX, b.x);
+    minY = Math.min(minY, b.y);
+    maxX = Math.max(maxX, b.x + b.w);
+    maxY = Math.max(maxY, b.y + b.h);
+  }
+  const pad = 48;
+  minX -= pad;
+  minY -= pad;
+  maxX += pad;
+  maxY += pad;
+
+  return (
+    <div className="h-20 w-full overflow-hidden rounded-md border border-border bg-white">
+      <svg
+        viewBox={`${minX} ${minY} ${maxX - minX} ${maxY - minY}`}
+        preserveAspectRatio="xMidYMid meet"
+        className="h-full w-full"
+      >
+        {shapes.map((s, i) => {
+          const b = shapeBox(s);
+          if (s.kind === "note") {
+            return (
+              <rect
+                key={i}
+                x={b.x}
+                y={b.y}
+                width={b.w}
+                height={b.h}
+                rx={10}
+                fill={NOTE_FILL[s.color ?? "yellow"] ?? NOTE_FILL.yellow}
+              />
+            );
+          }
+          if (s.kind === "text") {
+            return (
+              <rect
+                key={i}
+                x={b.x}
+                y={b.y + b.h * 0.3}
+                width={b.w}
+                height={b.h * 0.5}
+                rx={4}
+                fill="#3a3a3a"
+                opacity={s.size === "xl" ? 0.85 : 0.55}
+              />
+            );
+          }
+          const stroke = GEO_STROKE[s.color ?? "grey"] ?? GEO_STROKE.grey;
+          const filled = s.fill && s.fill !== "none";
+          const fill = filled ? GEO_FILL[s.color ?? "grey"] ?? "none" : "none";
+          const cx = b.x + b.w / 2;
+          const cy = b.y + b.h / 2;
+          if (s.geo === "ellipse" || s.geo === "oval") {
+            return (
+              <ellipse
+                key={i}
+                cx={cx}
+                cy={cy}
+                rx={b.w / 2}
+                ry={b.h / 2}
+                fill={fill}
+                stroke={stroke}
+                strokeWidth={6}
+              />
+            );
+          }
+          if (s.geo === "diamond") {
+            return (
+              <polygon
+                key={i}
+                points={`${cx},${b.y} ${b.x + b.w},${cy} ${cx},${b.y + b.h} ${b.x},${cy}`}
+                fill={fill}
+                stroke={stroke}
+                strokeWidth={6}
+              />
+            );
+          }
+          if (s.geo === "triangle") {
+            return (
+              <polygon
+                key={i}
+                points={`${cx},${b.y} ${b.x + b.w},${b.y + b.h} ${b.x},${b.y + b.h}`}
+                fill={fill}
+                stroke={stroke}
+                strokeWidth={6}
+              />
+            );
+          }
+          return (
+            <rect
+              key={i}
+              x={b.x}
+              y={b.y}
+              width={b.w}
+              height={b.h}
+              rx={10}
+              fill={fill}
+              stroke={stroke}
+              strokeWidth={6}
+            />
+          );
+        })}
+      </svg>
+    </div>
+  );
 }
 
 function TemplateGalleryDialog({
@@ -470,7 +567,7 @@ function TemplateGalleryDialog({
                             : "border-border hover:border-foreground/40",
                         )}
                       >
-                        <TemplatePreview thumb={t.thumb} />
+                        <TemplateThumbnail template={t} />
                         <p className="mt-1.5 text-xs font-medium">{t.name}</p>
                         <p className="line-clamp-1 text-[0.7rem] text-muted-foreground">
                           {t.description}

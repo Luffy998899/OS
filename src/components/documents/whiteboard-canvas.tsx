@@ -71,15 +71,36 @@ function templateToPartials(shapes: TemplateShape[]): TLShapePartial[] {
   });
 }
 
+// Per-browser record of the last server revision we've reconciled for a doc.
+// Lets us keep local edits (durable via persistenceKey) while still pulling in
+// changes made on another device. Wrapped so private-mode / SSR never throws.
+function readSynced(docId: string): number {
+  try {
+    return Number(localStorage.getItem(`auxa-wb-sync-${docId}`)) || 0;
+  } catch {
+    return 0;
+  }
+}
+function writeSynced(docId: string, ts: number) {
+  try {
+    localStorage.setItem(`auxa-wb-sync-${docId}`, String(ts));
+  } catch {
+    /* ignore */
+  }
+}
+
 export default function WhiteboardCanvas({
   docId,
   content,
   canEdit,
+  updatedAt,
   onSaving,
 }: {
   docId: string;
   content: string | null;
   canEdit: boolean;
+  /** Server revision time (ms) of `content`, for cross-device reconciliation. */
+  updatedAt: number;
   onSaving?: (saving: boolean) => void;
 }) {
   const save = trpc.document.updateContent.useMutation();
@@ -97,7 +118,14 @@ export default function WhiteboardCanvas({
       const snap = getSnapshot(editor.store);
       save.mutate(
         { id: docId, content: JSON.stringify(snap) },
-        { onSettled: () => onSaving?.(false) },
+        {
+          onSuccess: (res) => {
+            // Remember this revision so a later reload trusts the local copy
+            // instead of re-hydrating the (identical) server snapshot.
+            if (res?.updatedAt) writeSynced(docId, res.updatedAt);
+          },
+          onSettled: () => onSaving?.(false),
+        },
       );
     } catch (err) {
       console.error("[whiteboard] save failed", err);
@@ -106,12 +134,20 @@ export default function WhiteboardCanvas({
   };
 
   // All snapshot loading & template materialisation happens here (never in
-  // render), each guarded, so a bad payload can't blank the canvas.
+  // render), each guarded, so a bad payload can't blank the canvas. The store
+  // is also persisted to the browser's IndexedDB via `persistenceKey`, so work
+  // survives reloads and flaky networks even if a server save doesn't land.
   const handleMount = (editor: Editor) => {
-    // Load existing content.
-    if (parsed.kind === "snapshot") {
+    const localCount = editor.getCurrentPageShapeIds().size;
+    const synced = readSynced(docId);
+    // The server has content this browser hasn't reconciled yet (first open on
+    // this device, or someone edited it elsewhere).
+    const serverAhead = updatedAt > synced;
+
+    if (parsed.kind === "snapshot" && (localCount === 0 || serverAhead)) {
       try {
         loadSnapshot(editor.store, parsed.snapshot);
+        writeSynced(docId, updatedAt);
       } catch (err) {
         console.error("[whiteboard] could not load snapshot", err);
       }
@@ -126,19 +162,26 @@ export default function WhiteboardCanvas({
       return;
     }
 
-    // Materialize a template into real shapes the first time it's opened.
-    if (parsed.kind === "template") {
+    // Materialize a template into real shapes the first time it's opened on this
+    // browser. Only persist when shapes were actually created — otherwise a
+    // failed materialization would overwrite the template marker with an empty
+    // board (the classic "it disappeared" bug).
+    if (parsed.kind === "template" && localCount === 0) {
       const tpl = getTemplate(parsed.templateKey);
       if (tpl && tpl.shapes.length > 0) {
+        let created = false;
         try {
           editor.createShapes(templateToPartials(tpl.shapes));
           editor.selectNone();
           editor.zoomToFit();
+          created = editor.getCurrentPageShapeIds().size > 0;
         } catch (err) {
           console.error("[whiteboard] template materialisation failed", err);
         }
-        onSaving?.(true);
-        persist(editor);
+        if (created) {
+          onSaving?.(true);
+          persist(editor);
+        }
       }
     }
 
@@ -147,7 +190,7 @@ export default function WhiteboardCanvas({
       () => {
         onSaving?.(true);
         if (timer.current) clearTimeout(timer.current);
-        timer.current = setTimeout(() => persist(editor), 1200);
+        timer.current = setTimeout(() => persist(editor), 1000);
       },
       { scope: "document", source: "user" },
     );
@@ -155,7 +198,7 @@ export default function WhiteboardCanvas({
 
   return (
     <div className="h-[74vh] min-h-[520px] w-full overflow-hidden rounded-xl border border-border">
-      <Tldraw onMount={handleMount} />
+      <Tldraw persistenceKey={`auxa-wb-${docId}`} onMount={handleMount} />
     </div>
   );
 }

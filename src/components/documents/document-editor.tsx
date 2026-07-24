@@ -134,6 +134,7 @@ export function DocumentEditor({ initial }: { initial: Doc }) {
             docId={initial.id}
             content={initial.content}
             canEdit={initial.canEdit}
+            updatedAt={new Date(initial.updatedAt).getTime()}
             onSaving={setSaving}
           />
         ) : (
