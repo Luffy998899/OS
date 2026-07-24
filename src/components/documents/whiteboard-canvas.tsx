@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef } from "react";
 import {
   Tldraw,
   getSnapshot,
+  loadSnapshot,
   toRichText,
   createShapeId,
   type Editor,
@@ -84,7 +85,6 @@ export default function WhiteboardCanvas({
   const save = trpc.document.updateContent.useMutation();
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const parsed = useMemo(() => parseContent(content), [content]);
-  const snapshot = parsed.kind === "snapshot" ? parsed.snapshot : undefined;
 
   useEffect(() => {
     return () => {
@@ -92,57 +92,70 @@ export default function WhiteboardCanvas({
     };
   }, []);
 
-  const handleMount = (editor: Editor) => {
+  const persist = (editor: Editor) => {
     try {
-      if (!canEdit) {
-        editor.updateInstanceState({ isReadonly: true });
-        return;
-      }
-
-      // Save on any user edit (debounced).
-      editor.store.listen(
-        () => {
-          onSaving?.(true);
-          if (timer.current) clearTimeout(timer.current);
-          timer.current = setTimeout(() => {
-            try {
-              const snap = getSnapshot(editor.store);
-              save.mutate(
-                { id: docId, content: JSON.stringify(snap) },
-                { onSettled: () => onSaving?.(false) },
-              );
-            } catch (err) {
-              console.error("[whiteboard] save failed", err);
-              onSaving?.(false);
-            }
-          }, 1200);
-        },
-        { scope: "document", source: "user" },
+      const snap = getSnapshot(editor.store);
+      save.mutate(
+        { id: docId, content: JSON.stringify(snap) },
+        { onSettled: () => onSaving?.(false) },
       );
+    } catch (err) {
+      console.error("[whiteboard] save failed", err);
+      onSaving?.(false);
+    }
+  };
 
-      // Materialize a template into real shapes the first time it's opened.
-      if (parsed.kind === "template") {
-        const tpl = getTemplate(parsed.templateKey);
-        if (tpl && tpl.shapes.length > 0) {
+  // All snapshot loading & template materialisation happens here (never in
+  // render), each guarded, so a bad payload can't blank the canvas.
+  const handleMount = (editor: Editor) => {
+    // Load existing content.
+    if (parsed.kind === "snapshot") {
+      try {
+        loadSnapshot(editor.store, parsed.snapshot);
+      } catch (err) {
+        console.error("[whiteboard] could not load snapshot", err);
+      }
+    }
+
+    if (!canEdit) {
+      try {
+        editor.updateInstanceState({ isReadonly: true });
+      } catch {
+        /* ignore */
+      }
+      return;
+    }
+
+    // Materialize a template into real shapes the first time it's opened.
+    if (parsed.kind === "template") {
+      const tpl = getTemplate(parsed.templateKey);
+      if (tpl && tpl.shapes.length > 0) {
+        try {
           editor.createShapes(templateToPartials(tpl.shapes));
           editor.selectNone();
           editor.zoomToFit();
-          onSaving?.(true);
-          const snap = getSnapshot(editor.store);
-          save.mutate(
-            { id: docId, content: JSON.stringify(snap) },
-            { onSettled: () => onSaving?.(false) },
-          );
+        } catch (err) {
+          console.error("[whiteboard] template materialisation failed", err);
         }
+        onSaving?.(true);
+        persist(editor);
       }
-    } catch (err) {
-      console.error("[whiteboard] mount failed", err);
     }
+
+    // Debounced autosave on user edits.
+    editor.store.listen(
+      () => {
+        onSaving?.(true);
+        if (timer.current) clearTimeout(timer.current);
+        timer.current = setTimeout(() => persist(editor), 1200);
+      },
+      { scope: "document", source: "user" },
+    );
   };
 
   return (
     <div className="h-[74vh] min-h-[520px] w-full overflow-hidden rounded-xl border border-border">
-      <Tldraw snapshot={snapshot} onMount={handleMount} />
+      <Tldraw onMount={handleMount} />
     </div>
   );
 }

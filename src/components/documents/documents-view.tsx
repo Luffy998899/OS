@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   Plus,
   Frame,
@@ -49,8 +50,10 @@ const VIS = {
 } as const;
 
 export function DocumentsView() {
+  const router = useRouter();
   const docs = trpc.document.list.useQuery();
   const [newOpen, setNewOpen] = useState(false);
+  const [creatingKey, setCreatingKey] = useState<string | null>(null);
   const [removeTarget, setRemoveTarget] = useState<DocRow | null>(null);
   const utils = trpc.useUtils();
 
@@ -61,6 +64,17 @@ export function DocumentsView() {
       toast.success("Document deleted.");
     },
     onError: (e) => toast.error(e.message),
+  });
+
+  const createFromTemplate = trpc.document.create.useMutation({
+    onSuccess: (doc) => {
+      utils.document.list.invalidate();
+      router.push(`/documents/${doc.id}`);
+    },
+    onError: (e) => {
+      setCreatingKey(null);
+      toast.error(e.message);
+    },
   });
 
   const mine = docs.data?.filter((d) => d.isOwner) ?? [];
@@ -78,6 +92,52 @@ export function DocumentsView() {
           New
         </Button>
       </PageHeader>
+
+      {/* Miro-style: pick a template to spin up a board instantly. */}
+      <div className="mb-8">
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="font-heading text-sm font-semibold text-muted-foreground">
+            Start from a template
+          </h2>
+          <button
+            onClick={() => setNewOpen(true)}
+            className="text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
+          >
+            Browse all {TEMPLATES.length} →
+          </button>
+        </div>
+        <div className="no-scrollbar -mx-1 flex gap-3 overflow-x-auto px-1 pb-1">
+          {TEMPLATES.filter((t) => t.key !== "blank")
+            .slice(0, 12)
+            .map((t) => (
+              <button
+                key={t.key}
+                disabled={createFromTemplate.isPending}
+                onClick={() => {
+                  setCreatingKey(t.key);
+                  createFromTemplate.mutate({
+                    title: t.name,
+                    type: "whiteboard",
+                    visibility: "private",
+                    template: t.key,
+                  });
+                }}
+                className="w-40 shrink-0 rounded-lg border border-border p-2 text-left transition-colors hover:border-foreground/40"
+              >
+                <div className="relative">
+                  <TemplatePreview thumb={t.thumb} />
+                  {creatingKey === t.key ? (
+                    <div className="absolute inset-0 flex items-center justify-center rounded-md bg-background/60">
+                      <Loader2 className="size-4 animate-spin" />
+                    </div>
+                  ) : null}
+                </div>
+                <p className="mt-1.5 truncate text-xs font-medium">{t.name}</p>
+                <p className="truncate text-[0.7rem] text-muted-foreground">{t.category}</p>
+              </button>
+            ))}
+        </div>
+      </div>
 
       <Section
         title="Your documents"

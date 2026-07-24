@@ -133,6 +133,15 @@ fi
 
 BASE="http://localhost:${PORT}"
 
+# In GitHub Codespaces the app is reached through a forwarded public URL, not
+# localhost. Auto-detect it so we print the right address and emails/links work.
+PUBLIC_URL="$BASE"
+if [ -n "${CODESPACE_NAME:-}" ] && [ -n "${GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN:-}" ]; then
+  PUBLIC_URL="https://${CODESPACE_NAME}-${PORT}.${GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN}"
+  info "Codespaces detected — public URL: ${PUBLIC_URL}"
+  info "Make port ${PORT} 'Public' (Ports tab) so email links open for recipients."
+fi
+
 wait_for_ready() {
   info "waiting for ${BASE} to respond…"
   for _ in $(seq 1 60); do
@@ -145,7 +154,10 @@ wait_for_ready() {
 
 print_ready() {
   echo
-  echo "${BOLD}Auxa is running${RESET} at ${BOLD}${BASE}${RESET}"
+  echo "${BOLD}Auxa is running${RESET} at ${BOLD}${PUBLIC_URL}${RESET}"
+  if [ "$PUBLIC_URL" != "$BASE" ]; then
+    echo "  ${DIM}(locally: ${BASE})${RESET}"
+  fi
   echo "  Sign in as the owner (password: auxa1234):"
   echo "    admin@auxa.app"
   echo "  Then create your team, clients, services and tasks from the app."

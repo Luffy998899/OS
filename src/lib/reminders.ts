@@ -1,6 +1,7 @@
 import "server-only";
 import { db } from "@/lib/db";
 import { sendEmail, reportReminderEmail } from "@/lib/email";
+import { getAppUrl } from "@/lib/app-url";
 import { istDateString } from "@/lib/time";
 
 export type ReminderResult = {
@@ -18,7 +19,7 @@ export type ReminderResult = {
  */
 export async function runReportReminders(): Promise<ReminderResult> {
   const date = istDateString();
-  const appUrl = process.env.APP_URL || "http://localhost:3000";
+  const appUrl = getAppUrl();
 
   const activeShifts = await db.shift.findMany({
     where: { status: "active" },
