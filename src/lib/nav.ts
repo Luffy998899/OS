@@ -15,6 +15,7 @@ import {
   Wallet,
   Package,
   NotebookPen,
+  ScrollText,
   type LucideIcon,
 } from "lucide-react";
 import { PERMISSIONS, type PermissionKey } from "@/lib/auth/permissions";
@@ -37,6 +38,7 @@ export const NAV: NavSection[] = [
       { title: "Gamified Workspace", href: "/workspace", icon: Gamepad2 },
       { title: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
       { title: "My Work", href: "/my-work", icon: ListChecks },
+      { title: "Bounty Board", href: "/bounties", icon: ScrollText },
       { title: "Daily check-in", href: "/journal", icon: NotebookPen },
       { title: "Timesheet", href: "/timesheet", icon: Clock },
       { title: "Documents", href: "/documents", icon: FileText },

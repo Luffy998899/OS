@@ -57,6 +57,7 @@ model User {
   redemptions    RewardRedemption[]
   notifications  Notification[]
   avatar         AvatarState?
+  skills         SkillProgress[]
   managedClients Client[]           @relation("ClientManager")
   journals       DailyJournal[]
   createdInvoices Invoice[]         @relation("InvoiceCreator")
@@ -120,6 +121,14 @@ model Task {
   aiGenerated     Boolean   @default(false)
   approvalStatus  String    @default("approved") // draft | pending_review | approved | rejected
   aiRationale     String? // why AI routed this to this role/person
+
+  // Bounty board — an unassigned mission anyone eligible can claim off the wall.
+  isBounty      Boolean   @default(false)
+  bountyBonus   Int       @default(0) // urgency bonus XP, frozen at claim time
+  claimedAt     DateTime?
+  // Skill tree — which craft the mission trains, and the craft level it asks for.
+  skill         String    @default("ops") // design | dev | video | ops
+  minSkillLevel Int       @default(0)
 
   assigneeId  String?
   assignee    User?   @relation("TaskAssignee", fields: [assigneeId], references: [id])
@@ -254,15 +263,32 @@ model Room {
 }
 
 model AvatarState {
+  id     String @id @default(cuid())
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  roomId String?
+  room   Room?  @relation(fields: [roomId], references: [id])
+  x      Float  @default(0)
+  y      Float  @default(0)
+  // Heading in radians — first person needs to know which way someone is looking.
+  facing Float  @default(0)
+  status String @default("online") // online | away | busy
+  // Claimed slot in the crew roster (see lib/characters), unique per person.
+  characterId String?  @unique
+  updatedAt   DateTime @updatedAt
+}
+
+// Per-craft XP. Lifetime `User.points` still drives the leaderboard; this is the
+// same XP split by craft so it can gate which missions someone is eligible for.
+model SkillProgress {
   id        String   @id @default(cuid())
-  userId    String   @unique
+  userId    String
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  roomId    String?
-  room      Room?    @relation(fields: [roomId], references: [id])
-  x         Float    @default(0)
-  y         Float    @default(0)
-  status    String   @default("online") // online | away | busy
+  skill     String // design | dev | video | ops
+  xp        Int      @default(0)
   updatedAt DateTime @updatedAt
+
+  @@unique([userId, skill])
 }
 
 model PointsLedger {

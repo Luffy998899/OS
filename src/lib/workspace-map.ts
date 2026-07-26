@@ -72,7 +72,7 @@ function desksFor(r: Rect): Rect[] {
 
 // Four walls with a centred doorway gap on each side, so any two adjacent rooms
 // connect through the corridor between them.
-function roomWalls(r: Rect): Rect[] {
+export function roomWalls(r: Rect): Rect[] {
   const t = WALL_T;
   const segs: Rect[] = [];
   const gx = r.x + r.w / 2 - DOOR_W / 2;
@@ -88,6 +88,17 @@ function roomWalls(r: Rect): Rect[] {
     segs.push({ x: wx, y: gy + DOOR_W, w: t, h: r.y + r.h + t - (gy + DOOR_W) });
   }
   return segs;
+}
+
+// The building shell. Kept separate from room walls so the 3D renderer can give
+// it a full-height (view-blocking) treatment while dividers stay waist-to-head high.
+export function outerWalls(world: { w: number; h: number }): Rect[] {
+  return [
+    { x: 0, y: 0, w: world.w, h: WALL_T },
+    { x: 0, y: world.h - WALL_T, w: world.w, h: WALL_T },
+    { x: 0, y: 0, w: WALL_T, h: world.h },
+    { x: world.w - WALL_T, y: 0, w: WALL_T, h: world.h },
+  ];
 }
 
 export function buildLayout(rooms: RoomInput[]): Layout {
@@ -114,12 +125,7 @@ export function buildLayout(rooms: RoomInput[]): Layout {
     };
   });
 
-  const outer: Rect[] = [
-    { x: 0, y: 0, w: world.w, h: WALL_T },
-    { x: 0, y: world.h - WALL_T, w: world.w, h: WALL_T },
-    { x: 0, y: 0, w: WALL_T, h: world.h },
-    { x: world.w - WALL_T, y: 0, w: WALL_T, h: world.h },
-  ];
+  const outer: Rect[] = outerWalls(world);
   const solids: Rect[] = [
     ...outer,
     ...geoms.flatMap((g) => roomWalls(g.rect)),

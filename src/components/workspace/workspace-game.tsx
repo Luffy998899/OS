@@ -1,17 +1,20 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+// The workspace lobby — your crewmate, your craft levels, the bounty board, and
+// the door into the floor itself. The floor is a full-window first-person view
+// (see ./first-person-floor), so this page is the briefing you read before you
+// walk in, not a scaled-down copy of the game.
+
+import { useEffect, useMemo, useState } from "react";
 import {
-  Sparkles,
-  Loader2,
-  X,
   Gamepad2,
-  Keyboard,
-  Check,
+  Loader2,
   Play,
-  Trophy,
-  Timer,
   Plus,
+  ScrollText,
+  Sparkles,
+  Trophy,
+  Users,
 } from "lucide-react";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/app/page-header";
@@ -27,523 +30,72 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { FormSelect } from "@/components/app/form-select";
-import { TaskStatusBadge } from "@/components/app/status-badge";
 import { trpc } from "@/lib/trpc/client";
 import { useCurrentUser } from "@/components/app/user-context";
-import {
-  buildLayout,
-  nearestBoard,
-  roomIdAt,
-  resolveCollision,
-  userHue,
-  type Layout,
-  type RoomGeom,
-  type Vec,
-} from "@/lib/workspace-map";
+import { characterFor } from "@/lib/characters";
 import { levelInfo } from "@/lib/xp";
-import { initials, relativeTime } from "@/lib/format";
 import { hasPermission, PERMISSIONS } from "@/lib/auth/permissions";
 import { cn } from "@/lib/utils";
+import { FirstPersonFloor } from "./first-person-floor";
+import { BountyBoardPanel } from "./bounty-board";
+import { SkillTreePanel } from "./skill-tree";
+import { CrewmateAvatar } from "./crewmate-avatar";
 
-const VIEW = { w: 1024, h: 620 };
-// Isometric projection (2:1), pre-scaled. Bigger = more zoomed in.
-const A = 0.52;
-const B = 0.26;
-// Short, low dividers instead of tall towers — keeps everything readable.
-const WALL_H = 15;
-const DESK_H = 12;
-const BOARD_H = 20;
-const CHAR_H = 46;
-
-const GAME = {
-  bg: "#cdc6b5",
-  ground: "#e6dfce",
-  roomFloor: "#f5f0e6",
-  roomFloorLine: "#e6ded0",
-  wallTop: "#efe9dc",
-  wallL: "#dcd4c1",
-  wallR: "#c8bda6",
-  deskTop: "#d09b6c",
-  deskL: "#b98a5f",
-  deskR: "#a2764c",
-  monitor: "#3a3940",
-  screen: "#8fd3e6",
-  skin: "#f1c49b",
-  hair: "#3b2f27",
-  ink: "#26241f",
-  paper: "#fdfbf5",
-  online: "#4fae5a",
-  busy: "#e0a13a",
-  away: "#9a9384",
-};
-const STATUS_COLOR: Record<string, string> = {
-  online: GAME.online,
-  busy: GAME.busy,
-  away: GAME.away,
-};
 const STATUSES = ["online", "busy", "away"] as const;
-type Facing = "down" | "up" | "left" | "right";
 
 export function WorkspaceGame() {
   const currentUser = useCurrentUser();
   const canManage = hasPermission(currentUser.permissions, PERMISSIONS.CLIENTS_MANAGE);
   const utils = trpc.useUtils();
-  const state = trpc.workspace.state.useQuery(undefined, { refetchInterval: 4000 });
-  const move = trpc.workspace.move.useMutation();
+  const state = trpc.workspace.state.useQuery(undefined, { refetchInterval: 15_000 });
+  const enter = trpc.workspace.enter.useMutation();
   const setStatus = trpc.workspace.setStatus.useMutation({
     onSuccess: () => utils.workspace.state.invalidate(),
   });
 
-  const [panelRoom, setPanelRoom] = useState<{ id: string; name: string } | null>(null);
-  const [nearRoom, setNearRoom] = useState<{ id: string; name: string } | null>(null);
-  const [points, setPoints] = useState(currentUser.points);
-  const [myStatus, setMyStatus] = useState("online");
+  const [playing, setPlaying] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
-  const [canvasEl, setCanvasEl] = useState<HTMLCanvasElement | null>(null);
+  const [myStatus, setMyStatus] = useState(state.data?.me?.status ?? "online");
+  const [characterId, setCharacterId] = useState<string | null>(null);
 
-  const layout: Layout = useMemo(
-    () =>
-      buildLayout(
-        (state.data?.rooms ?? []).map((r) => ({
-          id: r.id,
-          key: r.key,
-          name: r.name,
-          kind: r.kind,
-          clientName: r.clientName,
-          posX: r.posX,
-          posY: r.posY,
-          missionCount: r.missionCount,
-        })),
-      ),
-    [state.data?.rooms],
-  );
-
-  const R = useGameRefs();
-  R.layout = layout;
-
-  // Sync server -> refs
+  // Claim a crewmate up front so the card below shows who you actually are.
   useEffect(() => {
-    if (!state.data) return;
-    const me = state.data.me;
-    if (me) {
-      setPoints(me.points);
-      setMyStatus(me.status);
-      if (!R.initialized) {
-        R.me = { x: me.x || layout.spawn.x, y: me.y || layout.spawn.y };
-        R.initialized = true;
-      }
-    } else if (!R.initialized) {
-      R.me = { ...layout.spawn };
-      R.initialized = true;
-    }
-    R.others = state.data.players
-      .filter((p) => !p.isMe)
-      .map((p) => ({ userId: p.userId, name: p.name, x: p.x || layout.spawn.x, y: p.y || layout.spawn.y, status: p.status }));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state.data]);
-
-  // Keyboard
-  useEffect(() => {
-    const down = (e: KeyboardEvent) => {
-      const k = e.key.toLowerCase();
-      if (["arrowup", "arrowdown", "arrowleft", "arrowright", " "].includes(k)) e.preventDefault();
-      if (k === "e") {
-        setPanelRoom((cur) => (cur && cur.id === R.nearId ? null : R.nearRoomForPanel));
-        return;
-      }
-      R.keys.add(k);
-      R.target = null;
-    };
-    const up = (e: KeyboardEvent) => R.keys.delete(e.key.toLowerCase());
-    window.addEventListener("keydown", down);
-    window.addEventListener("keyup", up);
-    return () => {
-      window.removeEventListener("keydown", down);
-      window.removeEventListener("keyup", up);
-    };
+    enter.mutate(undefined, {
+      onSuccess: (res) => setCharacterId(res.characterId ?? null),
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Game loop
   useEffect(() => {
-    if (!canvasEl) return;
-    const dpr = Math.min(2, window.devicePixelRatio || 1);
-    canvasEl.width = VIEW.w * dpr;
-    canvasEl.height = VIEW.h * dpr;
-    const ctx = canvasEl.getContext("2d");
-    if (!ctx) return;
-    ctx.scale(dpr, dpr);
+    if (state.data?.me?.status) setMyStatus(state.data.me.status);
+  }, [state.data?.me?.status]);
 
-    let raf = 0;
-    let last = performance.now();
-    const cam = { x: 0, y: 0 };
-    const iso = (wx: number, wy: number) => ({ x: (wx - wy) * A, y: (wx + wy) * B });
-    const proj = (wx: number, wy: number) => ({ x: (wx - wy) * A + cam.x, y: (wx + wy) * B + cam.y });
+  const character = useMemo(
+    () => characterFor(characterId, currentUser.id),
+    [characterId, currentUser.id],
+  );
+  const lvl = levelInfo(state.data?.me?.points ?? currentUser.points);
+  const rooms = state.data?.rooms ?? [];
+  const openBounties = state.data?.totalBounties ?? 0;
 
-    const quad = (pts: Vec[], fill: string, stroke?: string) => {
-      ctx.beginPath();
-      ctx.moveTo(pts[0].x, pts[0].y);
-      for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
-      ctx.closePath();
-      ctx.fillStyle = fill;
-      ctx.fill();
-      if (stroke) {
-        ctx.strokeStyle = stroke;
-        ctx.lineWidth = 1;
-        ctx.stroke();
-      }
-    };
-
-    const isoBox = (
-      rect: { x: number; y: number; w: number; h: number },
-      h: number,
-      top: string,
-      left: string,
-      right: string,
-    ) => {
-      const a = proj(rect.x, rect.y);
-      const b = proj(rect.x + rect.w, rect.y);
-      const c = proj(rect.x + rect.w, rect.y + rect.h);
-      const d = proj(rect.x, rect.y + rect.h);
-      const up = (p: Vec) => ({ x: p.x, y: p.y - h });
-      quad([b, c, up(c), up(b)], right); // east face
-      quad([c, d, up(d), up(c)], left); // south face
-      quad([up(a), up(b), up(c), up(d)], top); // roof
-    };
-
-    const loop = (now: number) => {
-      const dt = Math.min(3, (now - last) / 16.67);
-      last = now;
-      update(dt, now);
-      // camera centres the player
-      const pIso = iso(R.me.x, R.me.y);
-      cam.x = VIEW.w / 2 - pIso.x;
-      cam.y = VIEW.h / 2 - pIso.y - CHAR_H / 2;
-      R.cam = { ...cam };
-      draw(now);
-      raf = requestAnimationFrame(loop);
-    };
-
-    const update = (dt: number, now: number) => {
-      const speed = 2.7 * dt;
-      const L = R.layout;
-      const keys = R.keys;
-      let dx = 0;
-      let dy = 0;
-      if (keys.has("arrowup") || keys.has("w")) dy -= 1;
-      if (keys.has("arrowdown") || keys.has("s")) dy += 1;
-      if (keys.has("arrowleft") || keys.has("a")) dx -= 1;
-      if (keys.has("arrowright") || keys.has("d")) dx += 1;
-
-      let moving = false;
-      const me = R.me;
-      if (dx !== 0 || dy !== 0) {
-        const len = Math.hypot(dx, dy) || 1;
-        const next = resolveCollision(L.solids, me.x, me.y, me.x + (dx / len) * speed, me.y + (dy / len) * speed, L.world);
-        R.facing = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? "right" : "left") : dy > 0 ? "down" : "up";
-        if (next.x !== me.x || next.y !== me.y) {
-          R.moved = true;
-          moving = true;
-        }
-        R.me = next;
-      } else if (R.target) {
-        const t = R.target;
-        const ddx = t.x - me.x;
-        const ddy = t.y - me.y;
-        const dist = Math.hypot(ddx, ddy);
-        if (dist < 4) R.target = null;
-        else {
-          const step = Math.min(speed, dist);
-          const next = resolveCollision(L.solids, me.x, me.y, me.x + (ddx / dist) * step, me.y + (ddy / dist) * step, L.world);
-          R.facing = Math.abs(ddx) > Math.abs(ddy) ? (ddx > 0 ? "right" : "left") : ddy > 0 ? "down" : "up";
-          if (next.x === me.x && next.y === me.y) R.target = null;
-          else {
-            R.moved = true;
-            moving = true;
-          }
-          R.me = next;
-        }
-      }
-      R.moving = moving;
-
-      const near = nearestBoard(L.rooms, me.x, me.y);
-      const nk = near?.id ?? null;
-      if (nk !== R.nearId) {
-        R.nearId = nk;
-        R.nearRoomForPanel = near ? { id: near.id, name: near.name } : null;
-        setNearRoom(near ? { id: near.id, name: near.name } : null);
-      }
-
-      if (R.moved && now - R.lastSave > 1000) {
-        R.lastSave = now;
-        R.moved = false;
-        move.mutate({ x: Math.round(me.x), y: Math.round(me.y), roomId: roomIdAt(L.rooms, me.x, me.y) });
-      }
-    };
-
-    const draw = (now: number) => {
-      const L = R.layout;
-      ctx.clearRect(0, 0, VIEW.w, VIEW.h);
-      ctx.fillStyle = "#c7bfae";
-      ctx.fillRect(0, 0, VIEW.w, VIEW.h);
-
-      // Ground plate
-      const g0 = proj(0, 0), g1 = proj(L.world.w, 0), g2 = proj(L.world.w, L.world.h), g3 = proj(0, L.world.h);
-      quad([g0, g1, g2, g3], GAME.ground);
-
-      // Room floors + rugs + labels
-      for (const r of L.rooms) {
-        const a = proj(r.rect.x, r.rect.y), b = proj(r.rect.x + r.rect.w, r.rect.y), c = proj(r.rect.x + r.rect.w, r.rect.y + r.rect.h), d = proj(r.rect.x, r.rect.y + r.rect.h);
-        quad([a, b, c, d], GAME.roomFloor, GAME.roomFloorLine);
-        // subtle iso tile lines for texture
-        ctx.strokeStyle = GAME.roomFloorLine;
-        ctx.lineWidth = 1;
-        for (let gx = r.rect.x + 50; gx < r.rect.x + r.rect.w; gx += 50) {
-          const p1 = proj(gx, r.rect.y), p2 = proj(gx, r.rect.y + r.rect.h);
-          ctx.beginPath(); ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.stroke();
-        }
-        for (let gy = r.rect.y + 50; gy < r.rect.y + r.rect.h; gy += 50) {
-          const p1 = proj(r.rect.x, gy), p2 = proj(r.rect.x + r.rect.w, gy);
-          ctx.beginPath(); ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.stroke();
-        }
-        // accent rug
-        ctx.globalAlpha = 0.22;
-        const rx = r.rect.x + 30, ry = r.rect.y + r.rect.h - 78, rw = r.rect.w - 60, rh = 54;
-        quad([proj(rx, ry), proj(rx + rw, ry), proj(rx + rw, ry + rh), proj(rx, ry + rh)], r.accent);
-        ctx.globalAlpha = 1;
-      }
-
-      // Depth-sorted tall objects
-      type Item = { depth: number; draw: () => void };
-      const items: Item[] = [];
-      for (const r of L.rooms) {
-        for (const w of roomWallRects(r)) {
-          items.push({ depth: w.x + w.y + w.w + w.h, draw: () => isoBox(w, WALL_H, GAME.wallTop, GAME.wallL, GAME.wallR) });
-        }
-        for (const dk of r.desks) {
-          items.push({ depth: dk.x + dk.y + dk.w + dk.h, draw: () => drawDesk(dk) });
-        }
-        const near = R.nearId === r.id;
-        items.push({ depth: r.board.x + r.board.y, draw: () => drawBoard(r, near, now) });
-      }
-      for (const o of R.others)
-        items.push({ depth: o.x + o.y, draw: () => drawChar(o.x, o.y, o.name, false, userHue(o.userId), o.status, "down", false, now) });
-      items.push({ depth: R.me.x + R.me.y + 1, draw: () => drawChar(R.me.x, R.me.y, currentUser.name, true, userHue(currentUser.id), myStatus, R.facing, R.moving, now) });
-
-      items.sort((p, q) => p.depth - q.depth);
-      for (const it of items) it.draw();
-
-      // Floating room labels — drawn last so they're always readable.
-      for (const r of L.rooms) drawLabel(r);
-    };
-
-    const drawDesk = (dk: { x: number; y: number; w: number; h: number }) => {
-      isoBox(dk, DESK_H, GAME.deskTop, GAME.deskL, GAME.deskR);
-      // flat monitor sitting on the desktop (no tall tower)
-      const t = proj(dk.x + dk.w / 2, dk.y + dk.h / 2);
-      ctx.fillStyle = GAME.monitor;
-      roundRect(ctx, t.x - 10, t.y - DESK_H - 10, 20, 12, 2);
-      ctx.fill();
-      ctx.fillStyle = GAME.screen;
-      ctx.fillRect(t.x - 8, t.y - DESK_H - 8, 16, 8);
-    };
-
-    const drawBoard = (r: RoomGeom, near: boolean, now: number) => {
-      const p = proj(r.board.x, r.board.y);
-      if (near) {
-        ctx.strokeStyle = GAME.busy;
-        ctx.globalAlpha = 0.8;
-        ctx.lineWidth = 3;
-        const pulse = 5 + Math.sin(now / 200) * 3;
-        ctx.beginPath();
-        ctx.ellipse(p.x, p.y, 22 + pulse, 11 + pulse / 2, 0, 0, Math.PI * 2);
-        ctx.stroke();
-        ctx.globalAlpha = 1;
-      }
-      // short stand
-      const stand = { x: r.board.x - 3, y: r.board.y - 3, w: 6, h: 6 };
-      isoBox(stand, 14, "#6b6152", "#5a5144", "#4b4338");
-      // billboard sign panel
-      ctx.fillStyle = r.missionCount > 0 ? GAME.busy : "#7d8790";
-      roundRect(ctx, p.x - 11, p.y - 40, 22, 18, 3);
-      ctx.fill();
-      ctx.strokeStyle = GAME.paper;
-      ctx.lineWidth = 1.5;
-      for (let i = 0; i < 3; i++) {
-        ctx.beginPath();
-        ctx.moveTo(p.x - 6, p.y - 35 + i * 4);
-        ctx.lineTo(p.x + 6, p.y - 35 + i * 4);
-        ctx.stroke();
-      }
-    };
-
-    const drawLabel = (r: RoomGeom) => {
-      const p = proj(r.rect.x + r.rect.w / 2, r.rect.y + r.rect.h / 2);
-      const lx = p.x;
-      const ly = p.y - 74;
-      const isClient = r.kind === "client";
-      const label = r.name;
-      ctx.font = "600 12px ui-sans-serif, system-ui";
-      const tw = ctx.measureText(label).width;
-      const w = tw + 20 + (r.missionCount > 0 ? 20 : 0) + (isClient ? 14 : 0);
-      const h = 22;
-      // shadow + pill
-      ctx.fillStyle = "rgba(0,0,0,0.18)";
-      roundRect(ctx, lx - w / 2, ly - h / 2 + 2, w, h, 11);
-      ctx.fill();
-      ctx.fillStyle = GAME.paper;
-      roundRect(ctx, lx - w / 2, ly - h / 2, w, h, 11);
-      ctx.fill();
-      ctx.strokeStyle = "rgba(0,0,0,0.12)";
-      ctx.lineWidth = 1;
-      roundRect(ctx, lx - w / 2, ly - h / 2, w, h, 11);
-      ctx.stroke();
-      let tx = lx - w / 2 + 10;
-      if (isClient) {
-        ctx.fillStyle = "#8a6bd6";
-        ctx.beginPath();
-        ctx.arc(tx + 3, ly, 3.5, 0, Math.PI * 2);
-        ctx.fill();
-        tx += 12;
-      }
-      ctx.fillStyle = GAME.ink;
-      ctx.textAlign = "left";
-      ctx.textBaseline = "middle";
-      ctx.fillText(label, tx, ly + 0.5);
-      if (r.missionCount > 0) {
-        const bx = lx + w / 2 - 12;
-        ctx.fillStyle = GAME.busy;
-        ctx.beginPath();
-        ctx.arc(bx, ly, 8, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.fillStyle = "#3a2a10";
-        ctx.font = "700 10px ui-sans-serif, system-ui";
-        ctx.textAlign = "center";
-        ctx.fillText(String(r.missionCount), bx, ly + 0.5);
-      }
-      ctx.textAlign = "left";
-    };
-
-    const drawChar = (
-      wx: number,
-      wy: number,
-      name: string,
-      isMe: boolean,
-      hue: number,
-      status: string,
-      facing: Facing,
-      moving: boolean,
-      now: number,
-    ) => {
-      const foot = proj(wx, wy);
-      const bob = moving ? Math.abs(Math.sin(now / 90)) * 2 : Math.sin(now / 500 + wx) * 0.7;
-      const cy = foot.y - bob;
-      const shirt = `hsl(${hue} 48% 52%)`;
-      const shirtDark = `hsl(${hue} 45% 42%)`;
-
-      // shadow
-      ctx.fillStyle = "rgba(0,0,0,0.18)";
-      ctx.beginPath();
-      ctx.ellipse(foot.x, foot.y, 11, 5, 0, 0, Math.PI * 2);
-      ctx.fill();
-
-      if (isMe) {
-        ctx.strokeStyle = "#1c1a16";
-        ctx.globalAlpha = 0.35;
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.ellipse(foot.x, foot.y, 13, 6, 0, 0, Math.PI * 2);
-        ctx.stroke();
-        ctx.globalAlpha = 1;
-      }
-
-      // legs
-      const legShift = moving ? Math.sin(now / 90) * 2 : 0;
-      ctx.fillStyle = "#3a3630";
-      ctx.fillRect(foot.x - 5, cy - 11 + legShift, 4, 11);
-      ctx.fillRect(foot.x + 1, cy - 11 - legShift, 4, 11);
-      // arms
-      ctx.fillStyle = shirtDark;
-      ctx.fillRect(foot.x - 12, cy - 30, 4, 16);
-      ctx.fillRect(foot.x + 8, cy - 30, 4, 16);
-      // body
-      ctx.fillStyle = shirt;
-      roundRect(ctx, foot.x - 9, cy - 32, 18, 22, 5);
-      ctx.fill();
-      ctx.strokeStyle = "rgba(0,0,0,0.12)";
-      ctx.lineWidth = 1;
-      roundRect(ctx, foot.x - 9, cy - 32, 18, 22, 5);
-      ctx.stroke();
-      // head
-      ctx.fillStyle = GAME.skin;
-      ctx.beginPath();
-      ctx.arc(foot.x, cy - 41, 8.5, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.strokeStyle = "rgba(0,0,0,0.1)";
-      ctx.stroke();
-      // hair
-      ctx.fillStyle = GAME.hair;
-      ctx.beginPath();
-      ctx.arc(foot.x, cy - 42, 8.5, Math.PI, Math.PI * 2);
-      ctx.fill();
-      ctx.fillRect(foot.x - 8.5, cy - 43, 17, 4);
-      if (facing !== "up") {
-        ctx.fillStyle = GAME.ink;
-        const ex = facing === "left" ? -2 : facing === "right" ? 2 : 0;
-        ctx.fillRect(foot.x - 4 + ex, cy - 41, 2, 2.5);
-        ctx.fillRect(foot.x + 2 + ex, cy - 41, 2, 2.5);
-      }
-      // status dot
-      ctx.beginPath();
-      ctx.arc(foot.x + 9, cy - 45, 3.5, 0, Math.PI * 2);
-      ctx.fillStyle = STATUS_COLOR[status] ?? GAME.away;
-      ctx.fill();
-      ctx.strokeStyle = GAME.paper;
-      ctx.lineWidth = 1.5;
-      ctx.stroke();
-      // nameplate
-      ctx.font = "600 11px ui-sans-serif, system-ui";
-      const nm = isMe ? "You" : name.split(" ")[0];
-      const nw = ctx.measureText(nm).width + 14;
-      ctx.fillStyle = "rgba(0,0,0,0.18)";
-      roundRect(ctx, foot.x - nw / 2, cy - 64, nw, 17, 8);
-      ctx.fill();
-      ctx.fillStyle = isMe ? GAME.ink : GAME.paper;
-      roundRect(ctx, foot.x - nw / 2, cy - 65, nw, 17, 8);
-      ctx.fill();
-      ctx.fillStyle = isMe ? GAME.paper : GAME.ink;
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
-      ctx.fillText(nm, foot.x, cy - 56);
-      ctx.textAlign = "left";
-    };
-
-    raf = requestAnimationFrame(loop);
-    return () => cancelAnimationFrame(raf);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [canvasEl, myStatus]);
-
-  const onCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (!canvasEl) return;
-    const rect = canvasEl.getBoundingClientRect();
-    const cx = ((e.clientX - rect.left) / rect.width) * VIEW.w;
-    const cy = ((e.clientY - rect.top) / rect.height) * VIEW.h;
-    const sx = cx - R.cam.x;
-    const sy = cy - R.cam.y;
-    const u = sx / A; // wx - wy
-    const v = sy / B; // wx + wy
-    R.target = { x: (u + v) / 2, y: (v - u) / 2 };
-    R.keys.clear();
-  };
-
-  const lvl = levelInfo(points);
+  if (playing) {
+    return (
+      <FirstPersonFloor
+        onExit={() => {
+          setPlaying(false);
+          utils.workspace.state.invalidate();
+          utils.skill.tree.invalidate();
+        }}
+      />
+    );
+  }
 
   return (
     <>
       <PageHeader
         eyebrow="Virtual office"
         title="Gamified Workspace"
-        description="Walk the isometric floor, visit a room's board, and complete owner-assigned missions to earn XP."
+        description="Walk the floor in first person, claim missions off the bounty board, and level the craft you want to be known for."
       >
         {canManage ? (
           <Button variant="outline" onClick={() => setAddOpen(true)}>
@@ -561,7 +113,9 @@ export function WorkspaceGame() {
               }}
               className={cn(
                 "flex items-center gap-1.5 rounded px-2.5 py-1 text-xs font-medium capitalize transition-colors",
-                myStatus === s ? "bg-foreground text-background" : "text-muted-foreground hover:text-foreground",
+                myStatus === s
+                  ? "bg-foreground text-background"
+                  : "text-muted-foreground hover:text-foreground",
               )}
             >
               {s}
@@ -571,74 +125,99 @@ export function WorkspaceGame() {
       </PageHeader>
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-        <div className="lg:col-span-2">
+        <div className="space-y-6 lg:col-span-2">
+          {/* ---- Enter the floor ---- */}
           <Card className="gap-0 overflow-hidden p-0">
-            <div className="flex items-center justify-between gap-3 border-b border-border px-3 py-2.5">
-              <div className="flex items-center gap-2">
-                <span className="flex size-7 items-center justify-center rounded-md bg-foreground text-xs font-bold text-background">
-                  {lvl.level}
-                </span>
-                <div>
-                  <p className="text-xs font-semibold leading-none">Level {lvl.level}</p>
-                  <div className="mt-1 flex items-center gap-1.5">
-                    <div className="h-1.5 w-24 overflow-hidden rounded-full bg-muted">
-                      <div className="h-full rounded-full bg-foreground transition-all" style={{ width: `${lvl.progress * 100}%` }} />
+            <div className="relative flex flex-col gap-5 bg-gradient-to-br from-foreground/[0.06] to-transparent p-6 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex items-center gap-4">
+                <CrewmateAvatar character={character} size={84} status={myStatus} />
+                <div className="min-w-0">
+                  <p className="font-mono text-[0.65rem] tracking-widest text-muted-foreground uppercase">
+                    Your crewmate
+                  </p>
+                  <h2 className="font-display text-xl font-semibold">{character.name}</h2>
+                  <p className="mt-0.5 text-sm text-muted-foreground">{character.trait}</p>
+                  <div className="mt-2 flex items-center gap-2">
+                    <span className="flex size-6 items-center justify-center rounded bg-foreground text-[0.65rem] font-bold text-background">
+                      {lvl.level}
+                    </span>
+                    <div className="h-1.5 w-28 overflow-hidden rounded-full bg-muted">
+                      <div
+                        className="h-full rounded-full bg-foreground transition-all"
+                        style={{ width: `${lvl.progress * 100}%` }}
+                      />
                     </div>
-                    <span className="font-mono text-[0.65rem] text-muted-foreground">{lvl.into}/{lvl.span} XP</span>
+                    <span className="font-mono text-[0.65rem] text-muted-foreground">
+                      {lvl.into}/{lvl.span} XP
+                    </span>
                   </div>
                 </div>
               </div>
-              <div className="flex items-center gap-1.5 text-xs">
-                <Trophy className="size-3.5 text-muted-foreground" />
-                <span className="font-semibold tabular-nums">{points}</span>
-                <span className="text-muted-foreground">·</span>
-                <span className="text-muted-foreground">{state.data?.online ?? 0} online</span>
+
+              <div className="flex flex-col items-stretch gap-2 sm:items-end">
+                <Button size="lg" onClick={() => setPlaying(true)} disabled={rooms.length === 0}>
+                  <Play className="size-4" />
+                  Enter the floor
+                </Button>
+                <p className="text-center font-mono text-[0.65rem] tracking-wide text-muted-foreground sm:text-right">
+                  first person · full screen · WASD + mouse
+                </p>
               </div>
             </div>
 
-            <div className="relative bg-[#c7bfae]">
-              {nearRoom ? (
-                <div className="pointer-events-none absolute inset-x-0 bottom-12 z-10 flex justify-center">
-                  <button
-                    onClick={() => setPanelRoom((cur) => (cur && cur.id === nearRoom.id ? null : nearRoom))}
-                    className="pointer-events-auto flex items-center gap-2 rounded-full bg-foreground px-3.5 py-1.5 text-xs font-medium text-background shadow-lg"
-                  >
-                    <Keyboard className="size-3.5" />
-                    Press <kbd className="font-mono">E</kbd> — {nearRoom.name}
-                  </button>
-                </div>
-              ) : null}
-              <div className="pointer-events-none absolute bottom-2.5 left-2.5 z-10 flex items-center gap-1.5 rounded-md bg-card/80 px-2 py-1 text-[0.65rem] text-muted-foreground backdrop-blur">
-                <Gamepad2 className="size-3" />
-                WASD / arrows · click to walk · E to interact
-              </div>
-
-              <canvas
-                ref={setCanvasEl}
-                onClick={onCanvasClick}
-                className="block w-full cursor-pointer touch-none select-none"
-                style={{ aspectRatio: `${VIEW.w} / ${VIEW.h}` }}
-                aria-label="Virtual office floor"
+            <div className="grid grid-cols-3 divide-x divide-border border-t border-border">
+              <Stat
+                icon={<ScrollText className="size-3.5" />}
+                label="On the board"
+                value={openBounties}
               />
+              <Stat
+                icon={<Trophy className="size-3.5" />}
+                label="Open missions"
+                value={state.data?.totalOpen ?? 0}
+              />
+              <Stat
+                icon={<Users className="size-3.5" />}
+                label="On the floor"
+                value={state.data?.online ?? 0}
+              />
+            </div>
+          </Card>
 
-              {panelRoom ? (
-                <RoomMissionsPanel
-                  roomId={panelRoom.id}
-                  roomName={panelRoom.name}
-                  onClose={() => setPanelRoom(null)}
-                  onChanged={() => {
-                    utils.workspace.state.invalidate();
-                    utils.task.myWork.invalidate();
-                    utils.dashboard.overview.invalidate();
-                    utils.me.invalidate();
-                  }}
-                />
-              ) : null}
+          {/* ---- Bounty board ---- */}
+          <Card className="gap-3">
+            <div className="flex items-center justify-between px-4">
+              <div className="flex items-center gap-2">
+                <ScrollText className="size-4" />
+                <h2 className="font-heading text-sm font-semibold">Bounty Board</h2>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Unclaimed missions — urgent ones pay a bonus
+              </p>
+            </div>
+            <div className="px-4">
+              <BountyBoardPanel
+                onChanged={() => {
+                  utils.workspace.state.invalidate();
+                  utils.skill.tree.invalidate();
+                }}
+              />
             </div>
           </Card>
         </div>
 
         <div className="space-y-6">
+          {/* ---- Skill tree ---- */}
+          <Card className="gap-3">
+            <div className="flex items-center gap-2 px-4">
+              <Gamepad2 className="size-4" />
+              <h2 className="font-heading text-sm font-semibold">Skill Tree</h2>
+            </div>
+            <div className="px-4">
+              <SkillTreePanel compact />
+            </div>
+          </Card>
+
           <Card className="gap-2">
             <div className="flex items-center gap-2 px-4">
               <Sparkles className="size-4" />
@@ -668,7 +247,7 @@ export function WorkspaceGame() {
               <h2 className="font-heading text-sm font-semibold">Rooms</h2>
             </div>
             <ul className="divide-y divide-border">
-              {(state.data?.rooms ?? []).map((r) => (
+              {rooms.map((r) => (
                 <li key={r.id} className="flex items-center justify-between px-4 py-2 text-sm">
                   <span className="flex items-center gap-1.5">
                     {r.kind === "client" ? <Badge variant="outline">Client</Badge> : null}
@@ -676,10 +255,20 @@ export function WorkspaceGame() {
                   </span>
                   <span className="flex items-center gap-2 text-xs text-muted-foreground">
                     {(state.data?.players ?? []).filter((p) => p.roomId === r.id).length} here
-                    {r.missionCount > 0 ? <Badge variant="secondary">{r.missionCount}</Badge> : null}
+                    {r.bountyCount > 0 ? (
+                      <Badge variant="destructive">{r.bountyCount} open</Badge>
+                    ) : null}
+                    {r.missionCount > 0 ? (
+                      <Badge variant="secondary">{r.missionCount}</Badge>
+                    ) : null}
                   </span>
                 </li>
               ))}
+              {rooms.length === 0 ? (
+                <li className="px-4 py-6 text-center text-sm text-muted-foreground">
+                  No rooms on the floor yet.
+                </li>
+              ) : null}
             </ul>
           </Card>
         </div>
@@ -690,50 +279,33 @@ export function WorkspaceGame() {
   );
 }
 
-// ---- room wall rects (mirror of workspace-map, for rendering) --------------
-function roomWallRects(r: RoomGeom): { x: number; y: number; w: number; h: number }[] {
-  const t = 10;
-  const DOOR = 96;
-  const rect = r.rect;
-  const segs: { x: number; y: number; w: number; h: number }[] = [];
-  const gx = rect.x + rect.w / 2 - DOOR / 2;
-  const gy = rect.y + rect.h / 2 - DOOR / 2;
-  for (const wy of [rect.y - t, rect.y + rect.h]) {
-    segs.push({ x: rect.x - t, y: wy, w: gx - (rect.x - t), h: t });
-    segs.push({ x: gx + DOOR, y: wy, w: rect.x + rect.w + t - (gx + DOOR), h: t });
-  }
-  for (const wx of [rect.x - t, rect.x + rect.w]) {
-    segs.push({ x: wx, y: rect.y - t, w: t, h: gy - (rect.y - t) });
-    segs.push({ x: wx, y: gy + DOOR, w: t, h: rect.y + rect.h + t - (gy + DOOR) });
-  }
-  return segs;
+function Stat({
+  icon,
+  label,
+  value,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  value: number;
+}) {
+  return (
+    <div className="flex flex-col gap-0.5 px-4 py-3">
+      <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+        {icon}
+        {label}
+      </span>
+      <span className="font-display text-lg font-semibold tabular-nums">{value}</span>
+    </div>
+  );
 }
 
-function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
-  ctx.beginPath();
-  ctx.roundRect(x, y, w, h, r);
-}
-
-function useGameRefs() {
-  const [bag] = useState(() => ({
-    me: { x: 0, y: 0 } as Vec,
-    target: null as Vec | null,
-    keys: new Set<string>(),
-    others: [] as { userId: string; name: string; x: number; y: number; status: string }[],
-    layout: null as unknown as Layout,
-    cam: { x: 0, y: 0 } as Vec,
-    facing: "down" as Facing,
-    moving: false,
-    moved: false,
-    lastSave: 0,
-    nearId: null as string | null,
-    nearRoomForPanel: null as { id: string; name: string } | null,
-    initialized: false,
-  }));
-  return bag;
-}
-
-function AddAreaDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (v: boolean) => void }) {
+function AddAreaDialog({
+  open,
+  onOpenChange,
+}: {
+  open: boolean;
+  onOpenChange: (v: boolean) => void;
+}) {
   const utils = trpc.useUtils();
   const clients = trpc.workspace.unassignedClients.useQuery(undefined, { enabled: open });
   const [clientId, setClientId] = useState("");
@@ -754,8 +326,8 @@ function AddAreaDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (v
         <DialogHeader>
           <DialogTitle>Add a client area</DialogTitle>
           <DialogDescription>
-            Give a client their own room on the floor. Their missions land there and the team
-            can walk over to work on them.
+            Give a client their own room on the floor. Their missions land there and the
+            team can walk over to work on them.
           </DialogDescription>
         </DialogHeader>
         {(clients.data?.length ?? 0) === 0 ? (
@@ -768,7 +340,10 @@ function AddAreaDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (v
               value={clientId}
               onValueChange={setClientId}
               placeholder="Select a client"
-              options={(clients.data ?? []).map((c) => ({ value: c.id, label: c.companyName }))}
+              options={(clients.data ?? []).map((c) => ({
+                value: c.id,
+                label: c.companyName,
+              }))}
             />
           </div>
         )}
@@ -777,118 +352,15 @@ function AddAreaDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (v
             Cancel
           </Button>
           <Button disabled={!clientId || add.isPending} onClick={() => add.mutate({ clientId })}>
-            {add.isPending ? <Loader2 className="size-4 animate-spin" /> : <Plus className="size-4" />}
+            {add.isPending ? (
+              <Loader2 className="size-4 animate-spin" />
+            ) : (
+              <Plus className="size-4" />
+            )}
             Add area
           </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
-  );
-}
-
-function RoomMissionsPanel({
-  roomId,
-  roomName,
-  onClose,
-  onChanged,
-}: {
-  roomId: string;
-  roomName: string;
-  onClose: () => void;
-  onChanged: () => void;
-}) {
-  const currentUser = useCurrentUser();
-  const canManage = hasPermission(currentUser.permissions, PERMISSIONS.TASKS_ASSIGN);
-  const missions = trpc.workspace.roomMissions.useQuery({ roomId }, { enabled: !!roomId });
-  const utils = trpc.useUtils();
-  const update = trpc.task.updateStatus.useMutation({
-    onSuccess: () => {
-      utils.workspace.roomMissions.invalidate({ roomId });
-      onChanged();
-    },
-    onError: (e) => toast.error(e.message),
-  });
-  const act = (id: string, status: "todo" | "in_progress" | "review" | "done", msg: string) =>
-    update.mutate({ id, status }, { onSuccess: () => toast.success(msg) });
-
-  return (
-    <div className="absolute inset-y-0 right-0 z-20 flex w-full max-w-sm flex-col border-l border-border bg-card shadow-2xl">
-      <div className="flex items-center justify-between border-b border-border p-4">
-        <div>
-          <p className="font-heading text-sm font-semibold">{roomName}</p>
-          <p className="text-xs text-muted-foreground">Missions & XP set by the owner</p>
-        </div>
-        <Button variant="ghost" size="icon-sm" onClick={onClose}>
-          <X className="size-4" />
-        </Button>
-      </div>
-      <div className="flex-1 overflow-y-auto p-3">
-        {missions.isLoading ? (
-          <div className="flex h-24 items-center justify-center">
-            <Loader2 className="size-4 animate-spin text-muted-foreground" />
-          </div>
-        ) : (missions.data?.length ?? 0) === 0 ? (
-          <p className="py-10 text-center text-sm text-muted-foreground">No missions in this room yet.</p>
-        ) : (
-          <ul className="space-y-2.5">
-            {missions.data?.map((m) => {
-              const mine = m.assignee?.id === currentUser.id;
-              const overdue = m.dueAt && new Date(m.dueAt) < new Date() && m.status !== "done";
-              return (
-                <li key={m.id} className="rounded-lg border border-border p-3.5">
-                  <div className="flex items-start justify-between gap-2">
-                    <p className="text-sm font-medium">{m.title}</p>
-                    <TaskStatusBadge status={m.status} />
-                  </div>
-                  <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
-                    <span>{m.assignee ? m.assignee.name : "Unassigned"}</span>
-                    <span>· {m.points} XP</span>
-                    {m.priority === "urgent" || m.priority === "high" ? (
-                      <span className={cn("rounded px-1.5 py-0.5 font-medium", m.priority === "urgent" ? "bg-destructive/10 text-destructive" : "bg-warning/10 text-warning")}>
-                        {m.priority}
-                      </span>
-                    ) : null}
-                    {m.status === "in_progress" && m.dueAt ? (
-                      <span className={cn("flex items-center gap-1", overdue && "font-medium text-destructive")}>
-                        <Timer className="size-3" />
-                        {overdue ? "overdue " : "due "}
-                        {relativeTime(m.dueAt)}
-                      </span>
-                    ) : null}
-                  </div>
-                  <div className="mt-2.5 flex flex-wrap justify-end gap-1.5">
-                    {mine && m.status === "todo" ? (
-                      <Button size="xs" disabled={update.isPending} onClick={() => act(m.id, "in_progress", "Started — timer running.")}>
-                        <Play className="size-3" />
-                        Start
-                      </Button>
-                    ) : null}
-                    {mine && m.status === "in_progress" ? (
-                      <Button size="xs" disabled={update.isPending} onClick={() => act(m.id, "review", "Published for review.")}>
-                        <Check className="size-3" />
-                        Publish for review
-                      </Button>
-                    ) : null}
-                    {mine && m.status === "review" ? <span className="text-xs font-medium text-warning">Awaiting review</span> : null}
-                    {mine && m.status === "done" ? <span className="text-xs font-medium text-success">Completed</span> : null}
-                    {canManage && m.status === "review" ? (
-                      <>
-                        <Button size="xs" variant="outline" disabled={update.isPending} onClick={() => act(m.id, "in_progress", "Sent back.")}>
-                          Send back
-                        </Button>
-                        <Button size="xs" disabled={update.isPending} onClick={() => act(m.id, "done", "Approved — XP awarded.")}>
-                          <Check className="size-3" />
-                          Approve
-                        </Button>
-                      </>
-                    ) : null}
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
-        )}
-      </div>
-    </div>
   );
 }

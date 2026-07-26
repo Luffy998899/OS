@@ -6,6 +6,8 @@ import {
   permissionProcedure,
 } from "../trpc";
 import { PERMISSIONS, hasPermission } from "@/lib/auth/permissions";
+import { SKILLS, skillForVertical, MAX_SKILL_LEVEL } from "@/lib/skills";
+import { applyMissionXp, missionXp } from "../missions";
 
 const statusEnum = z.enum([
   "todo",
@@ -22,6 +24,8 @@ const verticalEnum = z.enum([
   "billing",
 ]);
 const priorityEnum = z.enum(["low", "medium", "high", "urgent"]);
+export const skillEnum = z.enum(SKILLS);
+export const skillLevelSchema = z.number().int().min(0).max(MAX_SKILL_LEVEL);
 
 const taskInclude = {
   assignee: { select: { id: true, name: true, avatarUrl: true } },
@@ -126,6 +130,8 @@ export const taskRouter = router({
         roomId: z.string().optional(),
         dueAt: z.date().optional(),
         estimateMinutes: z.number().int().optional(),
+        skill: skillEnum.optional(),
+        minSkillLevel: skillLevelSchema.optional(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -146,6 +152,8 @@ export const taskRouter = router({
           roomId,
           dueAt: input.dueAt,
           estimateMinutes: input.estimateMinutes,
+          skill: input.skill ?? skillForVertical(input.vertical),
+          minSkillLevel: input.minSkillLevel ?? 0,
           createdById: ctx.user.id,
           approvalStatus: "approved",
           activities: { create: { type: "created", actorId: ctx.user.id } },
@@ -219,22 +227,17 @@ export const taskRouter = router({
           },
         });
 
-        // Award / reverse mission points on the assignee's ledger.
+        // Award / reverse mission XP — lifetime total and the craft track alike.
         if (task.assigneeId && (completing || reopening)) {
-          const delta = completing ? task.points : -task.points;
-          await tx.pointsLedger.create({
-            data: {
-              userId: task.assigneeId,
-              delta,
-              reason: completing
-                ? `Completed mission: ${task.title}`
-                : `Reopened mission: ${task.title}`,
-              taskId: task.id,
-            },
-          });
-          await tx.user.update({
-            where: { id: task.assigneeId },
-            data: { points: { increment: delta } },
+          const xp = missionXp(task);
+          await applyMissionXp(tx, {
+            userId: task.assigneeId,
+            skill: task.skill,
+            delta: completing ? xp : -xp,
+            reason: completing
+              ? `Completed mission: ${task.title}`
+              : `Reopened mission: ${task.title}`,
+            taskId: task.id,
           });
         }
         return t;
@@ -305,24 +308,23 @@ export const taskRouter = router({
           },
         });
         if (completing && task.assigneeId) {
-          await tx.pointsLedger.create({
-            data: {
-              userId: task.assigneeId,
-              delta: task.points,
-              reason: `Completed mission: ${task.title}`,
-              taskId: task.id,
-            },
-          });
-          await tx.user.update({
-            where: { id: task.assigneeId },
-            data: { points: { increment: task.points } },
+          const xp = missionXp(task);
+          await applyMissionXp(tx, {
+            userId: task.assigneeId,
+            skill: task.skill,
+            delta: xp,
+            reason: `Completed mission: ${task.title}`,
+            taskId: task.id,
           });
           await tx.notification.create({
             data: {
               userId: task.assigneeId,
               type: "reward",
               title: "Mission approved",
-              body: `${task.title} — +${task.points} XP`,
+              body:
+                task.bountyBonus > 0
+                  ? `${task.title} — +${xp} XP (${task.points} + ${task.bountyBonus} urgency bonus)`
+                  : `${task.title} — +${xp} XP`,
             },
           });
         }

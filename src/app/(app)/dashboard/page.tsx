@@ -10,6 +10,7 @@ import {
   Clock,
   Sparkles,
   Gamepad2,
+  ScrollText,
   ArrowRight,
 } from "lucide-react";
 import { getCurrentUser } from "@/lib/auth/session";
@@ -108,9 +109,15 @@ export default async function DashboardPage() {
                 ))}
               </div>
             ) : (
-              <p className="px-4 py-10 text-center text-sm text-muted-foreground">
-                No open missions. Enjoy the calm — or grab one from the board.
-              </p>
+              <div className="flex flex-col items-center gap-2.5 px-4 py-10 text-center">
+                <p className="text-sm text-muted-foreground">
+                  No open missions. Enjoy the calm — or grab one from the board.
+                </p>
+                <ButtonLink href="/bounties" variant="outline" size="sm">
+                  <ScrollText className="size-3.5" />
+                  Bounty Board
+                </ButtonLink>
+              </div>
             )}
           </CardShell>
         </div>

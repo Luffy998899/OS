@@ -2,10 +2,13 @@ import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 import { router, protectedProcedure, permissionProcedure } from "../trpc";
 import { PERMISSIONS } from "@/lib/auth/permissions";
+import { assignCharacter, characterById } from "@/lib/characters";
+import { ROOM_SKILL, normalizeSkill } from "@/lib/skills";
+import { craftLevelsFor } from "../missions";
 
 export const workspaceRouter = router({
   state: protectedProcedure.query(async ({ ctx }) => {
-    const [rooms, avatars, openByRoom, aiCheckin] = await Promise.all([
+    const [rooms, avatars, openByRoom, aiCheckin, bountyByRoom, levels] = await Promise.all([
       ctx.db.room.findMany({
         orderBy: [{ posY: "asc" }, { posX: "asc" }],
         include: { client: { select: { companyName: true } } },
@@ -30,10 +33,23 @@ export const workspaceRouter = router({
         _count: { _all: true },
       }),
       ctx.db.aiCheckin.findFirst({ orderBy: { createdAt: "desc" } }),
+      ctx.db.task.groupBy({
+        by: ["roomId"],
+        where: {
+          isBounty: true,
+          assigneeId: null,
+          approvalStatus: "approved",
+          status: { not: "done" },
+        },
+        _count: { _all: true },
+      }),
+      craftLevelsFor(ctx.db, ctx.user.id),
     ]);
 
     const countFor = (roomId: string) =>
       openByRoom.find((o) => o.roomId === roomId)?._count._all ?? 0;
+    const bountiesFor = (roomId: string) =>
+      bountyByRoom.find((o) => o.roomId === roomId)?._count._all ?? 0;
 
     const roomsOut = rooms.map((r) => ({
       id: r.id,
@@ -45,6 +61,8 @@ export const workspaceRouter = router({
       posX: r.posX,
       posY: r.posY,
       missionCount: countFor(r.id),
+      bountyCount: bountiesFor(r.id),
+      skill: r.kind === "client" ? "ops" : (ROOM_SKILL[r.key] ?? "ops"),
     }));
 
     const players = avatars.map((a) => ({
@@ -53,8 +71,10 @@ export const workspaceRouter = router({
       avatarUrl: a.user.avatarUrl,
       title: a.user.title,
       department: a.user.department,
+      characterId: a.characterId,
       x: a.x,
       y: a.y,
+      facing: a.facing,
       roomId: a.roomId,
       status: a.status,
       points: a.user.points,
@@ -76,35 +96,96 @@ export const workspaceRouter = router({
       rooms: roomsOut,
       players,
       me,
+      levels,
       online: avatars.filter((a) => a.status !== "away").length,
       totalOpen: openByRoom.reduce((s, o) => s + o._count._all, 0),
+      totalBounties: bountyByRoom.reduce((s, o) => s + o._count._all, 0),
       ai: aiCheckin
         ? { summary: aiCheckin.summary, importantTasks, at: aiCheckin.createdAt }
         : null,
     };
   }),
 
+  /**
+   * Step onto the floor. Makes sure the player has an avatar and claims them a
+   * character from the crew roster — one slot each, held by a unique index, so
+   * two people are never the same crewmate.
+   */
+  enter: protectedProcedure.mutation(async ({ ctx }) => {
+    const existing = await ctx.db.avatarState.findUnique({
+      where: { userId: ctx.user.id },
+    });
+    if (existing && characterById(existing.characterId)) {
+      return { characterId: existing.characterId, x: existing.x, y: existing.y };
+    }
+
+    // Read-then-claim can lose a race with someone entering at the same moment;
+    // the unique index catches it and we pick again from a fresh roster.
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const claimed = await ctx.db.avatarState.findMany({
+        where: { characterId: { not: null } },
+        select: { characterId: true },
+      });
+      const pick = assignCharacter(
+        ctx.user.id,
+        claimed.map((c) => c.characterId as string),
+      );
+      try {
+        const saved = await ctx.db.avatarState.upsert({
+          where: { userId: ctx.user.id },
+          create: { userId: ctx.user.id, characterId: pick.id, status: "online" },
+          update: { characterId: pick.id },
+        });
+        return { characterId: saved.characterId, x: saved.x, y: saved.y };
+      } catch {
+        // Slot taken between the read and the write — try the next free one.
+      }
+    }
+
+    // Rather than block entry, let the client fall back to a derived character.
+    const fallback = await ctx.db.avatarState.upsert({
+      where: { userId: ctx.user.id },
+      create: { userId: ctx.user.id, status: "online" },
+      update: {},
+    });
+    return { characterId: fallback.characterId, x: fallback.x, y: fallback.y };
+  }),
+
   roomMissions: protectedProcedure
     .input(z.object({ roomId: z.string() }))
-    .query(({ ctx, input }) =>
-      ctx.db.task.findMany({
-        where: {
-          roomId: input.roomId,
-          approvalStatus: "approved",
-        },
-        orderBy: [{ status: "asc" }, { priority: "desc" }],
-        take: 30,
-        include: {
-          assignee: { select: { id: true, name: true, avatarUrl: true } },
-        },
-      }),
-    ),
+    .query(async ({ ctx, input }) => {
+      const [missions, levels] = await Promise.all([
+        ctx.db.task.findMany({
+          where: {
+            roomId: input.roomId,
+            approvalStatus: "approved",
+          },
+          orderBy: [{ status: "asc" }, { priority: "desc" }],
+          take: 30,
+          include: {
+            assignee: { select: { id: true, name: true, avatarUrl: true } },
+          },
+        }),
+        craftLevelsFor(ctx.db, ctx.user.id),
+      ]);
+
+      return missions.map((m) => {
+        const skill = normalizeSkill(m.skill);
+        return {
+          ...m,
+          skill,
+          eligible: levels[skill] >= m.minSkillLevel,
+          yourLevel: levels[skill],
+        };
+      });
+    }),
 
   move: protectedProcedure
     .input(
       z.object({
         x: z.number(),
         y: z.number(),
+        facing: z.number().optional(),
         roomId: z.string().nullable().optional(),
         status: z.enum(["online", "away", "busy"]).optional(),
       }),
@@ -116,6 +197,7 @@ export const workspaceRouter = router({
           userId: ctx.user.id,
           x: input.x,
           y: input.y,
+          facing: input.facing ?? 0,
           roomId: input.roomId ?? null,
           status: input.status ?? "online",
         },
@@ -123,6 +205,7 @@ export const workspaceRouter = router({
           x: input.x,
           y: input.y,
           roomId: input.roomId ?? null,
+          ...(input.facing === undefined ? {} : { facing: input.facing }),
           ...(input.status ? { status: input.status } : {}),
         },
       });
