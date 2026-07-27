@@ -1,40 +1,52 @@
 "use client";
 
-// Full-window first-person view of the office floor.
+// Full-window first-person view of the campus — v2.
 //
-// The floor is stored as axis-aligned rectangles in top-down world space, which
-// is exactly what a raycaster wants — so this renders it the way somebody
-// standing in the room would see it. Walls, floor and ceiling are cast into a
-// pixel buffer with a depth value per pixel; crew and props are blitted over it
-// as depth-tested billboards. There is no third-person camera anywhere: the eye
-// is at 1.5m, inside the player.
+// The campus is axis-aligned rectangles in top-down world space (lib/workspace-map),
+// cast here the way a person standing on the floor sees it: eye at 1.5m, walls,
+// towers, floor and ceiling drawn into a pixel buffer with per-pixel depth, crew
+// and furniture blitted over it as depth-tested billboards. No third-person
+// camera exists.
 //
-// The maths all lives in @/lib/fps so it can be tested without a canvas.
+// Controls honour both habits: drag to look / click to walk (no pointer capture
+// needed), or press L for immersive mouse-look. ESC never touches browser
+// fullscreen because we never auto-enter it — it closes panels, then releases
+// the mouse, then leaves the floor. F toggles real fullscreen for those who
+// want it.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  AlarmClock,
+  Bell,
   Compass,
   Crosshair,
   Loader2,
   LogOut,
+  Map as MapIcon,
   Maximize2,
   Minimize2,
+  MousePointerClick,
   Sparkles,
+  UtensilsCrossed,
   Users,
-  Waves,
+  Video,
 } from "lucide-react";
+import { toast } from "sonner";
+import { useRouter } from "next/navigation";
 import { trpc } from "@/lib/trpc/client";
 import { useCurrentUser } from "@/components/app/user-context";
 import {
   buildLayout,
   resolveCollision,
   roomIdAt,
+  type Building,
   type Layout,
   type RoomGeom,
 } from "@/lib/workspace-map";
 import {
   CEILING_HEIGHT,
   DESK_HEIGHT,
+  TABLE_HEIGHT,
   MAX_PITCH,
   VIEW_DISTANCE,
   buildCastGrid,
@@ -57,37 +69,81 @@ import {
 import { characterFor, type Character } from "@/lib/characters";
 import { SKILL_META } from "@/lib/skills";
 import { levelInfo } from "@/lib/xp";
+import { slotRangeLabel } from "@/lib/timetable";
 import { cn } from "@/lib/utils";
 import {
+  approvalDeskSprite,
+  bigClockSprite,
   bountyBoardSprite,
+  cameraRigSprite,
+  chairSprite,
+  conferenceScreenSprite,
   coolerSprite,
   crewSprite,
+  editRigSprite,
+  infiniteBoardSprite,
+  lightRigSprite,
   missionBoardSprite,
   monitorSprite,
+  outreachDeskSprite,
+  phoneBoothSprite,
   plantSprite,
+  queueBoardSprite,
+  schoolBellSprite,
+  seatedEditorSprite,
+  studioDoorSprite,
+  taskWallSprite,
+  towerDoorSprite,
   type Orientation,
   type SpriteBitmap,
+  type WalkFrame,
 } from "./sprites";
 import { BountyBoardPanel } from "./bounty-board";
 import { SkillTreePanel } from "./skill-tree";
 import { RoomMissionsPanel } from "./room-missions-panel";
 import { CrewRosterPanel } from "./crew-roster";
+import { VideoBayPanel } from "./rooms/video-bay-panel";
+import { DevCityPanel } from "./rooms/dev-city-panel";
+import { ConferencePanel } from "./rooms/conference-panel";
+import { TasksRoomPanel } from "./rooms/tasks-room-panel";
+import { ApprovalsPanel } from "./rooms/approvals-panel";
+import { OutreachPanel } from "./rooms/outreach-panel";
+import { CreativePanel } from "./rooms/creative-panel";
+import { ShootPanel } from "./rooms/shoot-panel";
+import { TimetablePanel } from "./rooms/timetable-panel";
 
-const WALK_SPEED = 1.55;
-const SPRINT_SPEED = 2.55;
+const WALK_SPEED = 1.6;
+const SPRINT_SPEED = 2.6;
 const LOOK_SENSITIVITY = 0.0023;
+const DRAG_SENSITIVITY = 0.0035;
 const TURN_KEY_SPEED = 0.035;
-const INTERACT_RANGE = 115;
+const INTERACT_RANGE = 120;
 const SAVE_INTERVAL_MS = 900;
 const RENDER_SCALE = 0.44;
-const FLOOR_TILE = 50;
-const CEILING_PANEL = 200;
 
-type OverlayKind = "missions" | "bounties" | "skills" | "roster" | "help" | null;
+type PanelKind =
+  | "missions"
+  | "bounties"
+  | "skills"
+  | "roster"
+  | "help"
+  | "map"
+  | "video"
+  | "city"
+  | "conference"
+  | "tasks"
+  | "approvals"
+  | "outreach"
+  | "creative"
+  | "shoot"
+  | "timetable";
+
+type Overlay = { kind: PanelKind; refId?: string; name?: string } | null;
 
 type Interactable = {
-  kind: "room" | "bounty";
+  panel: PanelKind;
   id: string;
+  refId?: string;
   name: string;
   subtitle: string;
   x: number;
@@ -109,31 +165,44 @@ type RemotePlayer = {
   name: string;
   x: number;
   y: number;
+  // Render position chases the server position so movement reads as walking.
+  rx: number;
+  ry: number;
   facing: number;
   status: string;
   character: Character;
+  moving: boolean;
 };
 
-// Real-world sizes for the billboards, in the same units as the floor plan
-// (~2.3cm each — a person's collision radius is 11). Each pair keeps the
-// sprite's own pixel aspect so nothing renders stretched: a whiteboard is 1.2m
-// across and 1.8m tall because that's what a whiteboard is.
-const PROP_SIZE = {
-  missionBoard: { worldW: 51, worldH: 76 },
-  bountyBoard: { worldW: 61, worldH: 78 },
-  plant: { worldW: 33, worldH: 46 },
-  monitor: { worldW: 26, worldH: 22 },
+// World sizes for billboards (units ≈ 2.3cm). Aspect matches each sprite.
+const PROP_SIZE: Record<string, { worldW: number; worldH: number }> = {
+  "mission-board": { worldW: 50, worldH: 75 },
+  "queue-board": { worldW: 54, worldH: 74 },
+  "npc-editor": { worldW: 60, worldH: 66 },
+  "conference-screen": { worldW: 78, worldH: 68 },
+  chair: { worldW: 26, worldH: 34 },
+  "door-clients": { worldW: 50, worldH: 78 },
+  "door-internal": { worldW: 50, worldH: 78 },
+  "infinite-board": { worldW: 70, worldH: 73 },
+  "task-wall": { worldW: 62, worldH: 70 },
+  "approval-desk": { worldW: 66, worldH: 50 },
+  "outreach-desk": { worldW: 62, worldH: 65 },
+  "phone-booth": { worldW: 38, worldH: 74 },
+  "camera-rig": { worldW: 52, worldH: 72 },
+  "light-rig": { worldW: 44, worldH: 76 },
+  "big-clock": { worldW: 56, worldH: 64 },
+  "school-bell": { worldW: 34, worldH: 44 },
+  plant: { worldW: 33, worldH: 45 },
   cooler: { worldW: 31, worldH: 58 },
-} as const;
+  monitor: { worldW: 26, worldH: 22 },
+  "edit-rig": { worldW: 46, worldH: 29 },
+  "tower-door": { worldW: 62, worldH: 86 },
+  "bounty-board": { worldW: 61, worldH: 78 },
+};
 
-/** Crew sprites are 52x64; 70 units tall works out at about 1.65m. */
-const CREW_SIZE = { worldW: 57, worldH: 70 };
+const CREW_SIZE = { worldW: 55, worldH: 70 };
 
-/**
- * Packed little-endian RGBA, which is what a Uint32 view of ImageData wants.
- * Channels are clamped, not masked — a lit surface can compute past 255 and
- * wrapping it turns a highlight into a completely different colour.
- */
+/** Packed little-endian RGBA with clamped channels. */
 function pack(r: number, g: number, b: number): number {
   return (
     (255 << 24) |
@@ -148,48 +217,58 @@ function hexRgb(hex: string): [number, number, number] {
   return [(v >> 16) & 255, (v >> 8) & 255, v & 255];
 }
 
-const FOG: [number, number, number] = [198, 192, 178];
-const CORRIDOR: [number, number, number] = [172, 165, 148];
-const CEIL_BASE: [number, number, number] = [228, 224, 214];
-const CEIL_PANEL: [number, number, number] = [250, 248, 242];
+const FOG: [number, number, number] = [199, 193, 180];
+const CORRIDOR: [number, number, number] = [176, 169, 152];
+const CORRIDOR_GROUT: [number, number, number] = [148, 141, 126];
+const CEIL_BASE: [number, number, number] = [226, 222, 212];
+const CEIL_PANEL: [number, number, number] = [252, 250, 244];
+const SKY_TOP: [number, number, number] = [176, 214, 226];
+const SKY_BOTTOM: [number, number, number] = [214, 230, 219];
+const WINDOW_LIT: [number, number, number] = [255, 226, 158];
+const WINDOW_DARK: [number, number, number] = [52, 66, 82];
 
-/** Mix a colour toward the fog by `f` (0 near, 1 far) and scale by `light`. */
-function fogged(
-  rgb: [number, number, number],
-  light: number,
-  f: number,
-): number {
-  const r = rgb[0] * light * (1 - f) + FOG[0] * f;
-  const g = rgb[1] * light * (1 - f) + FOG[1] * f;
-  const b = rgb[2] * light * (1 - f) + FOG[2] * f;
-  return pack(r, g, b);
+function fogged(rgb: [number, number, number], light: number, f: number): number {
+  return pack(
+    rgb[0] * light * (1 - f) + FOG[0] * f,
+    rgb[1] * light * (1 - f) + FOG[1] * f,
+    rgb[2] * light * (1 - f) + FOG[2] * f,
+  );
 }
 
-/**
- * Aerial haze. Gentle enough that the far side of the floor stays legible —
- * this is a bright office, not a dungeon — but strong enough to give depth.
- */
 function fogAmount(depth: number): number {
   const t = depth / VIEW_DISTANCE;
-  return t <= 0 ? 0 : t >= 1 ? 0.86 : Math.pow(t, 1.15) * 0.86;
+  return t <= 0 ? 0 : t >= 1 ? 0.85 : Math.pow(t, 1.2) * 0.85;
+}
+
+/** Small deterministic hash for window-lighting variety. */
+function hash2(a: number, b: number): number {
+  let h = (a * 73856093) ^ (b * 19349663);
+  h = (h ^ (h >> 13)) * 1274126177;
+  return (h ^ (h >> 16)) >>> 0;
 }
 
 export function FirstPersonFloor({ onExit }: { onExit: () => void }) {
   const currentUser = useCurrentUser();
   const utils = trpc.useUtils();
+  const router = useRouter();
   const state = trpc.workspace.state.useQuery(undefined, { refetchInterval: 3500 });
   const enter = trpc.workspace.enter.useMutation();
   const move = trpc.workspace.move.useMutation();
+  const relogin = trpc.timetable.relogin.useMutation({
+    onSuccess: () => {
+      toast.success("Logged back in — afternoon tracked.");
+      utils.workspace.state.invalidate();
+    },
+  });
+  const openCreative = trpc.creative.open.useMutation();
 
   const [canvasEl, setCanvasEl] = useState<HTMLCanvasElement | null>(null);
-  const [overlay, setOverlay] = useState<OverlayKind>(null);
+  const [overlay, setOverlay] = useState<Overlay>(null);
   const [locked, setLocked] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
   const [prompt, setPrompt] = useState<Interactable | null>(null);
-  const [activeRoom, setActiveRoom] = useState<{ id: string; name: string } | null>(null);
-  const [hud, setHud] = useState({ fps: 0, room: "Corridor" });
+  const [hud, setHud] = useState({ fps: 0, room: "Plaza" });
   const [myCharacterId, setMyCharacterId] = useState<string | null>(null);
-  const [bob, setBob] = useState(true);
 
   const layout: Layout = useMemo(
     () => buildLayout((state.data?.rooms ?? []).map((r) => ({ ...r }))),
@@ -199,7 +278,7 @@ export function FirstPersonFloor({ onExit }: { onExit: () => void }) {
   const R = useEngine();
   R.layout = layout;
 
-  const overlayRef = useRef<OverlayKind>(null);
+  const overlayRef = useRef<Overlay>(null);
   overlayRef.current = overlay;
 
   const myCharacter = useMemo(
@@ -207,7 +286,7 @@ export function FirstPersonFloor({ onExit }: { onExit: () => void }) {
     [myCharacterId, currentUser.id],
   );
 
-  // Claim a crew slot the moment the player steps onto the floor.
+  // Claim the crew slot + last position.
   useEffect(() => {
     let cancelled = false;
     enter.mutate(undefined, {
@@ -219,6 +298,7 @@ export function FirstPersonFloor({ onExit }: { onExit: () => void }) {
           R.y = res.y;
           R.spawned = true;
         }
+        utils.workspace.state.invalidate();
       },
     });
     return () => {
@@ -227,7 +307,7 @@ export function FirstPersonFloor({ onExit }: { onExit: () => void }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Geometry — rebuilt only when the floor plan itself changes.
+  // Geometry.
   useEffect(() => {
     if (layout.rooms.length === 0) return;
     R.solids = buildSolids(layout);
@@ -237,9 +317,6 @@ export function FirstPersonFloor({ onExit }: { onExit: () => void }) {
       CORRIDOR,
       ...layout.rooms.map((room) => {
         const [r, g, b] = hexRgb(room.accent);
-        // Carpet: the room's accent knocked back into a muted office weave —
-        // enough colour to tell rooms apart underfoot, dark enough that the
-        // pale partitions and desks stand out against it.
         return [
           r * 0.38 + 150 * 0.62,
           g * 0.38 + 144 * 0.62,
@@ -250,175 +327,427 @@ export function FirstPersonFloor({ onExit }: { onExit: () => void }) {
     if (!R.spawned) {
       R.x = layout.spawn.x;
       R.y = layout.spawn.y;
-      R.yaw = Math.PI / 2;
+      R.yaw = -Math.PI / 2; // face the plaza board / dev city band
       R.spawned = true;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [layout]);
 
-  // Props and interaction targets follow the live mission counts.
+  // Interactables per zone theme.
   const interactables = useMemo<Interactable[]>(() => {
     if (layout.rooms.length === 0) return [];
-    const out: Interactable[] = layout.rooms.map((room) => ({
-      kind: "room" as const,
-      id: room.id,
-      name: room.name,
-      subtitle:
-        room.missionCount > 0
-          ? `${room.missionCount} open mission${room.missionCount === 1 ? "" : "s"}`
-          : "No open missions",
-      x: room.board.x,
-      y: room.board.y,
-    }));
-    const hub = hubRoom(layout);
-    if (hub) {
-      const spot = bountyBoardSpot(hub);
+    const out: Interactable[] = [];
+    const bounties = state.data?.totalBounties ?? 0;
+    out.push({
+      panel: "bounties",
+      id: "plaza-board",
+      name: "Bounty Board",
+      subtitle: `${bounties} unclaimed`,
+      x: layout.plaza.board.x,
+      y: layout.plaza.board.y,
+    });
+
+    for (const room of layout.rooms) {
+      const missions = `${room.missionCount} open mission${room.missionCount === 1 ? "" : "s"}`;
+      switch (room.zone) {
+        case "developer":
+          out.push({
+            panel: "missions",
+            id: `board-${room.id}`,
+            refId: room.id,
+            name: `${room.name} — Missions`,
+            subtitle: missions,
+            x: room.board.x,
+            y: room.board.y,
+          });
+          break;
+        case "video-editing": {
+          const q = room.props.find((p) => p.kind === "queue-board");
+          if (q) {
+            out.push({
+              panel: "video",
+              id: "video-queue",
+              name: "Editing Queue",
+              subtitle: "Pending videos, timers & scripts",
+              x: q.x,
+              y: q.y,
+            });
+          }
+          const npc = room.props.find((p) => p.kind === "npc-editor");
+          if (npc) {
+            out.push({
+              panel: "video",
+              id: "video-desk",
+              name: "Editing Desk",
+              subtitle: state.data?.nowEditing
+                ? `Now editing: ${state.data.nowEditing.title}`
+                : "The timeline is idle",
+              x: npc.x,
+              y: npc.y,
+            });
+          }
+          break;
+        }
+        case "conference": {
+          const screen = room.props.find((p) => p.kind === "conference-screen");
+          out.push({
+            panel: "conference",
+            id: "conference",
+            name: "Conference Hall",
+            subtitle: "Meetings · disclosures · weekly feedback",
+            x: screen?.x ?? room.board.x,
+            y: (screen?.y ?? room.board.y) + 16,
+          });
+          break;
+        }
+        case "creative": {
+          for (const p of room.props) {
+            if (p.kind === "door-clients") {
+              out.push({
+                panel: "creative",
+                id: "door-clients",
+                refId: "clients",
+                name: "Clients Door",
+                subtitle: "Every client's social planning house",
+                x: p.x,
+                y: p.y + 14,
+              });
+            }
+            if (p.kind === "door-internal") {
+              out.push({
+                panel: "creative",
+                id: "door-internal",
+                refId: "internal",
+                name: "Internal Door",
+                subtitle: "Auxa's own content space",
+                x: p.x,
+                y: p.y + 14,
+              });
+            }
+            if (p.kind === "infinite-board") {
+              out.push({
+                panel: "creative",
+                id: "creative-board",
+                refId: "board",
+                name: "Infinite Board",
+                subtitle: "Brand kits, references, scribbles → tasks",
+                x: p.x,
+                y: p.y,
+              });
+            }
+          }
+          out.push({
+            panel: "missions",
+            id: `board-${room.id}`,
+            refId: room.id,
+            name: `${room.name} — Missions`,
+            subtitle: missions,
+            x: room.board.x,
+            y: room.board.y,
+          });
+          break;
+        }
+        case "tasks": {
+          const wall = room.props.find((p) => p.kind === "task-wall");
+          out.push({
+            panel: "tasks",
+            id: "task-wall",
+            name: "Task Wall",
+            subtitle: "Your missions & co-assigned squad work",
+            x: wall?.x ?? room.board.x,
+            y: wall?.y ?? room.board.y,
+          });
+          break;
+        }
+        case "managing-heads": {
+          const desk = room.props.find((p) => p.kind === "approval-desk");
+          out.push({
+            panel: "approvals",
+            id: "approvals",
+            name: "Approvals Desk",
+            subtitle: "Leave · sign-offs · queries",
+            x: desk?.x ?? room.board.x,
+            y: desk?.y ?? room.board.y,
+          });
+          out.push({
+            panel: "missions",
+            id: `board-${room.id}`,
+            refId: room.id,
+            name: `${room.name} — Missions`,
+            subtitle: missions,
+            x: room.board.x,
+            y: room.board.y,
+          });
+          break;
+        }
+        case "outreach": {
+          const desk = room.props.find((p) => p.kind === "outreach-desk");
+          out.push({
+            panel: "outreach",
+            id: "outreach",
+            name: "Outreach Desk",
+            subtitle: "Today's sector, day plan & OTP capture",
+            x: desk?.x ?? room.board.x,
+            y: desk?.y ?? room.board.y,
+          });
+          break;
+        }
+        case "shoot": {
+          const rig = room.props.find((p) => p.kind === "camera-rig");
+          out.push({
+            panel: "shoot",
+            id: "shoot",
+            name: "Shoot Planner",
+            subtitle: "This week in front of the camera",
+            x: rig?.x ?? room.board.x,
+            y: rig?.y ?? room.board.y,
+          });
+          break;
+        }
+        case "timetable": {
+          const clock = room.props.find((p) => p.kind === "big-clock");
+          out.push({
+            panel: "timetable",
+            id: "timetable",
+            name: "The Timetable",
+            subtitle: "Your day, period by period",
+            x: clock?.x ?? room.board.x,
+            y: (clock?.y ?? room.board.y) + 18,
+          });
+          break;
+        }
+        case "client":
+          out.push({
+            panel: "missions",
+            id: `board-${room.id}`,
+            refId: room.id,
+            name: room.name,
+            subtitle: missions,
+            x: room.board.x,
+            y: room.board.y,
+          });
+          break;
+      }
+    }
+
+    for (const b of layout.buildings) {
       out.push({
-        kind: "bounty",
-        id: "bounty-board",
-        name: "Bounty Board",
-        subtitle: `${state.data?.totalBounties ?? 0} unclaimed`,
-        ...spot,
+        panel: "city",
+        id: b.key,
+        refId: b.key,
+        name: b.label,
+        subtitle:
+          b.key === "tower-pipeline"
+            ? "Every floor is a project in flight"
+            : b.key === "tower-complete"
+              ? "Shipped sites — audits & links"
+              : "Sync AI · prompts · portfolio · research",
+        x: b.door.x,
+        y: b.door.y,
       });
     }
     return out;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [layout, state.data?.totalBounties]);
+  }, [layout, state.data?.totalBounties, state.data?.nowEditing]);
 
   R.interactables = interactables;
 
+  // Props per zone.
   useEffect(() => {
     if (layout.rooms.length === 0) return;
     const rooms = state.data?.rooms ?? [];
     const props: Prop[] = [];
+    const sz = (kind: string) => PROP_SIZE[kind] ?? { worldW: 40, worldH: 40 };
+
+    const push = (kind: string, x: number, y: number, bitmap: SpriteBitmap, glow: string | null = null, baseZ = 0) =>
+      props.push({ x, y, baseZ, ...sz(kind), bitmap, glow });
+
     for (const room of layout.rooms) {
       const live = rooms.find((r) => r.id === room.id);
       const bounties = live?.bountyCount ?? 0;
-      props.push({
-        x: room.board.x,
-        y: room.board.y,
-        baseZ: 0,
-        ...PROP_SIZE.missionBoard,
-        bitmap: missionBoardSprite({
-          accent: room.accent,
-          missions: room.missionCount,
-          bounties,
-          highlighted: room.missionCount > 0,
-        }),
-        glow: room.missionCount > 0 ? room.accent : null,
-      });
-      // Plants tucked into the far corners, monitors on the desks.
-      props.push({
-        x: room.rect.x + 26,
-        y: room.rect.y + 26,
-        baseZ: 0,
-        ...PROP_SIZE.plant,
-        bitmap: plantSprite(room.posX + room.posY),
-        glow: null,
-      });
-      props.push({
-        x: room.rect.x + room.rect.w - 26,
-        y: room.rect.y + 26,
-        baseZ: 0,
-        ...PROP_SIZE.plant,
-        bitmap: plantSprite(room.posX + room.posY + 1),
-        glow: null,
-      });
-      for (const desk of room.desks) {
-        props.push({
-          x: desk.x + desk.w / 2,
-          y: desk.y + desk.h / 2,
-          baseZ: DESK_HEIGHT,
-          ...PROP_SIZE.monitor,
-          bitmap: monitorSprite(room.accent),
-          glow: null,
-        });
+
+      // Mission board for the zones that carry one.
+      if (["developer", "creative", "managing-heads", "outreach", "client"].includes(room.zone)) {
+        push(
+          "mission-board",
+          room.board.x,
+          room.board.y,
+          missionBoardSprite({
+            accent: room.accent,
+            missions: room.missionCount,
+            bounties,
+            highlighted: room.missionCount > 0,
+          }),
+          room.missionCount > 0 ? room.accent : null,
+        );
+      }
+
+      for (const p of room.props) {
+        switch (p.kind) {
+          case "queue-board":
+            push(p.kind, p.x, p.y, queueBoardSprite(R.queueCount, R.queueHot), R.queueHot ? "#e0574f" : null);
+            break;
+          case "conference-screen":
+            push(p.kind, p.x, p.y, conferenceScreenSprite(!!state.data?.meeting), state.data?.meeting ? "#e0574f" : null);
+            break;
+          case "chair":
+            push(p.kind, p.x, p.y, chairSprite());
+            break;
+          case "door-clients":
+            push(p.kind, p.x, p.y, studioDoorSprite("CLIENTS", "#c98fb0"));
+            break;
+          case "door-internal":
+            push(p.kind, p.x, p.y, studioDoorSprite("INTERNAL", "#8fb46a"));
+            break;
+          case "infinite-board":
+            push(p.kind, p.x, p.y, infiniteBoardSprite());
+            break;
+          case "task-wall":
+            push(p.kind, p.x, p.y, taskWallSprite(room.missionCount));
+            break;
+          case "approval-desk":
+            push(p.kind, p.x, p.y, approvalDeskSprite(R.approvalsPending));
+            break;
+          case "outreach-desk":
+            push(p.kind, p.x, p.y, outreachDeskSprite(6));
+            break;
+          case "phone-booth":
+            push(p.kind, p.x, p.y, phoneBoothSprite());
+            break;
+          case "camera-rig":
+            push(p.kind, p.x, p.y, cameraRigSprite());
+            break;
+          case "light-rig":
+            push(p.kind, p.x, p.y, lightRigSprite());
+            break;
+          case "school-bell":
+            push(p.kind, p.x, p.y, schoolBellSprite(false));
+            break;
+          case "plant":
+            push(p.kind, p.x, p.y, plantSprite(Math.round(p.x + p.y)));
+            break;
+          case "cooler":
+            push(p.kind, p.x, p.y, coolerSprite());
+            break;
+          case "npc-editor":
+            // Animated separately.
+            R.npc = { x: p.x, y: p.y };
+            break;
+          case "big-clock":
+            R.clockAt = { x: p.x, y: p.y };
+            break;
+          default:
+            break;
+        }
+      }
+
+      if (room.zone === "video-editing") {
+        for (const desk of room.desks) {
+          push("edit-rig", desk.x + desk.w / 2, desk.y + desk.h / 2, editRigSprite(room.accent, !!state.data?.nowEditing), null, DESK_HEIGHT);
+        }
+      } else if (room.zone !== "conference") {
+        for (const desk of room.desks) {
+          push("monitor", desk.x + desk.w / 2, desk.y + desk.h / 2, monitorSprite(room.accent), null, DESK_HEIGHT);
+        }
       }
     }
-    const hub = hubRoom(layout);
-    if (hub) {
-      const spot = bountyBoardSpot(hub);
-      const open = state.data?.totalBounties ?? 0;
-      props.push({
-        ...spot,
-        baseZ: 0,
-        ...PROP_SIZE.bountyBoard,
-        bitmap: bountyBoardSprite(open, open > 0),
-        glow: open > 0 ? "#e0574f" : null,
-      });
-      props.push({
-        x: hub.rect.x + 34,
-        y: hub.rect.y + hub.rect.h - 34,
-        baseZ: 0,
-        ...PROP_SIZE.cooler,
-        bitmap: coolerSprite(),
-        glow: null,
-      });
+
+    const bounties = state.data?.totalBounties ?? 0;
+    push("bounty-board", layout.plaza.board.x, layout.plaza.board.y, bountyBoardSprite(bounties, bounties > 0), bounties > 0 ? "#e0574f" : null);
+
+    for (const b of layout.buildings) {
+      push("tower-door", b.door.x, b.door.y - 22, towerDoorSprite(b.label, b.tint));
     }
+
     R.props = props;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [layout, state.data?.rooms, state.data?.totalBounties]);
+  }, [layout, state.data?.rooms, state.data?.totalBounties, state.data?.meeting, state.data?.nowEditing]);
 
-  // Remote crew.
+  // Remote crew — server positions become chase targets, so walking animates.
   useEffect(() => {
-    R.others = (state.data?.players ?? [])
+    const next = (state.data?.players ?? [])
       .filter((p) => !p.isMe)
-      .map((p) => ({
-        userId: p.userId,
-        name: p.name,
-        x: p.x || layout.spawn.x,
-        y: p.y || layout.spawn.y,
-        facing: p.facing ?? 0,
-        status: p.status,
-        character: characterFor(p.characterId, p.userId),
-      }));
+      .map((p) => {
+        const prev = R.others.find((o) => o.userId === p.userId);
+        const x = p.x || layout.spawn.x;
+        const y = p.y || layout.spawn.y;
+        return {
+          userId: p.userId,
+          name: p.name,
+          x,
+          y,
+          rx: prev?.rx ?? x,
+          ry: prev?.ry ?? y,
+          facing: p.facing ?? 0,
+          status: p.status,
+          character: characterFor(p.characterId, p.userId),
+          moving: false,
+        } satisfies RemotePlayer;
+      });
+    R.others = next;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.data?.players, layout]);
 
+  // HUD-adjacent live counts used by prop sprites.
+  const video = trpc.video.state.useQuery(undefined, { refetchInterval: 12_000 });
   useEffect(() => {
-    R.myCharacter = myCharacter;
-    R.myStatus = state.data?.me?.status ?? "online";
-  }, [myCharacter, state.data?.me?.status, R]);
+    R.queueCount = video.data?.queued.length ?? 0;
+    R.queueHot = (video.data?.queued ?? []).some((q) => q.priority === "urgent");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [video.data]);
 
-  const openInteraction = useCallback(() => {
-    const target = R.nearTarget;
-    if (!target) return;
-    if (target.kind === "bounty") {
-      setOverlay("bounties");
-    } else {
-      setActiveRoom({ id: target.id, name: target.name });
-      setOverlay("missions");
+  // The school bell: ring on every slot change.
+  const slotLabel = state.data?.timeslot?.current?.label ?? null;
+  const prevSlot = useRef<string | null>(null);
+  useEffect(() => {
+    if (prevSlot.current !== null && slotLabel !== prevSlot.current) {
+      ringBell();
+      toast(slotLabel ? `🔔 Period change: ${slotLabel}` : "🔔 Period over", {
+        description: slotLabel ? "The bell rang — next block starts now." : "That block is done.",
+      });
     }
-  }, [R]);
+    prevSlot.current = slotLabel;
+  }, [slotLabel]);
 
-  const requestLock = useCallback(() => {
-    if (overlayRef.current) return;
-    canvasEl?.requestPointerLock?.();
-  }, [canvasEl]);
+  const openInteraction = useCallback(
+    (target: Interactable | null) => {
+      if (!target) return;
+      if (target.panel === "creative" && target.refId === "board") {
+        // The infinite board goes straight to the whiteboard document.
+        openCreative.mutate(
+          { key: "internal" },
+          {
+            onSuccess: () => {
+              utils.creative.doors.invalidate();
+              setOverlay({ kind: "creative", refId: "internal" });
+            },
+          },
+        );
+        return;
+      }
+      setOverlay({ kind: target.panel, refId: target.refId, name: target.name });
+    },
+    [openCreative, utils],
+  );
 
   const toggleFullscreen = useCallback(async () => {
     try {
       if (document.fullscreenElement) await document.exitFullscreen();
       else await document.documentElement.requestFullscreen();
     } catch {
-      // Fullscreen can be refused (permissions policy, iOS); the fixed overlay
-      // already fills the window, so this is a nicety rather than a requirement.
+      // Refusable (iframe policies, iOS). The fixed overlay already fills the tab.
     }
   }, []);
 
-  // Enter fullscreen off the click that mounted us, and hand it back on exit.
   useEffect(() => {
-    void toggleFullscreen();
     const onChange = () => setFullscreen(!!document.fullscreenElement);
     document.addEventListener("fullscreenchange", onChange);
     return () => {
       document.removeEventListener("fullscreenchange", onChange);
       if (document.fullscreenElement) void document.exitFullscreen().catch(() => {});
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Pointer lock — the mouse becomes the head.
+  // Pointer lock — opt-in immersive mode.
   useEffect(() => {
     if (!canvasEl) return;
     const onLockChange = () => {
@@ -439,16 +768,95 @@ export function FirstPersonFloor({ onExit }: { onExit: () => void }) {
     };
   }, [canvasEl, R]);
 
+  // Drag-to-look / click-to-walk.
+  useEffect(() => {
+    if (!canvasEl) return;
+    let downAt: { x: number; y: number; t: number } | null = null;
+    let dragging = false;
+
+    const onPointerDown = (e: PointerEvent) => {
+      if (document.pointerLockElement === canvasEl) {
+        // Immersive: click = interact with what you face.
+        openInteraction(R.nearTarget);
+        return;
+      }
+      if (e.button !== 0) return;
+      downAt = { x: e.clientX, y: e.clientY, t: performance.now() };
+      dragging = false;
+      canvasEl.setPointerCapture(e.pointerId);
+    };
+    const onPointerMove = (e: PointerEvent) => {
+      if (!downAt || document.pointerLockElement === canvasEl) return;
+      const dx = e.clientX - downAt.x;
+      const dy = e.clientY - downAt.y;
+      if (!dragging && Math.hypot(dx, dy) > 5) dragging = true;
+      if (dragging) {
+        R.yaw += (e.movementX || 0) * DRAG_SENSITIVITY;
+        R.pitch = clamp(R.pitch - (e.movementY || 0) * DRAG_SENSITIVITY, -MAX_PITCH, MAX_PITCH);
+      }
+    };
+    const onPointerUp = (e: PointerEvent) => {
+      if (!downAt) return;
+      const wasDrag = dragging;
+      downAt = null;
+      dragging = false;
+      try {
+        canvasEl.releasePointerCapture(e.pointerId);
+      } catch {
+        /* released already */
+      }
+      if (wasDrag || document.pointerLockElement === canvasEl) return;
+      // A clean click: prefer the prompt if one is live, else walk there.
+      if (R.nearTarget) {
+        openInteraction(R.nearTarget);
+        return;
+      }
+      const world = screenToFloor(e.clientX, e.clientY);
+      if (world) {
+        R.target = world;
+        R.keys.clear();
+      }
+    };
+
+    const screenToFloor = (clientX: number, clientY: number): { x: number; y: number } | null => {
+      const cam = R.cam;
+      if (!cam) return null;
+      const rect = canvasEl.getBoundingClientRect();
+      const px = ((clientX - rect.left) / rect.width) * cam.width;
+      const py = ((clientY - rect.top) / rect.height) * cam.height;
+      const p = py - cam.horizon;
+      if (p <= 1) return null; // above the horizon — not floor
+      const rowDist = (cam.eye * cam.projDist) / p;
+      const cameraX = (2 * px) / cam.width - 1;
+      const wx = cam.x + rowDist * (cam.dirX + cam.planeX * cameraX);
+      const wy = cam.y + rowDist * (cam.dirY + cam.planeY * cameraX);
+      const L = R.layout;
+      if (!L || wx < 20 || wy < 20 || wx > L.world.w - 20 || wy > L.world.h - 20) return null;
+      return { x: wx, y: wy };
+    };
+
+    canvasEl.addEventListener("pointerdown", onPointerDown);
+    canvasEl.addEventListener("pointermove", onPointerMove);
+    canvasEl.addEventListener("pointerup", onPointerUp);
+    return () => {
+      canvasEl.removeEventListener("pointerdown", onPointerDown);
+      canvasEl.removeEventListener("pointermove", onPointerMove);
+      canvasEl.removeEventListener("pointerup", onPointerUp);
+    };
+  }, [canvasEl, R, openInteraction]);
+
   // Keyboard.
   useEffect(() => {
     const down = (e: KeyboardEvent) => {
       const k = e.key.toLowerCase();
       if (k === "escape") {
+        // Never touches fullscreen (we never auto-enter it): close panel →
+        // release mouse → leave the floor.
         if (overlayRef.current) {
           setOverlay(null);
           e.preventDefault();
         } else if (document.pointerLockElement) {
-          // Let the browser release the pointer; a second Escape leaves.
+          // Browser releases the lock on its own.
         } else {
           onExit();
         }
@@ -460,26 +868,34 @@ export function FirstPersonFloor({ onExit }: { onExit: () => void }) {
       }
       switch (k) {
         case "e":
-          openInteraction();
+          openInteraction(R.nearTarget);
           return;
         case "b":
-          setOverlay("bounties");
+          setOverlay({ kind: "bounties" });
           return;
         case "t":
-          setOverlay("skills");
+          setOverlay({ kind: "skills" });
+          return;
+        case "m":
+          setOverlay({ kind: "map" });
           return;
         case "tab":
-          setOverlay("roster");
+          setOverlay({ kind: "roster" });
           return;
         case "h":
         case "?":
-          setOverlay("help");
+          setOverlay({ kind: "help" });
           return;
         case "f":
           void toggleFullscreen();
           return;
+        case "l":
+          if (document.pointerLockElement) document.exitPointerLock();
+          else canvasEl?.requestPointerLock?.();
+          return;
         default:
           R.keys.add(k);
+          R.target = null;
       }
     };
     const up = (e: KeyboardEvent) => R.keys.delete(e.key.toLowerCase());
@@ -492,7 +908,7 @@ export function FirstPersonFloor({ onExit }: { onExit: () => void }) {
       window.removeEventListener("keyup", up);
       window.removeEventListener("blur", blur);
     };
-  }, [R, onExit, openInteraction, toggleFullscreen]);
+  }, [R, onExit, openInteraction, toggleFullscreen, canvasEl]);
 
   useEffect(() => {
     if (overlay) {
@@ -506,7 +922,6 @@ export function FirstPersonFloor({ onExit }: { onExit: () => void }) {
     if (!canvasEl) return;
     const ctx = canvasEl.getContext("2d");
     if (!ctx) return;
-
     const off = document.createElement("canvas");
     const offCtx = off.getContext("2d");
     if (!offCtx) return;
@@ -521,7 +936,6 @@ export function FirstPersonFloor({ onExit }: { onExit: () => void }) {
     let colors: Uint32Array = new Uint32Array(0);
     let depth: Float32Array = new Float32Array(0);
     const hits: Hit[] = [];
-    // Row palettes: [roomIndex * 2 + parity] resolved once per scanline.
     let rowPalette = new Uint32Array(0);
 
     const resize = () => {
@@ -556,42 +970,81 @@ export function FirstPersonFloor({ onExit }: { onExit: () => void }) {
       if (keys.has("s") || keys.has("arrowdown")) forward -= 1;
       if (keys.has("d")) strafe += 1;
       if (keys.has("a")) strafe -= 1;
-      // Arrow left/right turn the head for anyone not using the mouse.
       if (keys.has("arrowleft")) R.yaw -= TURN_KEY_SPEED * dt;
       if (keys.has("arrowright")) R.yaw += TURN_KEY_SPEED * dt;
 
       const sprinting = keys.has("shift");
       const speed = (sprinting ? SPRINT_SPEED : WALK_SPEED) * dt;
-      const step = moveVector(R.yaw, forward, strafe, speed);
       let moving = false;
-      if (step.dx !== 0 || step.dy !== 0) {
-        const next = resolveCollision(
-          R.solids as unknown as Solid[],
-          R.x,
-          R.y,
-          R.x + step.dx,
-          R.y + step.dy,
-          R.layout.world,
-        );
+
+      if (forward !== 0 || strafe !== 0) {
+        R.target = null;
+        const step = moveVector(R.yaw, forward, strafe, speed);
+        const next = resolveCollision(R.solids, R.x, R.y, R.x + step.dx, R.y + step.dy, R.layout.world);
         if (Math.abs(next.x - R.x) > 0.01 || Math.abs(next.y - R.y) > 0.01) {
           moving = true;
           R.moved = true;
         }
         R.x = next.x;
         R.y = next.y;
+      } else if (R.target) {
+        const dx = R.target.x - R.x;
+        const dy = R.target.y - R.y;
+        const dist = Math.hypot(dx, dy);
+        if (dist < 12) {
+          R.target = null;
+        } else {
+          const stepLen = Math.min(speed * 1.05, dist);
+          const next = resolveCollision(
+            R.solids,
+            R.x,
+            R.y,
+            R.x + (dx / dist) * stepLen,
+            R.y + (dy / dist) * stepLen,
+            R.layout.world,
+          );
+          const progressed = Math.hypot(next.x - R.x, next.y - R.y);
+          // Ease the head toward the walk direction.
+          const targetYaw = Math.atan2(dy, dx);
+          let dyaw = targetYaw - R.yaw;
+          while (dyaw > Math.PI) dyaw -= Math.PI * 2;
+          while (dyaw < -Math.PI) dyaw += Math.PI * 2;
+          R.yaw += dyaw * Math.min(1, 0.12 * dt);
+          if (progressed > 0.05) {
+            moving = true;
+            R.moved = true;
+            R.stuck = 0;
+          } else if (++R.stuck > 24) {
+            R.target = null; // blocked — give up rather than moonwalk
+            R.stuck = 0;
+          }
+          R.x = next.x;
+          R.y = next.y;
+        }
       }
-      R.bobPhase += moving ? speed * 0.32 : 0;
-      R.bobTarget = moving ? (sprinting ? 1 : 0.65) : 0;
-      R.bobAmount += (R.bobTarget - R.bobAmount) * Math.min(1, 0.15 * dt);
+
+      R.moving = moving;
+      R.walkPhase += moving ? speed * 0.3 : 0;
+      R.bobAmount += ((moving ? (sprinting ? 1 : 0.65) : 0) - R.bobAmount) * Math.min(1, 0.15 * dt);
+
+      // Remote crew chase their server positions.
+      for (const o of R.others) {
+        const dx = o.x - o.rx;
+        const dy = o.y - o.ry;
+        const d = Math.hypot(dx, dy);
+        if (d > 0.5) {
+          const stepLen = Math.min(d, 2.2 * dt);
+          o.rx += (dx / d) * stepLen;
+          o.ry += (dy / d) * stepLen;
+          o.moving = true;
+        } else {
+          o.moving = false;
+        }
+      }
 
       const dirX = Math.cos(R.yaw);
       const dirY = Math.sin(R.yaw);
-      const target = pickTarget(
-        { x: R.x, y: R.y, dirX, dirY },
-        R.interactables,
-        INTERACT_RANGE,
-        0.1,
-      );
+      const target = pickTarget({ x: R.x, y: R.y, dirX, dirY }, R.interactables, INTERACT_RANGE, 0.05);
       if (target?.id !== R.nearTarget?.id) {
         R.nearTarget = target;
         setPrompt(target ?? null);
@@ -609,15 +1062,13 @@ export function FirstPersonFloor({ onExit }: { onExit: () => void }) {
       }
     };
 
-    const drawWorld = () => {
+    // ---- world ----
+    const drawWorld = (now: number) => {
       const grid = R.grid;
       const index = R.floorIndex;
       if (!grid || !index || !image) return;
 
-      const bobPx =
-        bob && R.bobAmount > 0.01
-          ? Math.sin(R.bobPhase) * 2.6 * R.bobAmount * (bufH / 360)
-          : 0;
+      const bobPx = R.bobAmount > 0.01 ? Math.sin(R.walkPhase) * 2.4 * R.bobAmount * (bufH / 360) : 0;
       const cam = makeCamera({
         x: R.x,
         y: R.y,
@@ -638,11 +1089,9 @@ export function FirstPersonFloor({ onExit }: { onExit: () => void }) {
       const rightX = cam.dirX + cam.planeX;
       const rightY = cam.dirY + cam.planeY;
       const invCell = 1 / index.cell;
-      const invTile = 1 / FLOOR_TILE;
-      const invPanel = 1 / CEILING_PANEL;
       const horizon = cam.horizon;
 
-      // ---- floor ----
+      // Floor
       const floorStart = Math.max(0, Math.ceil(horizon + 0.5));
       for (let y = floorStart; y < bufH; y++) {
         const p = y - horizon;
@@ -653,6 +1102,7 @@ export function FirstPersonFloor({ onExit }: { onExit: () => void }) {
           rowPalette[i * 2] = fogged(palette[i], 1.04, f);
           rowPalette[i * 2 + 1] = fogged(palette[i], 0.9, f);
         }
+        const groutColor = fogged(CORRIDOR_GROUT, 1, f);
         const stepX = (rowDist * (rightX - leftX)) / bufW;
         const stepY = (rowDist * (rightY - leftY)) / bufW;
         let wx = cam.x + rowDist * leftX;
@@ -665,15 +1115,28 @@ export function FirstPersonFloor({ onExit }: { onExit: () => void }) {
             cx < 0 || cy < 0 || cx >= index.cols || cy >= index.rows
               ? 0
               : index.ids[cy * index.cols + cx];
-          const parity = (((wx * invTile) | 0) ^ ((wy * invTile) | 0)) & 1;
-          colors[o] = rowPalette[room * 2 + parity];
+          if (room === 0) {
+            // Corridor: big tiles with grout lines.
+            const gx = wx % 100;
+            const gy = wy % 100;
+            if ((gx >= 0 && gx < 3.5) || (gy >= 0 && gy < 3.5)) {
+              colors[o] = groutColor;
+            } else {
+              const parity = ((((wx / 100) | 0) ^ ((wy / 100) | 0)) & 1) as 0 | 1;
+              colors[o] = rowPalette[parity];
+            }
+          } else {
+            // Carpet: weave stripes.
+            const stripe = ((wx + wy) / 28) | 0;
+            colors[o] = rowPalette[room * 2 + (stripe & 1)];
+          }
           depth[o] = rowDist;
           wx += stepX;
           wy += stepY;
         }
       }
 
-      // ---- ceiling ----
+      // Ceiling with light panels.
       const ceilHeight = CEILING_HEIGHT - cam.eye;
       const ceilEnd = Math.min(bufH, Math.floor(horizon - 0.5));
       for (let y = 0; y < ceilEnd; y++) {
@@ -681,35 +1144,34 @@ export function FirstPersonFloor({ onExit }: { onExit: () => void }) {
         if (p <= 0.0001) continue;
         const rowDist = (ceilHeight * cam.projDist) / p;
         const f = fogAmount(rowDist);
-        const base = fogged(CEIL_BASE, 0.86, f);
-        const panel = fogged(CEIL_PANEL, 1.02, f);
+        const base = fogged(CEIL_BASE, 0.88, f);
+        const panel = fogged(CEIL_PANEL, 1.05, f);
+        const rim = fogged(CEIL_BASE, 0.72, f);
         const stepX = (rowDist * (rightX - leftX)) / bufW;
         const stepY = (rowDist * (rightY - leftY)) / bufW;
         let wx = cam.x + rowDist * leftX;
         let wy = cam.y + rowDist * leftY;
         let o = y * bufW;
         for (let x = 0; x < bufW; x++, o++) {
-          const lit = ((((wx * invPanel) | 0) + ((wy * invPanel) | 0)) & 1) === 0;
-          colors[o] = lit ? panel : base;
+          const lx = ((wx % 200) + 200) % 200;
+          const ly = ((wy % 200) + 200) % 200;
+          const inPanel = lx > 55 && lx < 145 && ly > 55 && ly < 145;
+          const onRim = !inPanel && lx > 48 && lx < 152 && ly > 48 && ly < 152;
+          colors[o] = inPanel ? panel : onRim ? rim : base;
           depth[o] = rowDist;
           wx += stepX;
           wy += stepY;
         }
       }
 
-      // ---- walls, painted far to near so low solids don't hide what's behind ----
+      // Walls, far to near per column.
       for (let x = 0; x < bufW; x++) {
         const ray = columnRay(cam, x + 0.5);
         const n = castRay(grid, cam.x, cam.y, ray.dx, ray.dy, VIEW_DISTANCE, hits);
-        for (let i = n - 1; i >= 0; i--) {
-          const hit = hits[i];
-          drawSlice(x, hit, cam);
-        }
+        for (let i = n - 1; i >= 0; i--) drawSlice(x, hits[i], cam);
       }
 
-      // ---- crew and props ----
-      drawSprites(cam);
-
+      drawSprites(cam, now);
       offCtx.putImageData(image, 0, 0);
     };
 
@@ -720,15 +1182,9 @@ export function FirstPersonFloor({ onExit }: { onExit: () => void }) {
       const f = fogAmount(d);
       const [r, g, b] = hexRgb(s.tint);
 
-      // Faces pointing along x catch less light than those facing the windows.
       let light = hit.axis === 0 ? 0.72 : 0.97;
-      // Panel seams every quarter of a face.
       const seam = hit.u % 0.25;
-      if (seam < 0.012 || seam > 0.238) light *= 0.86;
-      const body = fogged([r, g, b], light, f);
-      // Top surfaces face the ceiling lights, so they read brightest.
-      const capColor = fogged([r, g, b], 1.06, f);
-      const baseShadow = fogged([r, g, b], light * 0.6, f);
+      if (s.kind !== "building" && (seam < 0.012 || seam > 0.238)) light *= 0.86;
 
       const yBottom = projectHeight(cam, 0, d);
       const yTop = projectHeight(cam, s.height, d);
@@ -736,8 +1192,11 @@ export function FirstPersonFloor({ onExit }: { onExit: () => void }) {
       const y1 = Math.min(bufH - 1, Math.floor(yBottom));
       if (y1 < 0 || y0 > bufH - 1) return;
 
-      // Anything shorter than the eye shows its top surface — that's what makes
-      // a desk read as a box and not a poster stuck to the floor.
+      const body = fogged([r, g, b], light, f);
+      const capColor = fogged([r, g, b], 1.06, f);
+      const baseShadow = fogged([r, g, b], light * 0.6, f);
+
+      // Low furniture shows its top surface.
       if (s.height < cam.eye) {
         const yTopBack = projectHeight(cam, s.height, Math.max(hit.exit, d + 0.01));
         const capTop = Math.max(0, Math.ceil(yTopBack));
@@ -751,11 +1210,52 @@ export function FirstPersonFloor({ onExit }: { onExit: () => void }) {
         y0 = Math.max(y0, capTop);
       }
 
+      const span = yBottom - yTop;
+      const invSpan = span > 0.0001 ? 1 / span : 0;
       const contact = Math.max(y0, y1 - 1);
+      const isTower = s.windows === "tower";
+      const isShell = s.windows === "shell";
+      const wallLen = hit.axis === 0 ? s.h : s.w;
+
       for (let y = y0; y <= y1; y++) {
         const o = y * bufW + x;
         if (d >= depth[o]) continue;
-        colors[o] = y >= contact ? baseShadow : body;
+        let c: number;
+        // Height above the floor at this pixel.
+        const z = s.height * (yBottom - y) * invSpan;
+        if (isTower && z > 24 && z < s.height - 14) {
+          // Lit window grid on the towers.
+          const row = ((z - 24) / 40) | 0;
+          const inRow = (z - 24) % 40 < 24;
+          const along = hit.u * wallLen;
+          const col = (along / 34) | 0;
+          const inCol = along % 34 > 7;
+          if (inRow && inCol) {
+            const lit = hash2(col + (s.seed ?? 0) * 97, row) % 10 < 6;
+            c = fogged(lit ? WINDOW_LIT : WINDOW_DARK, hit.axis === 0 ? 0.9 : 1, f);
+          } else {
+            c = body;
+          }
+        } else if (isShell && z > 96 && z < 176) {
+          // Daylight band around the shell.
+          const t = (z - 96) / 80;
+          const sky: [number, number, number] = [
+            SKY_BOTTOM[0] + (SKY_TOP[0] - SKY_BOTTOM[0]) * t,
+            SKY_BOTTOM[1] + (SKY_TOP[1] - SKY_BOTTOM[1]) * t,
+            SKY_BOTTOM[2] + (SKY_TOP[2] - SKY_BOTTOM[2]) * t,
+          ];
+          const along = hit.u * wallLen;
+          c = along % 90 < 4 ? body : fogged(sky, 1.04, f * 0.5);
+        } else if (z < 7) {
+          c = baseShadow; // baseboard
+        } else if (s.kind === "shell" && z < 42) {
+          c = fogged([r, g, b], light * 0.82, f); // wainscot
+        } else if (y >= contact) {
+          c = baseShadow;
+        } else {
+          c = body;
+        }
+        colors[o] = c;
         depth[o] = d;
       }
     };
@@ -780,7 +1280,7 @@ export function FirstPersonFloor({ onExit }: { onExit: () => void }) {
       if (x1 < 0 || x0 > bufW - 1 || yBottom < 0 || yTop > bufH - 1) return;
 
       const glowRgb = glow ? hexRgb(glow) : null;
-      const pulse = glowRgb ? 0.2 + 0.1 * Math.sin(performance.now() / 320) : 0;
+      const pulse = glowRgb ? 0.18 + 0.1 * Math.sin(performance.now() / 320) : 0;
       const f = fogAmount(d);
       const px0 = Math.max(0, x0);
       const px1 = Math.min(bufW - 1, x1);
@@ -809,7 +1309,6 @@ export function FirstPersonFloor({ onExit }: { onExit: () => void }) {
             sb = sb * (1 - pulse) + glowRgb[2] * pulse;
           }
           if (a < 250) {
-            // Soft edges blend with what's already there instead of hard-cutting.
             const prev = colors[o];
             const t = a / 255;
             sr = sr * t + (prev & 255) * (1 - t);
@@ -826,7 +1325,7 @@ export function FirstPersonFloor({ onExit }: { onExit: () => void }) {
       }
     };
 
-    const drawSprites = (cam: ReturnType<typeof makeCamera>) => {
+    const drawSprites = (cam: ReturnType<typeof makeCamera>, now: number) => {
       type Entry = {
         d: number;
         draw: () => void;
@@ -841,30 +1340,84 @@ export function FirstPersonFloor({ onExit }: { onExit: () => void }) {
         const yTop = projectHeight(cam, p.baseZ + p.worldH, proj.depth);
         entries.push({
           d: proj.depth,
-          draw: () =>
-            blit(p.bitmap, proj.screenX, yTop, yBottom, p.worldW, proj.depth, p.glow),
+          draw: () => blit(p.bitmap, proj.screenX, yTop, yBottom, p.worldW, proj.depth, p.glow),
         });
       }
 
+      // The resident editor, forever at the desk.
+      if (R.npc) {
+        const proj = projectSprite(cam, R.npc.x, R.npc.y);
+        if (proj) {
+          const frame = ((now / 700) | 0) % 2 === 0 ? 0 : 1;
+          const bitmap = seatedEditorSprite(frame as 0 | 1);
+          const yBottom = projectHeight(cam, 0, proj.depth);
+          const yTop = projectHeight(cam, 58, proj.depth);
+          entries.push({
+            d: proj.depth,
+            draw: () => blit(bitmap, proj.screenX, yTop, yBottom, 54, proj.depth, null),
+          });
+        }
+      }
+
+      // The live school clock.
+      if (R.clockAt) {
+        const proj = projectSprite(cam, R.clockAt.x, R.clockAt.y);
+        if (proj) {
+          const t = new Date();
+          const bitmap = bigClockSprite(t.getHours(), t.getMinutes());
+          const size = PROP_SIZE["big-clock"];
+          const yBottom = projectHeight(cam, 40, proj.depth);
+          const yTop = projectHeight(cam, 40 + size.worldH, proj.depth);
+          entries.push({
+            d: proj.depth,
+            draw: () => blit(bitmap, proj.screenX, yTop, yBottom, size.worldW, proj.depth, null),
+          });
+        }
+      }
+
       for (const other of R.others) {
-        const proj = projectSprite(cam, other.x, other.y);
+        const proj = projectSprite(cam, other.rx, other.ry);
         if (!proj) continue;
-        const orientation = facingBucket(
-          other.facing,
-          cam.x,
-          cam.y,
-          other.x,
-          other.y,
-        ) as Orientation;
-        const bitmap = crewSprite(other.character, orientation, other.status);
+        const orientation = facingBucket(other.facing, cam.x, cam.y, other.rx, other.ry) as Orientation;
+        const frame: WalkFrame = other.moving ? ((((now / 140) | 0) % 4) as WalkFrame) : 0;
+        const bitmap = crewSprite(other.character, orientation, other.status, frame);
         const yBottom = projectHeight(cam, 0, proj.depth);
         const yTop = projectHeight(cam, CREW_SIZE.worldH, proj.depth);
         entries.push({
           d: proj.depth,
-          draw: () =>
-            blit(bitmap, proj.screenX, yTop, yBottom, CREW_SIZE.worldW, proj.depth, null),
+          draw: () => blit(bitmap, proj.screenX, yTop, yBottom, CREW_SIZE.worldW, proj.depth, null),
           label: { x: proj.screenX, y: yTop, d: proj.depth, player: other },
         });
+      }
+
+      // Walk-target marker.
+      if (R.target) {
+        const proj = projectSprite(cam, R.target.x, R.target.y);
+        if (proj) {
+          const yFloor = projectHeight(cam, 0, proj.depth);
+          entries.push({
+            d: proj.depth,
+            draw: () => {
+              const o = Math.round(yFloor) * bufW + Math.round(proj.screenX);
+              if (o >= 0 && o < colors.length && proj.depth < depth[o] + 2) {
+                const ringR = Math.max(2, (16 / proj.depth) * cam.projDist * 0.06);
+                const cxPix = Math.round(proj.screenX);
+                const cyPix = Math.round(yFloor);
+                const pulse = 0.6 + 0.4 * Math.sin(now / 180);
+                for (let a = 0; a < 20; a++) {
+                  const ang = (a / 20) * Math.PI * 2;
+                  const px = Math.round(cxPix + Math.cos(ang) * ringR);
+                  const py = Math.round(cyPix + Math.sin(ang) * ringR * 0.45);
+                  if (px < 0 || py < 0 || px >= bufW || py >= bufH) continue;
+                  const oo = py * bufW + px;
+                  if (proj.depth < depth[oo] + 2) {
+                    colors[oo] = pack(255 * pulse, 214 * pulse, 102 * pulse);
+                  }
+                }
+              }
+            },
+          });
+        }
       }
 
       entries.sort((a, b) => b.d - a.d);
@@ -875,7 +1428,7 @@ export function FirstPersonFloor({ onExit }: { onExit: () => void }) {
       }
     };
 
-    /** Nameplates and the minimap go on the crisp 2D layer, not the pixel buffer. */
+    // Crisp 2D layer.
     const drawOverlayLayer = () => {
       const cssW = canvasEl.clientWidth;
       const cssH = canvasEl.clientHeight;
@@ -920,16 +1473,17 @@ export function FirstPersonFloor({ onExit }: { onExit: () => void }) {
     const drawMinimap = (cssW: number, cssH: number) => {
       const L = R.layout;
       if (!L || L.rooms.length === 0) return;
-      const size = Math.min(190, Math.max(130, cssW * 0.13));
+      const size = Math.min(220, Math.max(150, cssW * 0.15));
       const pad = 18;
       const x0 = pad;
       const y0 = cssH - size - pad;
       const scale = Math.min(size / L.world.w, size / L.world.h) * 0.92;
       const ox = x0 + (size - L.world.w * scale) / 2;
       const oy = y0 + (size - L.world.h * scale) / 2;
+      R.minimap = { x0: ox, y0: oy, scale, panelX: x0, panelY: y0, panelSize: size };
 
       ctx.save();
-      ctx.fillStyle = "rgba(18,17,15,0.68)";
+      ctx.fillStyle = "rgba(18,17,15,0.7)";
       ctx.beginPath();
       ctx.roundRect(x0, y0, size, size, 10);
       ctx.fill();
@@ -939,29 +1493,46 @@ export function FirstPersonFloor({ onExit }: { onExit: () => void }) {
       ctx.clip();
 
       for (const room of L.rooms) {
-        ctx.fillStyle = `${room.accent}55`;
-        ctx.fillRect(
-          ox + room.rect.x * scale,
-          oy + room.rect.y * scale,
-          room.rect.w * scale,
-          room.rect.h * scale,
-        );
-        if (room.missionCount > 0) {
-          ctx.fillStyle = "#ffd166";
-          ctx.beginPath();
-          ctx.arc(ox + room.board.x * scale, oy + room.board.y * scale, 2.5, 0, Math.PI * 2);
-          ctx.fill();
-        }
+        ctx.fillStyle = `${room.accent}58`;
+        ctx.fillRect(ox + room.rect.x * scale, oy + room.rect.y * scale, room.rect.w * scale, room.rect.h * scale);
       }
+      for (const b of L.buildings) {
+        ctx.fillStyle = b.tint;
+        ctx.fillRect(ox + b.rect.x * scale, oy + b.rect.y * scale, b.rect.w * scale, b.rect.h * scale);
+      }
+      // Zone labels once the map is big enough to carry them.
+      ctx.font = `600 ${Math.max(6.5, size * 0.038)}px ui-sans-serif, system-ui, sans-serif`;
+      ctx.textAlign = "center";
+      ctx.fillStyle = "rgba(247,242,230,0.85)";
+      for (const room of L.rooms) {
+        const short = SHORT_NAMES[room.zone] ?? room.name.slice(0, 6);
+        ctx.fillText(
+          short,
+          ox + (room.rect.x + room.rect.w / 2) * scale,
+          oy + (room.rect.y + room.rect.h / 2) * scale + 2,
+        );
+      }
+      // Bounty board dot
+      ctx.fillStyle = "#ffd166";
+      ctx.beginPath();
+      ctx.arc(ox + L.plaza.board.x * scale, oy + L.plaza.board.y * scale, 3, 0, Math.PI * 2);
+      ctx.fill();
 
       for (const other of R.others) {
         ctx.fillStyle = other.character.suit;
         ctx.beginPath();
-        ctx.arc(ox + other.x * scale, oy + other.y * scale, 3, 0, Math.PI * 2);
+        ctx.arc(ox + other.rx * scale, oy + other.ry * scale, 3, 0, Math.PI * 2);
         ctx.fill();
       }
 
-      // Field of view wedge, so the map reads as "where am I looking".
+      if (R.target) {
+        ctx.strokeStyle = "#ffd166";
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.arc(ox + R.target.x * scale, oy + R.target.y * scale, 5, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+
       const px = ox + R.x * scale;
       const py = oy + R.y * scale;
       ctx.fillStyle = "rgba(255,255,255,0.18)";
@@ -988,10 +1559,6 @@ export function FirstPersonFloor({ onExit }: { onExit: () => void }) {
       ctx.beginPath();
       ctx.arc(cx, cy, r, 0, Math.PI * 2);
       ctx.stroke();
-      ctx.beginPath();
-      ctx.moveTo(cx, cy - 1.5);
-      ctx.lineTo(cx, cy + 1.5);
-      ctx.stroke();
       ctx.restore();
     };
 
@@ -1000,7 +1567,7 @@ export function FirstPersonFloor({ onExit }: { onExit: () => void }) {
       last = now;
       if (!overlayRef.current) update(dt, now);
       if (R.grid && image) {
-        drawWorld();
+        drawWorld(now);
         ctx.imageSmoothingEnabled = true;
         ctx.drawImage(off, 0, 0, canvasEl.clientWidth, canvasEl.clientHeight);
         drawOverlayLayer();
@@ -1011,13 +1578,9 @@ export function FirstPersonFloor({ onExit }: { onExit: () => void }) {
         frames = 0;
         fpsAt = now;
         const room = R.layout?.rooms.find(
-          (r) =>
-            R.x >= r.rect.x &&
-            R.x <= r.rect.x + r.rect.w &&
-            R.y >= r.rect.y &&
-            R.y <= r.rect.y + r.rect.h,
+          (r) => R.x >= r.rect.x && R.x <= r.rect.x + r.rect.w && R.y >= r.rect.y && R.y <= r.rect.y + r.rect.h,
         );
-        setHud({ fps, room: room?.name ?? "Corridor" });
+        setHud({ fps, room: room?.name ?? "Plaza" });
       }
       raf = requestAnimationFrame(loop);
     };
@@ -1028,8 +1591,40 @@ export function FirstPersonFloor({ onExit }: { onExit: () => void }) {
       window.removeEventListener("resize", onResize);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [canvasEl, bob]);
+  }, [canvasEl]);
 
+  // Minimap click-to-walk.
+  const onCanvasAuxClick = useCallback(
+    (e: React.MouseEvent<HTMLCanvasElement>) => {
+      const mm = R.minimap;
+      if (!mm || !canvasEl) return false;
+      const rect = canvasEl.getBoundingClientRect();
+      const cx = e.clientX - rect.left;
+      const cy = e.clientY - rect.top;
+      if (cx < mm.panelX || cy < mm.panelY || cx > mm.panelX + mm.panelSize || cy > mm.panelY + mm.panelSize) {
+        return false;
+      }
+      const wx = (cx - mm.x0) / mm.scale;
+      const wy = (cy - mm.y0) / mm.scale;
+      const L = R.layout;
+      if (!L || wx < 20 || wy < 20 || wx > L.world.w - 20 || wy > L.world.h - 20) return true;
+      R.target = { x: wx, y: wy };
+      return true;
+    },
+    [R, canvasEl],
+  );
+
+  const goTo = useCallback(
+    (x: number, y: number) => {
+      R.target = { x, y };
+      setOverlay(null);
+    },
+    [R],
+  );
+
+  const timeslot = state.data?.timeslot;
+  const meeting = state.data?.meeting;
+  const nowEditing = state.data?.nowEditing;
   const levels = state.data?.levels;
   const lvl = levelInfo(state.data?.me?.points ?? currentUser.points);
   const loading = state.isLoading || layout.rooms.length === 0;
@@ -1038,23 +1633,26 @@ export function FirstPersonFloor({ onExit }: { onExit: () => void }) {
     <div className="fixed inset-0 z-[120] flex flex-col bg-[#12110f] text-[#f7f2e6] select-none">
       <canvas
         ref={setCanvasEl}
-        onClick={requestLock}
-        className="absolute inset-0 h-full w-full cursor-none"
-        aria-label="First-person view of the office floor"
+        onClickCapture={(e) => {
+          if (onCanvasAuxClick(e)) {
+            e.stopPropagation();
+            e.preventDefault();
+          }
+        }}
+        className={cn("absolute inset-0 h-full w-full", locked ? "cursor-none" : "cursor-crosshair")}
+        aria-label="First-person view of the campus"
       />
 
       {loading ? (
         <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-[#12110f]">
           <Loader2 className="size-6 animate-spin opacity-70" />
-          <p className="font-mono text-xs tracking-widest uppercase opacity-70">
-            Entering the floor…
-          </p>
+          <p className="font-mono text-xs tracking-widest uppercase opacity-70">Entering the campus…</p>
         </div>
       ) : null}
 
       {/* ---- HUD ---- */}
       <div className="pointer-events-none absolute inset-0 z-10">
-        {/* Top left: who you are down here */}
+        {/* Identity */}
         <div className="absolute top-4 left-4 flex items-center gap-2.5 rounded-xl bg-black/45 px-3 py-2 backdrop-blur-sm">
           <span
             className="flex size-9 items-center justify-center rounded-lg text-[0.6rem] font-bold"
@@ -1076,10 +1674,7 @@ export function FirstPersonFloor({ onExit }: { onExit: () => void }) {
                     key={key}
                     title={`${SKILL_META[key].label} — level ${levels[key] ?? 0}`}
                     className="flex size-6 items-center justify-center rounded font-mono text-[0.6rem] font-bold"
-                    style={{
-                      background: `${SKILL_META[key].color}30`,
-                      color: SKILL_META[key].color,
-                    }}
+                    style={{ background: `${SKILL_META[key].color}30`, color: SKILL_META[key].color }}
                   >
                     {levels[key] ?? 0}
                   </span>
@@ -1088,7 +1683,60 @@ export function FirstPersonFloor({ onExit }: { onExit: () => void }) {
           </div>
         </div>
 
-        {/* Top right: floor status */}
+        {/* Meeting banner */}
+        {meeting ? (
+          <button
+            onClick={() => setOverlay({ kind: "conference" })}
+            className="pointer-events-auto absolute inset-x-0 top-4 mx-auto flex w-fit items-center gap-2 rounded-full bg-[#7d1e30] px-4 py-2 text-xs font-semibold shadow-lg transition-transform hover:scale-[1.02]"
+          >
+            <Bell className="size-3.5 animate-pulse" />
+            Urgent meeting: {meeting.title}
+            {meeting.meetingAt ? (
+              <span className="opacity-75">
+                · {new Date(meeting.meetingAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+              </span>
+            ) : null}
+          </button>
+        ) : nowEditing ? (
+          <div className="absolute inset-x-0 top-4 mx-auto flex w-fit items-center gap-2 rounded-full bg-black/55 px-4 py-2 text-xs backdrop-blur-sm">
+            <Video className="size-3.5 text-[#e0a862]" />
+            <span className="font-medium">Now editing:</span>
+            <span className="opacity-80">
+              {nowEditing.title}
+              {nowEditing.clientName ? ` — ${nowEditing.clientName}` : ""}
+            </span>
+            {nowEditing.editorName ? (
+              <span className="opacity-55">by {nowEditing.editorName}</span>
+            ) : null}
+          </div>
+        ) : null}
+
+        {/* Timetable chip + lunch gate */}
+        {timeslot?.current || timeslot?.needsRelogin ? (
+          <div className="absolute top-16 left-4 flex flex-col gap-1.5">
+            {timeslot.current ? (
+              <button
+                onClick={() => setOverlay({ kind: "timetable" })}
+                className="pointer-events-auto flex items-center gap-2 rounded-lg bg-black/45 px-2.5 py-1.5 text-[0.7rem] backdrop-blur-sm transition-colors hover:bg-black/65"
+              >
+                <AlarmClock className="size-3 opacity-70" />
+                <span className="font-medium">{timeslot.current.label}</span>
+                <span className="font-mono opacity-55">{slotRangeLabel(timeslot.current)}</span>
+              </button>
+            ) : null}
+            {timeslot.needsRelogin ? (
+              <button
+                onClick={() => relogin.mutate()}
+                className="pointer-events-auto flex items-center gap-2 rounded-lg bg-[#7a5c16] px-2.5 py-1.5 text-[0.7rem] font-semibold backdrop-blur-sm transition-colors hover:bg-[#8f6d1c]"
+              >
+                <UtensilsCrossed className="size-3" />
+                Lunch is over — tap to log back in
+              </button>
+            ) : null}
+          </div>
+        ) : null}
+
+        {/* Top right: status + controls */}
         <div className="absolute top-4 right-4 flex items-center gap-2">
           <div className="flex items-center gap-2 rounded-xl bg-black/45 px-3 py-2 text-xs backdrop-blur-sm">
             <Compass className="size-3.5 opacity-60" />
@@ -1100,11 +1748,11 @@ export function FirstPersonFloor({ onExit }: { onExit: () => void }) {
             <span className="font-mono tabular-nums opacity-50">{hud.fps} fps</span>
           </div>
           <button
-            onClick={() => setBob((b) => !b)}
-            title={bob ? "Head bob on" : "Head bob off"}
+            onClick={() => setOverlay({ kind: "map" })}
+            title="Campus map (M)"
             className="pointer-events-auto rounded-xl bg-black/45 p-2 backdrop-blur-sm transition-colors hover:bg-black/65"
           >
-            <Waves className={cn("size-4", !bob && "opacity-40")} />
+            <MapIcon className="size-4" />
           </button>
           <button
             onClick={toggleFullscreen}
@@ -1122,7 +1770,7 @@ export function FirstPersonFloor({ onExit }: { onExit: () => void }) {
           </button>
         </div>
 
-        {/* Centre: interaction prompt */}
+        {/* Interaction prompt */}
         {prompt && !overlay ? (
           <div className="absolute inset-x-0 top-[58%] flex justify-center">
             <div className="flex items-center gap-2.5 rounded-full bg-black/70 px-4 py-2 backdrop-blur-sm">
@@ -1135,28 +1783,21 @@ export function FirstPersonFloor({ onExit }: { onExit: () => void }) {
           </div>
         ) : null}
 
-        {/* Bottom right: controls */}
+        {/* Bottom right: hotkeys */}
         <div className="absolute right-4 bottom-4 flex flex-col items-end gap-1.5 text-[0.65rem]">
           <div className="flex gap-1.5">
-            {[
-              ["B", "Bounties"],
-              ["T", "Skills"],
-              ["Tab", "Crew"],
-              ["H", "Help"],
-            ].map(([key, label]) => (
+            {(
+              [
+                ["B", "Bounties", "bounties"],
+                ["T", "Skills", "skills"],
+                ["M", "Map", "map"],
+                ["Tab", "Crew", "roster"],
+                ["H", "Help", "help"],
+              ] as const
+            ).map(([key, label, kind]) => (
               <button
                 key={key}
-                onClick={() =>
-                  setOverlay(
-                    key === "B"
-                      ? "bounties"
-                      : key === "T"
-                        ? "skills"
-                        : key === "Tab"
-                          ? "roster"
-                          : "help",
-                  )
-                }
+                onClick={() => setOverlay({ kind })}
                 className="pointer-events-auto flex items-center gap-1.5 rounded-lg bg-black/45 px-2.5 py-1.5 backdrop-blur-sm transition-colors hover:bg-black/65"
               >
                 <kbd className="font-mono opacity-60">{key}</kbd>
@@ -1164,43 +1805,21 @@ export function FirstPersonFloor({ onExit }: { onExit: () => void }) {
               </button>
             ))}
           </div>
-          <p className="rounded-lg bg-black/35 px-2.5 py-1.5 font-mono tracking-wide opacity-55 backdrop-blur-sm">
-            WASD move · mouse look · shift sprint · E interact
+          <p className="flex items-center gap-1.5 rounded-lg bg-black/35 px-2.5 py-1.5 font-mono tracking-wide opacity-55 backdrop-blur-sm">
+            <MousePointerClick className="size-3" />
+            click floor to walk · drag to look · WASD · L mouse-look · E interact
           </p>
         </div>
-
-        {/* Click-to-look veil */}
-        {!locked && !overlay && !loading ? (
-          <button
-            onClick={requestLock}
-            className="pointer-events-auto absolute inset-0 flex cursor-pointer flex-col items-center justify-center gap-3 bg-black/45 backdrop-blur-[2px]"
-          >
-            <Crosshair className="size-7 opacity-70" />
-            <p className="text-sm font-medium">Click to look around</p>
-            <p className="font-mono text-[0.65rem] tracking-widest uppercase opacity-55">
-              Esc releases the mouse · Esc again leaves the floor
-            </p>
-          </button>
-        ) : null}
       </div>
 
       {/* ---- Overlays ---- */}
       {overlay ? (
         <GameOverlay
-          title={
-            overlay === "bounties"
-              ? "Bounty Board"
-              : overlay === "skills"
-                ? "Skill Tree"
-                : overlay === "roster"
-                  ? "Crew"
-                  : overlay === "missions"
-                    ? (activeRoom?.name ?? "Missions")
-                    : "How to play"
-          }
+          title={overlayTitle(overlay)}
+          wide={overlay.kind === "city" || overlay.kind === "creative" || overlay.kind === "map"}
           onClose={() => setOverlay(null)}
         >
-          {overlay === "bounties" ? (
+          {overlay.kind === "bounties" ? (
             <BountyBoardPanel
               onChanged={() => {
                 utils.workspace.state.invalidate();
@@ -1208,41 +1827,118 @@ export function FirstPersonFloor({ onExit }: { onExit: () => void }) {
               }}
             />
           ) : null}
-          {overlay === "skills" ? <SkillTreePanel /> : null}
-          {overlay === "roster" ? <CrewRosterPanel /> : null}
-          {overlay === "missions" && activeRoom ? (
+          {overlay.kind === "skills" ? <SkillTreePanel /> : null}
+          {overlay.kind === "roster" ? <CrewRosterPanel /> : null}
+          {overlay.kind === "missions" && overlay.refId ? (
             <RoomMissionsPanel
-              roomId={activeRoom.id}
+              roomId={overlay.refId}
               onChanged={() => {
                 utils.workspace.state.invalidate();
                 utils.task.myWork.invalidate();
-                utils.dashboard.overview.invalidate();
                 utils.skill.tree.invalidate();
                 utils.me.invalidate();
               }}
             />
           ) : null}
-          {overlay === "help" ? <HelpPanel /> : null}
+          {overlay.kind === "video" ? <VideoBayPanel /> : null}
+          {overlay.kind === "city" ? (
+            <DevCityPanel
+              initialBuilding={
+                overlay.refId === "tower-complete"
+                  ? "complete"
+                  : overlay.refId === "bungalow"
+                    ? "tools"
+                    : "pipeline"
+              }
+            />
+          ) : null}
+          {overlay.kind === "conference" ? <ConferencePanel /> : null}
+          {overlay.kind === "tasks" ? <TasksRoomPanel /> : null}
+          {overlay.kind === "approvals" ? <ApprovalsPanel /> : null}
+          {overlay.kind === "outreach" ? <OutreachPanel /> : null}
+          {overlay.kind === "creative" ? (
+            <CreativePanel
+              initialDoor={overlay.refId === "internal" ? "internal" : "clients"}
+              onOpenBoard={(docId) => router.push(`/documents/${docId}`)}
+            />
+          ) : null}
+          {overlay.kind === "shoot" ? <ShootPanel /> : null}
+          {overlay.kind === "timetable" ? <TimetablePanel /> : null}
+          {overlay.kind === "map" ? <CampusMap layout={layout} me={{ x: R.x, y: R.y }} onGo={goTo} /> : null}
+          {overlay.kind === "help" ? <HelpPanel /> : null}
         </GameOverlay>
       ) : null}
     </div>
   );
 }
 
+const SHORT_NAMES: Record<string, string> = {
+  developer: "DEV CITY",
+  "video-editing": "VIDEO",
+  conference: "CONF",
+  creative: "CREATIVE",
+  tasks: "TASKS",
+  "managing-heads": "HEADS",
+  timetable: "TIME",
+  outreach: "OUTREACH",
+  shoot: "SHOOT",
+  client: "CLIENT",
+};
+
+function overlayTitle(overlay: NonNullable<Overlay>): string {
+  switch (overlay.kind) {
+    case "bounties":
+      return "Bounty Board";
+    case "skills":
+      return "Skill Tree";
+    case "roster":
+      return "Crew";
+    case "missions":
+      return overlay.name ?? "Missions";
+    case "video":
+      return "Video Editing Bay";
+    case "city":
+      return overlay.name ?? "Developer City";
+    case "conference":
+      return "Conference Hall";
+    case "tasks":
+      return "Task Room";
+    case "approvals":
+      return "Managing Heads — Approvals";
+    case "outreach":
+      return "Outreach Room";
+    case "creative":
+      return "Creative Studio";
+    case "shoot":
+      return "Shoot Room";
+    case "timetable":
+      return "Timetable";
+    case "map":
+      return "Campus Map";
+    case "help":
+      return "How to play";
+  }
+}
+
 function GameOverlay({
   title,
+  wide,
   onClose,
   children,
 }: {
   title: string;
+  wide?: boolean;
   onClose: () => void;
   children: React.ReactNode;
 }) {
   return (
     <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
-      {/* The panel drops back to app colours so the boards look the same in the
-          game as they do on the page — one design, two contexts. */}
-      <div className="flex max-h-[86vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl bg-card text-card-foreground shadow-2xl ring-1 ring-foreground/10">
+      <div
+        className={cn(
+          "flex max-h-[88vh] w-full flex-col overflow-hidden rounded-2xl bg-card text-card-foreground shadow-2xl ring-1 ring-foreground/10",
+          wide ? "max-w-5xl" : "max-w-4xl",
+        )}
+      >
         <div className="flex items-center justify-between border-b border-border px-5 py-3.5">
           <h2 className="font-heading text-sm font-semibold tracking-wide">{title}</h2>
           <button
@@ -1258,32 +1954,102 @@ function GameOverlay({
   );
 }
 
+/** The full campus map: rooms, buildings, you — click anywhere to auto-walk. */
+function CampusMap({
+  layout,
+  me,
+  onGo,
+}: {
+  layout: Layout;
+  me: { x: number; y: number };
+  onGo: (x: number, y: number) => void;
+}) {
+  const W = 900;
+  const scale = Math.min(W / layout.world.w, 520 / layout.world.h);
+  const H = Math.round(layout.world.h * scale);
+  return (
+    <div className="space-y-3">
+      <p className="text-xs text-muted-foreground">
+        Click a room to walk there. The yellow dot is the bounty board; towers are the developer city.
+      </p>
+      <div
+        className="relative mx-auto overflow-hidden rounded-xl border border-border bg-muted/40"
+        style={{ width: Math.round(layout.world.w * scale), height: H }}
+      >
+        {layout.rooms.map((room) => (
+          <button
+            key={room.id}
+            onClick={() => onGo(room.board.x, room.board.y + 40)}
+            className="absolute flex flex-col items-center justify-center rounded-md text-[0.65rem] font-semibold transition-transform hover:z-10 hover:scale-[1.03]"
+            style={{
+              left: room.rect.x * scale,
+              top: room.rect.y * scale,
+              width: room.rect.w * scale,
+              height: room.rect.h * scale,
+              background: `${room.accent}33`,
+              border: `1.5px solid ${room.accent}88`,
+              color: "var(--color-foreground)",
+            }}
+          >
+            {room.name}
+            <span className="font-mono text-[0.55rem] font-normal opacity-60">
+              {room.missionCount > 0 ? `${room.missionCount} missions` : ""}
+            </span>
+          </button>
+        ))}
+        {layout.buildings.map((b) => (
+          <div
+            key={b.key}
+            className="pointer-events-none absolute flex items-center justify-center rounded-sm text-[0.55rem] font-bold text-white/90"
+            style={{
+              left: b.rect.x * scale,
+              top: b.rect.y * scale,
+              width: b.rect.w * scale,
+              height: b.rect.h * scale,
+              background: b.tint,
+            }}
+          >
+            {b.key === "tower-pipeline" ? "TOWER 1" : b.key === "tower-complete" ? "TOWER 2" : "TOOLS"}
+          </div>
+        ))}
+        <span
+          className="absolute size-2 rounded-full bg-[#ffd166] ring-2 ring-black/40"
+          style={{ left: layout.plaza.board.x * scale - 4, top: layout.plaza.board.y * scale - 4 }}
+        />
+        <span
+          className="absolute size-2.5 rounded-full bg-foreground ring-2 ring-background"
+          style={{ left: me.x * scale - 5, top: me.y * scale - 5 }}
+        />
+      </div>
+    </div>
+  );
+}
+
 function HelpPanel() {
   const rows: [string, string][] = [
+    ["Click floor", "Walk there — a marker shows the spot"],
+    ["Drag", "Look around (no capture needed)"],
     ["W A S D", "Walk and strafe"],
-    ["Mouse", "Look — click the floor to capture, Esc to release"],
-    ["← →", "Turn without a mouse"],
     ["Shift", "Sprint"],
-    ["E", "Interact with the board you're facing"],
-    ["B", "Bounty board — unclaimed missions anyone can grab"],
-    ["T", "Skill tree — your craft levels and what they unlock"],
+    ["L", "Toggle immersive mouse-look"],
+    ["E / Click", "Interact with the board or door you face"],
+    ["B", "Bounty board — unclaimed missions"],
+    ["T", "Skill tree"],
+    ["M", "Campus map — click a room to auto-walk"],
     ["Tab", "Crew roster"],
-    ["F", "Toggle fullscreen"],
-    ["Esc", "Close a panel, release the mouse, then leave the floor"],
+    ["F", "Browser fullscreen"],
+    ["Esc", "Close panel → release mouse → leave the floor"],
   ];
   return (
     <div className="space-y-4">
       <p className="text-sm text-muted-foreground">
-        You are standing on the office floor in first person. Walk to a room&apos;s board to
-        see its missions, or head to the bounty board in the common area to grab
-        unclaimed work — the urgent ones pay a bonus.
+        You are standing on the campus in first person. Every room is a real place: the video
+        bay shows what&apos;s being cut, the towers hold projects floor by floor, the clock room
+        rings the bell on every period.
       </p>
       <div className="grid gap-1.5 sm:grid-cols-2">
         {rows.map(([key, label]) => (
-          <div
-            key={key}
-            className="flex items-center gap-3 rounded-lg bg-muted/60 px-3 py-2 text-sm"
-          >
+          <div key={key} className="flex items-center gap-3 rounded-lg bg-muted/60 px-3 py-2 text-sm">
             <kbd className="min-w-16 rounded border border-border bg-background px-1.5 py-0.5 text-center font-mono text-[0.65rem]">
               {key}
             </kbd>
@@ -1293,9 +2059,8 @@ function HelpPanel() {
       </div>
       <p className="flex items-start gap-2 rounded-lg bg-muted/60 px-3 py-2.5 text-xs text-muted-foreground">
         <Sparkles className="mt-0.5 size-3.5 shrink-0" />
-        Every teammate is a distinct crewmate — suit, visor and headgear are claimed
-        one per person, so you can tell who is across the room before you can read
-        the nameplate.
+        Every teammate is a unique crewmate — suits, visors and headgear are claimed one per
+        person, and you can tell which way someone faces by their backpack.
       </p>
     </div>
   );
@@ -1303,26 +2068,44 @@ function HelpPanel() {
 
 // ---------------------------------------------------------------------------
 
-function hubRoom(layout: Layout): RoomGeom | null {
-  return layout.rooms.find((r) => r.key === "common-board") ?? layout.rooms[0] ?? null;
-}
-
-/** Against the hub's far wall, straight ahead of where you spawn. */
-function bountyBoardSpot(hub: RoomGeom): { x: number; y: number } {
-  return { x: hub.rect.x + hub.rect.w / 2, y: hub.rect.y + hub.rect.h - 22 };
+let audioCtx: AudioContext | null = null;
+function ringBell() {
+  try {
+    audioCtx = audioCtx ?? new AudioContext();
+    const t = audioCtx.currentTime;
+    for (const [freq, at, dur] of [
+      [1318.5, 0, 0.28],
+      [1046.5, 0.18, 0.42],
+    ] as const) {
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = "triangle";
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.0001, t + at);
+      gain.gain.exponentialRampToValueAtTime(0.12, t + at + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t + at + dur);
+      osc.connect(gain).connect(audioCtx.destination);
+      osc.start(t + at);
+      osc.stop(t + at + dur + 0.05);
+    }
+  } catch {
+    // No audio permission — the toast still lands.
+  }
 }
 
 function useEngine() {
   const [bag] = useState(() => ({
     x: 0,
     y: 0,
-    yaw: Math.PI / 2,
+    yaw: -Math.PI / 2,
     pitch: 0,
     spawned: false,
     keys: new Set<string>(),
-    bobPhase: 0,
+    target: null as { x: number; y: number } | null,
+    stuck: 0,
+    walkPhase: 0,
     bobAmount: 0,
-    bobTarget: 0,
+    moving: false,
     moved: false,
     lastSave: 0,
     layout: null as unknown as Layout,
@@ -1336,8 +2119,12 @@ function useEngine() {
     nearTarget: null as Interactable | null,
     cam: null as ReturnType<typeof makeCamera> | null,
     labels: [] as { x: number; y: number; d: number; player: RemotePlayer }[],
-    myCharacter: null as Character | null,
-    myStatus: "online",
+    npc: null as { x: number; y: number } | null,
+    clockAt: null as { x: number; y: number } | null,
+    queueCount: 0,
+    queueHot: false,
+    approvalsPending: 0,
+    minimap: null as { x0: number; y0: number; scale: number; panelX: number; panelY: number; panelSize: number } | null,
   }));
   return bag;
 }

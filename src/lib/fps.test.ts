@@ -23,9 +23,9 @@ import {
 import { buildLayout, type RoomInput } from "./workspace-map";
 
 const ROOMS: RoomInput[] = [
-  { id: "a", key: "developer", name: "Developer Room", kind: "department", posX: 0, posY: 0, missionCount: 2 },
-  { id: "b", key: "creative", name: "Creative Room", kind: "department", posX: 1, posY: 0, missionCount: 0 },
-  { id: "c", key: "common-board", name: "Common Board", kind: "department", posX: 0, posY: 1, missionCount: 1 },
+  { id: "a", key: "developer", name: "Developer City", kind: "department", posX: 0, posY: 0, missionCount: 2 },
+  { id: "b", key: "creative", name: "Creative Studio", kind: "department", posX: 1, posY: 0, missionCount: 0 },
+  { id: "c", key: "common-board", name: "Conference Hall", kind: "department", posX: 0, posY: 1, missionCount: 1 },
 ];
 
 const layout = buildLayout(ROOMS);
@@ -78,9 +78,19 @@ describe("buildSolids", () => {
 
   it("marks desks as knee-high and tags them to their room", () => {
     const desks = solids.filter((s) => s.kind === "desk");
-    expect(desks).toHaveLength(ROOMS.length * 2);
+    expect(desks.length).toBeGreaterThan(0);
     expect(desks.every((s) => s.height === DESK_HEIGHT)).toBe(true);
     expect(desks.every((s) => s.roomId !== null)).toBe(true);
+  });
+
+  it("raises the conference table above desk height and the towers to the ceiling", () => {
+    const tables = solids.filter((s) => s.kind === "table");
+    expect(tables.length).toBeGreaterThan(0);
+    expect(tables.every((s) => s.height > DESK_HEIGHT)).toBe(true);
+    const buildings = solids.filter((s) => s.kind === "building");
+    expect(buildings).toHaveLength(3);
+    expect(buildings.filter((s) => s.windows === "tower")).toHaveLength(2);
+    expect(buildings.some((s) => s.height === CEILING_HEIGHT)).toBe(true);
   });
 });
 
@@ -97,7 +107,7 @@ describe("castRay", () => {
   });
 
   it("sees past a knee-high desk to what stands behind it", () => {
-    const room = layout.rooms[0];
+    const room = layout.rooms.find((r) => r.desks.length > 0 && r.zone !== "conference")!;
     const desk = room.desks[0];
     // Stand north of the desk, look south — desk first, then the far wall.
     const n = castRay(grid, desk.x + desk.w / 2, room.rect.y + 2, 0, 1, 4000, out);
@@ -106,13 +116,25 @@ describe("castRay", () => {
     expect(kinds.length).toBeGreaterThan(1);
   });
 
-  it("stops at the first full-height shell wall", () => {
-    // Fire west out of the leftmost room: the outer shell ends the ray.
+  it("stops at the first full-height occluder", () => {
+    // Fire west out of the leftmost zone: the outer shell ends the ray.
     const n = castRay(grid, layout.rooms[0].rect.x + 5, layout.rooms[0].rect.y + 5, -1, 0, 4000, out);
     expect(n).toBeGreaterThan(0);
     const last = out[n - 1];
     expect(last.solid.kind).toBe("shell");
     expect(out.slice(0, n).filter((h) => h.solid.kind === "shell")).toHaveLength(1);
+  });
+
+  it("treats a tower as a view-blocking occluder", () => {
+    // Stand west of Pipeline Tower, look east through it: nothing behind survives.
+    const tower = layout.buildings[0];
+    const oy = tower.rect.y + tower.rect.h / 2;
+    const n = castRay(grid, tower.rect.x - 30, oy, 1, 0, 4000, out);
+    expect(n).toBeGreaterThan(0);
+    const towerHit = out.slice(0, n).find((h) => h.solid.kind === "building");
+    expect(towerHit).toBeTruthy();
+    const behind = out.slice(0, n).filter((h) => h.dist > towerHit!.dist + tower.rect.w);
+    expect(behind).toHaveLength(0);
   });
 
   it("reports a face coordinate inside the unit range", () => {

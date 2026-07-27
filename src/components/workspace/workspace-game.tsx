@@ -36,14 +36,39 @@ import { characterFor } from "@/lib/characters";
 import { levelInfo } from "@/lib/xp";
 import { hasPermission, PERMISSIONS } from "@/lib/auth/permissions";
 import { cn } from "@/lib/utils";
+import { useRouter } from "next/navigation";
 import { FirstPersonFloor } from "./first-person-floor";
 import { BountyBoardPanel } from "./bounty-board";
 import { SkillTreePanel } from "./skill-tree";
 import { CrewmateAvatar } from "./crewmate-avatar";
+import { VideoBayPanel } from "./rooms/video-bay-panel";
+import { DevCityPanel } from "./rooms/dev-city-panel";
+import { ConferencePanel } from "./rooms/conference-panel";
+import { TasksRoomPanel } from "./rooms/tasks-room-panel";
+import { ApprovalsPanel } from "./rooms/approvals-panel";
+import { OutreachPanel } from "./rooms/outreach-panel";
+import { CreativePanel } from "./rooms/creative-panel";
+import { ShootPanel } from "./rooms/shoot-panel";
+import { TimetablePanel } from "./rooms/timetable-panel";
 
 const STATUSES = ["online", "busy", "away"] as const;
 
+// Every campus room, reachable from the lobby without walking the floor.
+const ROOM_LAUNCHERS = [
+  { key: "video", label: "Video Editing Bay", desc: "Queue, timers & scripts" },
+  { key: "city", label: "Developer City", desc: "Towers, floors & audits" },
+  { key: "conference", label: "Conference Hall", desc: "Meetings & disclosures" },
+  { key: "tasks", label: "Task Room", desc: "Your wall & squad work" },
+  { key: "approvals", label: "Managing Heads", desc: "Leave & sign-offs" },
+  { key: "outreach", label: "Outreach Room", desc: "Sectors, day plan, OTP" },
+  { key: "creative", label: "Creative Studio", desc: "Client houses & boards" },
+  { key: "shoot", label: "Shoot Room", desc: "This week's call sheet" },
+  { key: "timetable", label: "Timetable", desc: "The bell schedule" },
+] as const;
+type LauncherKey = (typeof ROOM_LAUNCHERS)[number]["key"];
+
 export function WorkspaceGame() {
+  const router = useRouter();
   const currentUser = useCurrentUser();
   const canManage = hasPermission(currentUser.permissions, PERMISSIONS.CLIENTS_MANAGE);
   const utils = trpc.useUtils();
@@ -55,6 +80,7 @@ export function WorkspaceGame() {
 
   const [playing, setPlaying] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
+  const [roomOpen, setRoomOpen] = useState<LauncherKey | null>(null);
   const [myStatus, setMyStatus] = useState(state.data?.me?.status ?? "online");
   const [characterId, setCharacterId] = useState<string | null>(null);
 
@@ -184,6 +210,26 @@ export function WorkspaceGame() {
             </div>
           </Card>
 
+          {/* ---- Room launcher ---- */}
+          <Card className="gap-3">
+            <div className="flex items-center justify-between px-4">
+              <h2 className="font-heading text-sm font-semibold">Rooms — straight in</h2>
+              <p className="text-xs text-muted-foreground">or walk there on the floor</p>
+            </div>
+            <div className="grid grid-cols-2 gap-2 px-4 sm:grid-cols-3">
+              {ROOM_LAUNCHERS.map((r) => (
+                <button
+                  key={r.key}
+                  onClick={() => setRoomOpen(r.key)}
+                  className="rounded-lg border border-border p-2.5 text-left transition-colors hover:border-foreground/30"
+                >
+                  <p className="text-xs font-semibold">{r.label}</p>
+                  <p className="text-[0.65rem] text-muted-foreground">{r.desc}</p>
+                </button>
+              ))}
+            </div>
+          </Card>
+
           {/* ---- Bounty board ---- */}
           <Card className="gap-3">
             <div className="flex items-center justify-between px-4">
@@ -273,6 +319,25 @@ export function WorkspaceGame() {
           </Card>
         </div>
       </div>
+
+      <Dialog open={roomOpen !== null} onOpenChange={(v) => (v ? null : setRoomOpen(null))}>
+        <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-3xl">
+          <DialogHeader>
+            <DialogTitle>{ROOM_LAUNCHERS.find((r) => r.key === roomOpen)?.label ?? ""}</DialogTitle>
+          </DialogHeader>
+          {roomOpen === "video" ? <VideoBayPanel /> : null}
+          {roomOpen === "city" ? <DevCityPanel /> : null}
+          {roomOpen === "conference" ? <ConferencePanel /> : null}
+          {roomOpen === "tasks" ? <TasksRoomPanel /> : null}
+          {roomOpen === "approvals" ? <ApprovalsPanel /> : null}
+          {roomOpen === "outreach" ? <OutreachPanel /> : null}
+          {roomOpen === "creative" ? (
+            <CreativePanel initialDoor="clients" onOpenBoard={(docId) => router.push(`/documents/${docId}`)} />
+          ) : null}
+          {roomOpen === "shoot" ? <ShootPanel /> : null}
+          {roomOpen === "timetable" ? <TimetablePanel /> : null}
+        </DialogContent>
+      </Dialog>
 
       {canManage ? <AddAreaDialog open={addOpen} onOpenChange={setAddOpen} /> : null}
     </>

@@ -123,6 +123,10 @@ export const ROOM_SKILL: Record<string, SkillKey> = {
   client: "ops",
   creativity: "design",
   "common-board": "ops",
+  tasks: "ops",
+  outreach: "ops",
+  shoot: "video",
+  timetable: "ops",
 };
 
 /** Where a craft's missions land when a bounty doesn't name a room. */

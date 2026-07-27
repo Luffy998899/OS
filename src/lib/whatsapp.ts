@@ -1,7 +1,7 @@
 import "server-only";
 import { db } from "@/lib/db";
 import { planMissions } from "@/lib/ai/plan";
-import { VERTICAL_ROOM_KEY } from "@/server/routers/task";
+import { VERTICAL_ROOM_KEYS } from "@/server/routers/task";
 
 export type IngestResult = {
   taskId: string;
@@ -52,10 +52,11 @@ export async function ingestWhatsAppTask(input: {
   });
   const creatorId = admin?.id ?? roster[0]?.id;
 
-  const roomKey = VERTICAL_ROOM_KEY[draft.vertical];
-  const room = roomKey
-    ? await db.room.findUnique({ where: { key: roomKey }, select: { id: true } })
-    : null;
+  let room: { id: string } | null = null;
+  for (const roomKey of VERTICAL_ROOM_KEYS[draft.vertical] ?? []) {
+    room = await db.room.findUnique({ where: { key: roomKey }, select: { id: true } });
+    if (room) break;
+  }
 
   const task = await db.task.create({
     data: {

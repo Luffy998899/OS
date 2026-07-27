@@ -12,7 +12,7 @@ import {
   tierName,
 } from "@/lib/skills";
 import { craftLevelsFor } from "../missions";
-import { VERTICAL_ROOM_KEY, skillEnum, skillLevelSchema } from "./task";
+import { VERTICAL_ROOM_KEYS, skillEnum, skillLevelSchema } from "./task";
 
 const priorityEnum = z.enum(["low", "medium", "high", "urgent"]);
 const verticalEnum = z.enum([
@@ -43,7 +43,7 @@ async function resolveBountyRoom(
     });
     if (clientRoom) return clientRoom.id;
   }
-  for (const key of [SKILL_ROOM_KEY[normalizeSkill(opts.skill)], VERTICAL_ROOM_KEY[opts.vertical]]) {
+  for (const key of [SKILL_ROOM_KEY[normalizeSkill(opts.skill)], ...(VERTICAL_ROOM_KEYS[opts.vertical] ?? [])]) {
     if (!key) continue;
     const room = await db.room.findUnique({ where: { key }, select: { id: true } });
     if (room) return room.id;

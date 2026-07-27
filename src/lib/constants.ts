@@ -24,13 +24,15 @@ export const PRIORITIES = [
 ] as const;
 
 export const ROOMS = [
-  { key: "developer", label: "Developer Room" },
-  { key: "creative", label: "Creative Room" },
-  { key: "video-editing", label: "Video Editing Room" },
-  { key: "managing-heads", label: "Managing Heads Room" },
-  { key: "common-board", label: "Common Board Room" },
-  { key: "client", label: "Client Room" },
-  { key: "creativity", label: "Creativity Room" },
+  { key: "developer", label: "Developer City" },
+  { key: "creative", label: "Creative Studio" },
+  { key: "video-editing", label: "Video Editing Bay" },
+  { key: "managing-heads", label: "Managing Heads" },
+  { key: "common-board", label: "Conference Hall" },
+  { key: "tasks", label: "Task Room" },
+  { key: "outreach", label: "Outreach Room" },
+  { key: "shoot", label: "Shoot Room" },
+  { key: "timetable", label: "Timetable Room" },
 ] as const;
 
 export type Vertical = (typeof VERTICALS)[number]["value"];
