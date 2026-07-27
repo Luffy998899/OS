@@ -4,11 +4,66 @@ import { router, protectedProcedure, permissionProcedure } from "../trpc";
 import { PERMISSIONS } from "@/lib/auth/permissions";
 import { assignCharacter, characterById } from "@/lib/characters";
 import { ROOM_SKILL, normalizeSkill } from "@/lib/skills";
+import { currentSlot, dateKey, minutesNow, needsRelogin, nextSlot } from "@/lib/timetable";
 import { craftLevelsFor } from "../missions";
+
+// The canonical campus. `enter` upserts these so existing floors migrate live —
+// legacy keys ("client" → outreach, "creativity" → shoot) keep their rows and
+// simply bind to the new zone.
+const CAMPUS_ROOMS: { key: string; name: string; department: string; legacy?: string }[] = [
+  { key: "developer", name: "Developer City", department: "Engineering" },
+  { key: "video-editing", name: "Video Editing Bay", department: "Media" },
+  { key: "common-board", name: "Conference Hall", department: "All-hands" },
+  { key: "creative", name: "Creative Studio", department: "Design & Marketing" },
+  { key: "tasks", name: "Task Room", department: "Everyone" },
+  { key: "managing-heads", name: "Managing Heads", department: "Leadership" },
+  { key: "timetable", name: "Timetable Room", department: "Everyone" },
+  { key: "outreach", name: "Outreach Room", department: "Client Success", legacy: "client" },
+  { key: "shoot", name: "Shoot Room", department: "Media", legacy: "creativity" },
+];
+
+const INTERNAL_TOOLS = [
+  { name: "Sync AI", toolDesc: "The agency's AI copilot — check-ins, planning, routing." },
+  { name: "Prompt Library", toolDesc: "Battle-tested prompts for every craft, versioned." },
+  { name: "Portfolio Website", toolDesc: "The public face — case studies and reels." },
+  { name: "Niche Research Documents", toolDesc: "Sector playbooks and research packs." },
+];
+
+async function ensureCampus(db: typeof import("@/lib/db").db): Promise<void> {
+  const existing = await db.room.findMany({ select: { key: true } });
+  const keys = new Set(existing.map((r) => r.key));
+  for (const room of CAMPUS_ROOMS) {
+    if (keys.has(room.key)) {
+      await db.room.update({
+        where: { key: room.key },
+        data: { name: room.name, department: room.department },
+      });
+    } else if (room.legacy && keys.has(room.legacy)) {
+      // The legacy row keeps its key (tasks point at it); the zone plan binds it.
+      await db.room.update({
+        where: { key: room.legacy },
+        data: { name: room.name, department: room.department },
+      });
+    } else {
+      await db.room.create({
+        data: { key: room.key, name: room.name, department: room.department, kind: "department" },
+      });
+    }
+  }
+  // Furnish the bungalow once.
+  const tools = await db.project.count({ where: { buildingKey: "tools" } });
+  if (tools === 0) {
+    for (const [i, tool] of INTERNAL_TOOLS.entries()) {
+      await db.project.create({
+        data: { name: tool.name, toolDesc: tool.toolDesc, buildingKey: "tools", floor: i + 1, status: "active" },
+      });
+    }
+  }
+}
 
 export const workspaceRouter = router({
   state: protectedProcedure.query(async ({ ctx }) => {
-    const [rooms, avatars, openByRoom, aiCheckin, bountyByRoom, levels] = await Promise.all([
+    const [rooms, avatars, openByRoom, aiCheckin, bountyByRoom, levels, editingJob, meeting, mySlots, relog] = await Promise.all([
       ctx.db.room.findMany({
         orderBy: [{ posY: "asc" }, { posX: "asc" }],
         include: { client: { select: { companyName: true } } },
@@ -44,6 +99,27 @@ export const workspaceRouter = router({
         _count: { _all: true },
       }),
       craftLevelsFor(ctx.db, ctx.user.id),
+      ctx.db.videoJob.findFirst({
+        where: { status: "editing" },
+        include: {
+          client: { select: { companyName: true } },
+          editor: { select: { name: true } },
+        },
+      }),
+      ctx.db.announcement.findFirst({
+        where: { kind: "urgent_meeting", meetingAt: { gte: new Date(Date.now() - 30 * 60_000) } },
+        orderBy: { meetingAt: "asc" },
+        select: { id: true, title: true, meetingAt: true },
+      }),
+      ctx.db.timetableSlot.findMany({
+        where: { userId: ctx.user.id, date: dateKey() },
+        orderBy: { startMin: "asc" },
+      }),
+      ctx.db.timetableLog.findUnique({
+        where: {
+          userId_date_type: { userId: ctx.user.id, date: dateKey(), type: "back_from_lunch" },
+        },
+      }),
     ]);
 
     const countFor = (roomId: string) =>
@@ -92,6 +168,7 @@ export const workspaceRouter = router({
       }
     }
 
+    const nowMin = minutesNow();
     return {
       rooms: roomsOut,
       players,
@@ -103,6 +180,23 @@ export const workspaceRouter = router({
       ai: aiCheckin
         ? { summary: aiCheckin.summary, importantTasks, at: aiCheckin.createdAt }
         : null,
+      // Live floor signals for the HUD.
+      nowEditing: editingJob
+        ? {
+            title: editingJob.title,
+            clientName: editingJob.client?.companyName ?? null,
+            editorName: editingJob.editor?.name ?? null,
+            deliverBy: editingJob.deliverBy,
+            startedAt: editingJob.startedAt,
+          }
+        : null,
+      meeting,
+      timeslot: {
+        current: currentSlot(mySlots, nowMin),
+        next: nextSlot(mySlots, nowMin),
+        needsRelogin: needsRelogin(mySlots, nowMin, !!relog),
+        hasPlan: mySlots.length > 0,
+      },
     };
   }),
 
@@ -112,6 +206,7 @@ export const workspaceRouter = router({
    * two people are never the same crewmate.
    */
   enter: protectedProcedure.mutation(async ({ ctx }) => {
+    await ensureCampus(ctx.db);
     const existing = await ctx.db.avatarState.findUnique({
       where: { userId: ctx.user.id },
     });

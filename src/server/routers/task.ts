@@ -32,15 +32,19 @@ const taskInclude = {
   createdBy: { select: { id: true, name: true } },
   client: { select: { id: true, companyName: true } },
   room: { select: { id: true, name: true, key: true } },
+  collaborators: {
+    include: { user: { select: { id: true, name: true, avatarUrl: true } } },
+  },
 } as const;
 
-// Which department room a mission lands in, based on its vertical.
-export const VERTICAL_ROOM_KEY: Record<string, string> = {
-  "website-dev": "developer",
-  "digital-marketing": "creative",
-  roadmap: "managing-heads",
-  "client-outreach": "client",
-  billing: "managing-heads",
+// Which department room a mission lands in, based on its vertical. Values are
+// preference-ordered: legacy floors used key "client" for outreach.
+export const VERTICAL_ROOM_KEYS: Record<string, string[]> = {
+  "website-dev": ["developer"],
+  "digital-marketing": ["creative"],
+  roadmap: ["managing-heads"],
+  "client-outreach": ["outreach", "client"],
+  billing: ["managing-heads"],
 };
 
 async function resolveRoomId(
@@ -56,10 +60,11 @@ async function resolveRoomId(
     });
     if (clientRoom) return clientRoom.id;
   }
-  const key = VERTICAL_ROOM_KEY[opts.vertical];
-  if (!key) return null;
-  const room = await db.room.findUnique({ where: { key }, select: { id: true } });
-  return room?.id ?? null;
+  for (const key of VERTICAL_ROOM_KEYS[opts.vertical] ?? []) {
+    const room = await db.room.findUnique({ where: { key }, select: { id: true } });
+    if (room) return room.id;
+  }
+  return null;
 }
 
 export const taskRouter = router({
@@ -70,6 +75,29 @@ export const taskRouter = router({
       include: taskInclude,
     }),
   ),
+
+  // The task room wall: my own missions plus everything I'm co-assigned on,
+  // with the squad visible on each card.
+  taskRoom: protectedProcedure.query(async ({ ctx }) => {
+    const [mine, coAssigned] = await Promise.all([
+      ctx.db.task.findMany({
+        where: { assigneeId: ctx.user.id, approvalStatus: "approved", status: { not: "done" } },
+        orderBy: [{ status: "asc" }, { dueAt: "asc" }],
+        include: taskInclude,
+      }),
+      ctx.db.task.findMany({
+        where: {
+          approvalStatus: "approved",
+          status: { not: "done" },
+          assigneeId: { not: ctx.user.id },
+          collaborators: { some: { userId: ctx.user.id } },
+        },
+        orderBy: [{ status: "asc" }, { dueAt: "asc" }],
+        include: taskInclude,
+      }),
+    ]);
+    return { mine, coAssigned };
+  }),
 
   list: permissionProcedure(PERMISSIONS.TASKS_ASSIGN)
     .input(
@@ -132,6 +160,7 @@ export const taskRouter = router({
         estimateMinutes: z.number().int().optional(),
         skill: skillEnum.optional(),
         minSkillLevel: skillLevelSchema.optional(),
+        coAssigneeIds: z.array(z.string()).max(10).optional(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -157,6 +186,14 @@ export const taskRouter = router({
           createdById: ctx.user.id,
           approvalStatus: "approved",
           activities: { create: { type: "created", actorId: ctx.user.id } },
+          // The squad working it alongside the owner.
+          collaborators: input.coAssigneeIds?.length
+            ? {
+                create: input.coAssigneeIds
+                  .filter((id) => id !== input.assigneeId)
+                  .map((userId) => ({ userId })),
+              }
+            : undefined,
         },
       });
       if (input.assigneeId) {

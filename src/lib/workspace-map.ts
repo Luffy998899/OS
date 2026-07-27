@@ -1,16 +1,20 @@
-// DB-driven office layout for the Gamified Workspace. Rooms are placed on a grid
-// (posX/posY) so the map is expandable — admins add client areas at runtime.
-// Logic (movement/collision) stays in top-down world coordinates; the game
-// renders it isometrically.
+// The campus — a hand-authored office floor plan in top-down world coordinates.
+//
+// v1 packed every room into an identical grid cell, which is why the floor read
+// as a maze of samey cubicles. v2 lays the campus out like a real studio: zones
+// with sizes that match their job, wide corridors between the bands, a central
+// plaza with the bounty board, a city block of towers for the developers, and a
+// client wing that grows as areas are added. Movement/collision stays top-down;
+// the first-person renderer casts it.
+//
+// Everything here is pure and testable. The renderer decides how it looks; this
+// file decides where everything IS.
 
 export type Rect = { x: number; y: number; w: number; h: number };
 export type Vec = { x: number; y: number };
 
-export const CELL = { w: 300, h: 200 };
-export const GAP = 72;
-export const PAD = 60;
-const WALL_T = 10;
-const DOOR_W = 96;
+const WALL_T = 12;
+const DOOR_W = 120;
 
 export const PLAYER_RADIUS = 11;
 export const INTERACT_RADIUS = 78;
@@ -26,63 +30,343 @@ export type RoomInput = {
   missionCount: number;
 };
 
+/** Semantic zone id — what the renderer themes and the panels bind to. */
+export type ZoneKey =
+  | "developer"
+  | "video-editing"
+  | "conference"
+  | "creative"
+  | "tasks"
+  | "managing-heads"
+  | "timetable"
+  | "outreach"
+  | "shoot"
+  | "client";
+
+export type PropKind =
+  | "mission-board"
+  | "queue-board"
+  | "screen-desk"
+  | "npc-editor"
+  | "conference-screen"
+  | "chair"
+  | "door-clients"
+  | "door-internal"
+  | "infinite-board"
+  | "task-wall"
+  | "approval-desk"
+  | "outreach-desk"
+  | "phone-booth"
+  | "camera-rig"
+  | "light-rig"
+  | "big-clock"
+  | "school-bell"
+  | "plant"
+  | "cooler"
+  | "monitor"
+  | "rug";
+
+export type CampusProp = { kind: PropKind; x: number; y: number };
+
 export type RoomGeom = RoomInput & {
+  zone: ZoneKey;
   rect: Rect;
   board: Vec;
   desks: Rect[];
+  props: CampusProp[];
   accent: string;
+};
+
+export type Building = {
+  key: "tower-pipeline" | "tower-complete" | "bungalow";
+  label: string;
+  rect: Rect;
+  door: Vec; // where you stand to enter
+  tint: string;
+  /** Fraction of ceiling height — the bungalow is squat, the towers are full. */
+  tall: boolean;
 };
 
 export type Layout = {
   world: { w: number; h: number };
   rooms: RoomGeom[];
+  buildings: Building[];
+  /** Movement blockers: shell, partitions, desks, buildings, tables. */
   solids: Rect[];
   spawn: Vec;
+  /** The open plaza between the bands — the bounty board stands here. */
+  plaza: { board: Vec };
 };
 
-const DEPT_ACCENT: Record<string, string> = {
-  developer: "#6f9ff0",
-  creative: "#63c98a",
-  "video-editing": "#e0a862",
-  "managing-heads": "#d98a8a",
-  "common-board": "#c9bfa6",
-  client: "#b18fe0",
-  creativity: "#e6cf6a",
+// ---------------------------------------------------------------------------
+// The plan. Zones are placed by hand; sizes match their function.
+// ---------------------------------------------------------------------------
+
+const BASE_W = 2320;
+const BASE_H = 1500;
+
+type ZonePlan = {
+  zone: ZoneKey;
+  /** DB room keys that bind to this slot, in preference order. */
+  keys: string[];
+  fallbackName: string;
+  rect: Rect;
+  accent: string;
 };
+
+export const ZONE_PLANS: ZonePlan[] = [
+  {
+    zone: "developer",
+    keys: ["developer"],
+    fallbackName: "Developer City",
+    rect: { x: 80, y: 80, w: 860, h: 460 },
+    accent: "#6f9ff0",
+  },
+  {
+    zone: "video-editing",
+    keys: ["video-editing"],
+    fallbackName: "Video Editing Bay",
+    rect: { x: 1020, y: 80, w: 460, h: 380 },
+    accent: "#e0a862",
+  },
+  {
+    zone: "conference",
+    keys: ["common-board"],
+    fallbackName: "Conference Hall",
+    rect: { x: 1560, y: 80, w: 560, h: 400 },
+    accent: "#c9bfa6",
+  },
+  {
+    zone: "creative",
+    keys: ["creative"],
+    fallbackName: "Creative Studio",
+    rect: { x: 80, y: 660, w: 560, h: 400 },
+    accent: "#63c98a",
+  },
+  {
+    zone: "tasks",
+    keys: ["tasks"],
+    fallbackName: "Task Room",
+    rect: { x: 740, y: 660, w: 420, h: 340 },
+    accent: "#8f9fb3",
+  },
+  {
+    zone: "managing-heads",
+    keys: ["managing-heads"],
+    fallbackName: "Managing Heads",
+    rect: { x: 1260, y: 660, w: 420, h: 340 },
+    accent: "#d98a8a",
+  },
+  {
+    zone: "timetable",
+    keys: ["timetable"],
+    fallbackName: "Timetable Room",
+    rect: { x: 1780, y: 660, w: 380, h: 340 },
+    accent: "#e6cf6a",
+  },
+  {
+    zone: "outreach",
+    keys: ["outreach", "client"],
+    fallbackName: "Outreach Room",
+    rect: { x: 80, y: 1140, w: 460, h: 290 },
+    accent: "#b18fe0",
+  },
+  {
+    zone: "shoot",
+    keys: ["shoot", "creativity"],
+    fallbackName: "Shoot Room",
+    rect: { x: 640, y: 1140, w: 420, h: 290 },
+    accent: "#5bb9c9",
+  },
+];
+
+// Client wing: row of areas along the south-east, growing eastward.
+const CLIENT_WING = { x: 1160, y: 1140, w: 320, h: 290, gap: 48 };
 const CLIENT_ACCENTS = ["#5bb9c9", "#c98fb0", "#8fb46a", "#d0a05a", "#7f9be0"];
 
-function roomRect(posX: number, posY: number): Rect {
-  return {
-    x: PAD + posX * (CELL.w + GAP),
-    y: PAD + posY * (CELL.h + GAP),
-    w: CELL.w,
-    h: CELL.h,
-  };
+export const SPAWN: Vec = { x: 1180, y: 560 };
+const PLAZA_BOARD: Vec = { x: 1252, y: 566 };
+
+export const BUILDINGS_PLAN: Omit<Building, "door">[] = [
+  {
+    key: "tower-pipeline",
+    label: "Pipeline Tower",
+    rect: { x: 150, y: 150, w: 220, h: 190 },
+    tint: "#7f95b8",
+    tall: true,
+  },
+  {
+    key: "tower-complete",
+    label: "Completed Tower",
+    rect: { x: 470, y: 150, w: 220, h: 190 },
+    tint: "#8ba889",
+    tall: true,
+  },
+  {
+    key: "bungalow",
+    label: "Internal Tools Bungalow",
+    rect: { x: 230, y: 415, w: 320, h: 95 },
+    tint: "#c2a476",
+    tall: false,
+  },
+];
+
+function buildingDoor(rect: Rect): Vec {
+  // Stand a step south of the south face, centred.
+  return { x: rect.x + rect.w / 2, y: rect.y + rect.h + 26 };
 }
 
-function desksFor(r: Rect): Rect[] {
-  const dw = 76;
-  const dh = 40;
-  const y = r.y + r.h - dh - 28;
-  return [
-    { x: r.x + 30, y, w: dw, h: dh },
-    { x: r.x + r.w - dw - 30, y, w: dw, h: dh },
-  ];
+// ---------------------------------------------------------------------------
+// Zone furnishing — desks, boards and props per theme
+// ---------------------------------------------------------------------------
+
+function furnish(zone: ZoneKey, r: Rect): { board: Vec; desks: Rect[]; props: CampusProp[] } {
+  const cx = r.x + r.w / 2;
+  const props: CampusProp[] = [];
+  const desks: Rect[] = [];
+  let board: Vec = { x: r.x + r.w - 46, y: r.y + r.h / 2 };
+
+  switch (zone) {
+    case "developer": {
+      // The city: buildings are added separately; the mission board stands by
+      // the east exit, plants soften the block corners.
+      board = { x: r.x + r.w - 44, y: r.y + 300 };
+      props.push({ kind: "plant", x: r.x + 40, y: r.y + r.h - 40 });
+      props.push({ kind: "plant", x: r.x + r.w - 40, y: r.y + 44 });
+      break;
+    }
+    case "video-editing": {
+      // Editing desks in a row against the north wall, screens glowing; the
+      // editor NPC lives at the middle desk. Queue whiteboard on the east wall.
+      const dw = 96;
+      const dh = 44;
+      for (let i = 0; i < 3; i++) {
+        desks.push({ x: r.x + 52 + i * (dw + 34), y: r.y + 46, w: dw, h: dh });
+      }
+      props.push({ kind: "npc-editor", x: r.x + 52 + dw + 34 + dw / 2, y: r.y + 46 + dh + 20 });
+      props.push({ kind: "queue-board", x: r.x + r.w - 46, y: r.y + 130 });
+      board = { x: r.x + r.w - 46, y: r.y + 260 };
+      props.push({ kind: "plant", x: r.x + 40, y: r.y + r.h - 44 });
+      props.push({ kind: "cooler", x: r.x + r.w - 44, y: r.y + r.h - 44 });
+      break;
+    }
+    case "conference": {
+      // One long table, chairs all round, the announcement screen at the head.
+      const tw = 280;
+      const th = 96;
+      const tx = cx - tw / 2;
+      const ty = r.y + r.h / 2 - th / 2;
+      desks.push({ x: tx, y: ty, w: tw, h: th });
+      const seats = 5;
+      for (let i = 0; i < seats; i++) {
+        const sx = tx + 24 + (i * (tw - 48)) / (seats - 1);
+        props.push({ kind: "chair", x: sx, y: ty - 26 });
+        props.push({ kind: "chair", x: sx, y: ty + th + 26 });
+      }
+      props.push({ kind: "chair", x: tx - 26, y: ty + th / 2 });
+      props.push({ kind: "chair", x: tx + tw + 26, y: ty + th / 2 });
+      props.push({ kind: "conference-screen", x: cx, y: r.y + 42 });
+      board = { x: cx, y: r.y + 60 };
+      props.push({ kind: "plant", x: r.x + 42, y: r.y + 44 });
+      props.push({ kind: "plant", x: r.x + r.w - 42, y: r.y + 44 });
+      break;
+    }
+    case "creative": {
+      // Two doors on the north wall — Clients and Internal — plus the infinite
+      // board along the west wall and a work desk.
+      props.push({ kind: "door-clients", x: r.x + r.w * 0.3, y: r.y + 30 });
+      props.push({ kind: "door-internal", x: r.x + r.w * 0.7, y: r.y + 30 });
+      props.push({ kind: "infinite-board", x: r.x + 44, y: r.y + r.h / 2 });
+      desks.push({ x: cx - 48, y: r.y + r.h - 120, w: 96, h: 44 });
+      board = { x: r.x + r.w - 46, y: r.y + r.h / 2 };
+      props.push({ kind: "rug", x: cx, y: r.y + r.h / 2 });
+      props.push({ kind: "plant", x: r.x + r.w - 44, y: r.y + r.h - 44 });
+      break;
+    }
+    case "tasks": {
+      // Four workstations and the task wall.
+      const dw = 84;
+      const dh = 42;
+      for (const [ix, iy] of [
+        [0, 0],
+        [1, 0],
+        [0, 1],
+        [1, 1],
+      ]) {
+        desks.push({
+          x: r.x + 64 + ix * (dw + 80),
+          y: r.y + 76 + iy * (dh + 84),
+          w: dw,
+          h: dh,
+        });
+      }
+      props.push({ kind: "task-wall", x: r.x + r.w - 44, y: r.y + r.h / 2 });
+      board = { x: r.x + r.w - 44, y: r.y + r.h / 2 - 90 };
+      props.push({ kind: "plant", x: r.x + 40, y: r.y + r.h - 42 });
+      break;
+    }
+    case "managing-heads": {
+      // The approvals counter faces the door; two head desks behind it.
+      desks.push({ x: cx - 110, y: r.y + 60, w: 90, h: 42 });
+      desks.push({ x: cx + 24, y: r.y + 60, w: 90, h: 42 });
+      props.push({ kind: "approval-desk", x: cx, y: r.y + r.h - 84 });
+      board = { x: r.x + 44, y: r.y + r.h / 2 };
+      props.push({ kind: "plant", x: r.x + r.w - 42, y: r.y + r.h - 44 });
+      props.push({ kind: "cooler", x: r.x + 42, y: r.y + 46 });
+      break;
+    }
+    case "timetable": {
+      // The school clock wall and the bell.
+      props.push({ kind: "big-clock", x: cx, y: r.y + 34 });
+      props.push({ kind: "school-bell", x: r.x + r.w - 44, y: r.y + 60 });
+      board = { x: r.x + 44, y: r.y + r.h / 2 };
+      props.push({ kind: "rug", x: cx, y: r.y + r.h / 2 + 30 });
+      props.push({ kind: "plant", x: r.x + 42, y: r.y + r.h - 44 });
+      break;
+    }
+    case "outreach": {
+      // Call desks and the phone booth for OTP moments.
+      desks.push({ x: r.x + 56, y: r.y + 64, w: 90, h: 42 });
+      desks.push({ x: r.x + 56, y: r.y + 176, w: 90, h: 42 });
+      props.push({ kind: "outreach-desk", x: r.x + r.w - 46, y: r.y + r.h / 2 });
+      props.push({ kind: "phone-booth", x: r.x + r.w - 52, y: r.y + 56 });
+      board = { x: r.x + r.w / 2, y: r.y + 40 };
+      break;
+    }
+    case "shoot": {
+      // A set: camera rig, light rigs, clear floor.
+      props.push({ kind: "camera-rig", x: cx - 60, y: r.y + r.h / 2 + 40 });
+      props.push({ kind: "light-rig", x: r.x + 52, y: r.y + 52 });
+      props.push({ kind: "light-rig", x: r.x + r.w - 52, y: r.y + 52 });
+      props.push({ kind: "rug", x: cx + 30, y: r.y + 96 });
+      board = { x: r.x + 44, y: r.y + r.h / 2 };
+      break;
+    }
+    case "client": {
+      desks.push({ x: r.x + 36, y: r.y + r.h - 76, w: 84, h: 40 });
+      desks.push({ x: r.x + r.w - 120, y: r.y + r.h - 76, w: 84, h: 40 });
+      board = { x: r.x + r.w / 2, y: r.y + 40 };
+      props.push({ kind: "plant", x: r.x + 36, y: r.y + 40 });
+      break;
+    }
+  }
+  return { board, desks, props };
 }
 
-// Four walls with a centred doorway gap on each side, so any two adjacent rooms
-// connect through the corridor between them.
+// ---------------------------------------------------------------------------
+// Walls
+// ---------------------------------------------------------------------------
+
+/** Zone partition walls with a centred door gap on each side. */
 export function roomWalls(r: Rect): Rect[] {
   const t = WALL_T;
   const segs: Rect[] = [];
   const gx = r.x + r.w / 2 - DOOR_W / 2;
   const gy = r.y + r.h / 2 - DOOR_W / 2;
-  // top & bottom
   for (const wy of [r.y - t, r.y + r.h]) {
     segs.push({ x: r.x - t, y: wy, w: gx - (r.x - t), h: t });
     segs.push({ x: gx + DOOR_W, y: wy, w: r.x + r.w + t - (gx + DOOR_W), h: t });
   }
-  // left & right
   for (const wx of [r.x - t, r.x + r.w]) {
     segs.push({ x: wx, y: r.y - t, w: t, h: gy - (r.y - t) });
     segs.push({ x: wx, y: gy + DOOR_W, w: t, h: r.y + r.h + t - (gy + DOOR_W) });
@@ -90,8 +374,6 @@ export function roomWalls(r: Rect): Rect[] {
   return segs;
 }
 
-// The building shell. Kept separate from room walls so the 3D renderer can give
-// it a full-height (view-blocking) treatment while dividers stay waist-to-head high.
 export function outerWalls(world: { w: number; h: number }): Rect[] {
   return [
     { x: 0, y: 0, w: world.w, h: WALL_T },
@@ -101,77 +383,108 @@ export function outerWalls(world: { w: number; h: number }): Rect[] {
   ];
 }
 
-export function buildLayout(rooms: RoomInput[]): Layout {
-  const maxX = Math.max(0, ...rooms.map((r) => r.posX));
-  const maxY = Math.max(0, ...rooms.map((r) => r.posY));
-  const world = {
-    w: PAD * 2 + (maxX + 1) * CELL.w + maxX * GAP,
-    h: PAD * 2 + (maxY + 1) * CELL.h + maxY * GAP,
-  };
+// ---------------------------------------------------------------------------
+// Layout assembly
+// ---------------------------------------------------------------------------
 
-  let clientIdx = 0;
-  const geoms: RoomGeom[] = rooms.map((r) => {
-    const rect = roomRect(r.posX, r.posY);
-    const accent =
-      r.kind === "client"
-        ? CLIENT_ACCENTS[clientIdx++ % CLIENT_ACCENTS.length]
-        : (DEPT_ACCENT[r.key] ?? "#9aa0aa");
-    return {
-      ...r,
-      rect,
-      board: { x: rect.x + rect.w / 2, y: rect.y + 46 },
-      desks: desksFor(rect),
-      accent,
+export function buildLayout(rooms: RoomInput[]): Layout {
+  const byKey = new Map(rooms.map((r) => [r.key, r]));
+  const used = new Set<string>();
+  const geoms: RoomGeom[] = [];
+
+  for (const plan of ZONE_PLANS) {
+    const key = plan.keys.find((k) => byKey.has(k));
+    if (!key) continue; // zone renders only when its room exists in the DB
+    const room = byKey.get(key)!;
+    used.add(key);
+    const { board, desks, props } = furnish(plan.zone, plan.rect);
+    geoms.push({
+      ...room,
+      zone: plan.zone,
+      rect: plan.rect,
+      board,
+      desks,
+      props,
+      accent: plan.accent,
+    });
+  }
+
+  // Client areas (and any unknown legacy keys) go to the client wing.
+  const rest = rooms.filter((r) => !used.has(r.key));
+  rest.sort((a, b) => (a.posY - b.posY) || (a.posX - b.posX));
+  let worldW = BASE_W;
+  rest.forEach((room, i) => {
+    const rect: Rect = {
+      x: CLIENT_WING.x + i * (CLIENT_WING.w + CLIENT_WING.gap),
+      y: CLIENT_WING.y,
+      w: CLIENT_WING.w,
+      h: CLIENT_WING.h,
     };
+    worldW = Math.max(worldW, rect.x + rect.w + 100);
+    const { board, desks, props } = furnish("client", rect);
+    geoms.push({
+      ...room,
+      zone: "client",
+      rect,
+      board,
+      desks,
+      props,
+      accent: CLIENT_ACCENTS[i % CLIENT_ACCENTS.length],
+    });
   });
 
-  const outer: Rect[] = outerWalls(world);
+  const world = { w: worldW, h: BASE_H };
+
+  const buildings: Building[] =
+    geoms.some((g) => g.zone === "developer")
+      ? BUILDINGS_PLAN.map((b) => ({ ...b, door: buildingDoor(b.rect) }))
+      : [];
+
   const solids: Rect[] = [
-    ...outer,
+    ...outerWalls(world),
     ...geoms.flatMap((g) => roomWalls(g.rect)),
     ...geoms.flatMap((g) => g.desks),
+    ...buildings.map((b) => b.rect),
   ];
 
-  const hub =
-    geoms.find((g) => g.key === "common-board") ?? geoms[0] ?? null;
-  const spawn: Vec = hub
-    ? { x: hub.rect.x + hub.rect.w / 2, y: hub.rect.y + hub.rect.h / 2 }
-    : { x: world.w / 2, y: world.h / 2 };
-
-  return { world, rooms: geoms, solids, spawn };
+  return { world, rooms: geoms, buildings, solids, spawn: { ...SPAWN }, plaza: { board: { ...PLAZA_BOARD } } };
 }
 
-export function roomKeyAt(rooms: RoomGeom[], x: number, y: number): string | null {
+// ---------------------------------------------------------------------------
+// Queries & movement (unchanged contracts)
+// ---------------------------------------------------------------------------
+
+export function roomIdAt(rooms: RoomGeom[], x: number, y: number): string | null {
   for (const r of rooms) {
-    if (
-      x >= r.rect.x &&
-      x <= r.rect.x + r.rect.w &&
-      y >= r.rect.y &&
-      y <= r.rect.y + r.rect.h
-    )
-      return r.key;
+    if (x >= r.rect.x && x <= r.rect.x + r.rect.w && y >= r.rect.y && y <= r.rect.y + r.rect.h) {
+      return r.id;
+    }
   }
   return null;
 }
 
-export function roomIdAt(rooms: RoomGeom[], x: number, y: number): string | null {
-  const key = roomKeyAt(rooms, x, y);
-  return key ? (rooms.find((r) => r.key === key)?.id ?? null) : null;
-}
-
-export function nearestBoard(rooms: RoomGeom[], x: number, y: number): RoomGeom | null {
-  let best: RoomGeom | null = null;
-  let bestD = INTERACT_RADIUS;
+export function nearestBoard(
+  rooms: RoomGeom[],
+  x: number,
+  y: number,
+): (RoomGeom & { dist: number }) | null {
+  let best: (RoomGeom & { dist: number }) | null = null;
   for (const r of rooms) {
     const d = Math.hypot(r.board.x - x, r.board.y - y);
-    if (d < bestD) {
-      bestD = d;
-      best = r;
-    }
+    if (d <= INTERACT_RADIUS && (!best || d < best.dist)) best = { ...r, dist: d };
   }
   return best;
 }
 
+function circleRect(cx: number, cy: number, r: number, rect: Rect): boolean {
+  const nx = Math.max(rect.x, Math.min(cx, rect.x + rect.w));
+  const ny = Math.max(rect.y, Math.min(cy, rect.y + rect.h));
+  const dx = cx - nx;
+  const dy = cy - ny;
+  return dx * dx + dy * dy < r * r;
+}
+
+/** Slide along solids: try the full move, then each axis independently. */
 export function resolveCollision(
   solids: Rect[],
   fromX: number,
@@ -180,35 +493,19 @@ export function resolveCollision(
   toY: number,
   world: { w: number; h: number },
 ): Vec {
-  const hs = PLAYER_RADIUS;
-  let x = toX;
-  let y = fromY;
-  for (const s of solids) {
-    if (overlap(x, y, hs, s)) {
-      if (toX > fromX) x = s.x - hs;
-      else if (toX < fromX) x = s.x + s.w + hs;
-    }
-  }
-  y = toY;
-  for (const s of solids) {
-    if (overlap(x, y, hs, s)) {
-      if (toY > fromY) y = s.y - hs;
-      else if (toY < fromY) y = s.y + s.h + hs;
-    }
-  }
-  x = Math.max(WALL_T + hs, Math.min(world.w - WALL_T - hs, x));
-  y = Math.max(WALL_T + hs, Math.min(world.h - WALL_T - hs, y));
-  return { x, y };
+  const R = PLAYER_RADIUS;
+  const clampedX = Math.max(R + WALL_T, Math.min(world.w - R - WALL_T, toX));
+  const clampedY = Math.max(R + WALL_T, Math.min(world.h - R - WALL_T, toY));
+  const hits = (x: number, y: number) => solids.some((s) => circleRect(x, y, R, s));
+  if (!hits(clampedX, clampedY)) return { x: clampedX, y: clampedY };
+  if (!hits(clampedX, fromY)) return { x: clampedX, y: fromY };
+  if (!hits(fromX, clampedY)) return { x: fromX, y: clampedY };
+  return { x: fromX, y: fromY };
 }
 
-function overlap(cx: number, cy: number, hs: number, s: Rect): boolean {
-  return (
-    cx + hs > s.x && cx - hs < s.x + s.w && cy + hs > s.y && cy - hs < s.y + s.h
-  );
-}
-
-export function userHue(id: string): number {
+/** Stable per-user hue for fallback tinting. */
+export function userHue(userId: string): number {
   let h = 0;
-  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) % 360;
+  for (let i = 0; i < userId.length; i++) h = (h * 31 + userId.charCodeAt(i)) % 360;
   return h;
 }

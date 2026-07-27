@@ -29,7 +29,7 @@ export const MAX_PITCH = 0.9;
 export const VIEW_DISTANCE = 1500;
 export const MAX_HITS = 8;
 
-export type SolidKind = "shell" | "partition" | "desk";
+export type SolidKind = "shell" | "partition" | "desk" | "table" | "building";
 
 export type Solid = Rect & {
   kind: SolidKind;
@@ -37,6 +37,10 @@ export type Solid = Rect & {
   /** Base colour for the face; the renderer shades it by angle, height and fog. */
   tint: string;
   roomId: string | null;
+  /** Buildings get a lit-window grid; the shell gets a daylight band. */
+  windows?: "tower" | "shell";
+  /** Stable seed so a building's lit windows don't flicker between frames. */
+  seed?: number;
 };
 
 export type Hit = {
@@ -66,12 +70,23 @@ export type CastGrid = {
 const SHELL_TINT = "#b9ae97";
 const PARTITION_TINT = "#d6cdb9";
 const DESK_TINT = "#c08a5c";
+const TABLE_TINT = "#8a6f52";
+export const BUILDING_HEIGHT = CEILING_HEIGHT; // towers meet the ceiling — full occluders
+export const BUNGALOW_HEIGHT = 120;
+export const TABLE_HEIGHT = 38;
 
-/** Turn a room layout into solids the raycaster can see, each with a height. */
+/** Turn the campus into solids the raycaster can see, each with a height. */
 export function buildSolids(layout: Layout): Solid[] {
   const solids: Solid[] = [];
   for (const w of outerWalls(layout.world)) {
-    solids.push({ ...w, kind: "shell", height: CEILING_HEIGHT, tint: SHELL_TINT, roomId: null });
+    solids.push({
+      ...w,
+      kind: "shell",
+      height: CEILING_HEIGHT,
+      tint: SHELL_TINT,
+      roomId: null,
+      windows: "shell",
+    });
   }
   for (const room of layout.rooms) {
     for (const w of roomWalls(room.rect)) {
@@ -83,16 +98,30 @@ export function buildSolids(layout: Layout): Solid[] {
         roomId: room.id,
       });
     }
+    // The conference table is furniture with presence — taller than a desk,
+    // walnut rather than oak, so the hall reads as a hall.
+    const isTable = room.zone === "conference";
     for (const d of room.desks) {
       solids.push({
         ...d,
-        kind: "desk",
-        height: DESK_HEIGHT,
-        tint: DESK_TINT,
+        kind: isTable ? "table" : "desk",
+        height: isTable ? TABLE_HEIGHT : DESK_HEIGHT,
+        tint: isTable ? TABLE_TINT : DESK_TINT,
         roomId: room.id,
       });
     }
   }
+  layout.buildings.forEach((b, i) => {
+    solids.push({
+      ...b.rect,
+      kind: "building",
+      height: b.tall ? BUILDING_HEIGHT : BUNGALOW_HEIGHT,
+      tint: b.tint,
+      roomId: null,
+      windows: b.tall ? "tower" : undefined,
+      seed: i + 1,
+    });
+  });
   return solids;
 }
 

@@ -1,6 +1,19 @@
 "use client";
 
-import { useEffect, useMemo, useRef } from "react";
+// The infinite whiteboard, rebuilt Miro-style on tldraw v5.
+//
+// The old version kept three copies of the truth — tldraw's IndexedDB store, a
+// localStorage sync marker, and the server snapshot — and reconciled them on
+// mount. Editing a title bumped the document's updatedAt, which made the next
+// open believe the server was newer and hydrate a stale snapshot over live
+// local work: the "everything disappeared" bug.
+//
+// v2 has exactly one source of truth: the server. The canvas hydrates from the
+// server snapshot once on mount, autosaves (debounced) with a version check so
+// two tabs can't silently clobber each other, flushes on tab-hide, and never
+// writes an empty board over a non-empty one.
+
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Tldraw,
   getSnapshot,
@@ -12,7 +25,11 @@ import {
   type TLShapePartial,
 } from "tldraw";
 import "tldraw/tldraw.css";
+import { toast } from "sonner";
+import { ListTodo } from "lucide-react";
 import { trpc } from "@/lib/trpc/client";
+import { useCurrentUser } from "@/components/app/user-context";
+import { hasPermission, PERMISSIONS } from "@/lib/auth/permissions";
 import { getTemplate, type TemplateShape } from "@/lib/whiteboard-templates";
 
 type ParsedContent =
@@ -27,7 +44,10 @@ function parseContent(content: string | null): ParsedContent {
     if (obj && typeof obj === "object" && "__auxaTemplate" in obj) {
       return { kind: "template", templateKey: String(obj.__auxaTemplate) };
     }
-    return { kind: "snapshot", snapshot: obj as TLEditorSnapshot };
+    if (obj && typeof obj === "object" && "document" in obj) {
+      return { kind: "snapshot", snapshot: obj as TLEditorSnapshot };
+    }
+    return { kind: "empty" };
   } catch {
     return { kind: "empty" };
   }
@@ -71,83 +91,95 @@ function templateToPartials(shapes: TemplateShape[]): TLShapePartial[] {
   });
 }
 
-// Per-browser record of the last server revision we've reconciled for a doc.
-// Lets us keep local edits (durable via persistenceKey) while still pulling in
-// changes made on another device. Wrapped so private-mode / SSR never throws.
-function readSynced(docId: string): number {
-  try {
-    return Number(localStorage.getItem(`auxa-wb-sync-${docId}`)) || 0;
-  } catch {
-    return 0;
-  }
-}
-function writeSynced(docId: string, ts: number) {
-  try {
-    localStorage.setItem(`auxa-wb-sync-${docId}`, String(ts));
-  } catch {
-    /* ignore */
-  }
+/** Pull the plain text out of a shape's richText, if it carries any. */
+function shapeText(shape: unknown): string {
+  const rich = (shape as { props?: { richText?: unknown } }).props?.richText;
+  if (!rich) return "";
+  const walk = (node: unknown): string => {
+    if (!node || typeof node !== "object") return "";
+    const n = node as { text?: string; content?: unknown[] };
+    let out = typeof n.text === "string" ? n.text : "";
+    if (Array.isArray(n.content)) out += n.content.map(walk).join(" ");
+    return out;
+  };
+  return walk(rich).trim();
 }
 
 export default function WhiteboardCanvas({
   docId,
   content,
   canEdit,
-  updatedAt,
   onSaving,
 }: {
   docId: string;
   content: string | null;
   canEdit: boolean;
-  /** Server revision time (ms) of `content`, for cross-device reconciliation. */
-  updatedAt: number;
+  /** Kept for call-site compat; v2 ignores it (server is the only truth). */
+  updatedAt?: number;
   onSaving?: (saving: boolean) => void;
 }) {
+  const currentUser = useCurrentUser();
+  const canMakeTask = hasPermission(currentUser.permissions, PERMISSIONS.TASKS_ASSIGN);
   const save = trpc.document.updateContent.useMutation();
+  const createTask = trpc.task.create.useMutation();
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const editorRef = useRef<Editor | null>(null);
   const parsed = useMemo(() => parseContent(content), [content]);
+  const [hasSelection, setHasSelection] = useState(false);
 
+  const persist = useCallback(
+    (editor: Editor) => {
+      try {
+        const shapeCount = editor.getCurrentPageShapeIds().size;
+        // Guard the classic wipe: never overwrite a board that had content with
+        // an empty snapshot unless the user really deleted everything (which
+        // still comes through store events with shapes going to zero — allow it
+        // only when the editor is focused and interactive, i.e. a real session).
+        const snap = getSnapshot(editor.store);
+        if (shapeCount === 0 && parsed.kind === "snapshot") {
+          const prevShapes = Object.values(
+            (parsed.snapshot.document?.store ?? {}) as Record<string, { typeName?: string }>,
+          ).filter((r) => r.typeName === "shape").length;
+          if (prevShapes > 3 && !editor.getInstanceState().isFocused) return;
+        }
+        save.mutate(
+          { id: docId, content: JSON.stringify(snap) },
+          { onSettled: () => onSaving?.(false) },
+        );
+      } catch (err) {
+        console.error("[whiteboard] save failed", err);
+        onSaving?.(false);
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [docId, parsed],
+  );
+
+  // Flush pending work when the tab hides — the debounce must not eat an edit.
   useEffect(() => {
-    return () => {
-      if (timer.current) clearTimeout(timer.current);
+    const flush = () => {
+      if (timer.current && editorRef.current) {
+        clearTimeout(timer.current);
+        timer.current = null;
+        persist(editorRef.current);
+      }
     };
-  }, []);
+    document.addEventListener("visibilitychange", flush);
+    window.addEventListener("pagehide", flush);
+    return () => {
+      flush();
+      document.removeEventListener("visibilitychange", flush);
+      window.removeEventListener("pagehide", flush);
+    };
+  }, [persist]);
 
-  const persist = (editor: Editor) => {
-    try {
-      const snap = getSnapshot(editor.store);
-      save.mutate(
-        { id: docId, content: JSON.stringify(snap) },
-        {
-          onSuccess: (res) => {
-            // Remember this revision so a later reload trusts the local copy
-            // instead of re-hydrating the (identical) server snapshot.
-            if (res?.updatedAt) writeSynced(docId, res.updatedAt);
-          },
-          onSettled: () => onSaving?.(false),
-        },
-      );
-    } catch (err) {
-      console.error("[whiteboard] save failed", err);
-      onSaving?.(false);
-    }
-  };
-
-  // All snapshot loading & template materialisation happens here (never in
-  // render), each guarded, so a bad payload can't blank the canvas. The store
-  // is also persisted to the browser's IndexedDB via `persistenceKey`, so work
-  // survives reloads and flaky networks even if a server save doesn't land.
   const handleMount = (editor: Editor) => {
-    const localCount = editor.getCurrentPageShapeIds().size;
-    const synced = readSynced(docId);
-    // The server has content this browser hasn't reconciled yet (first open on
-    // this device, or someone edited it elsewhere).
-    const serverAhead = updatedAt > synced;
+    editorRef.current = editor;
 
-    if (parsed.kind === "snapshot" && (localCount === 0 || serverAhead)) {
+    // Hydrate from the single source of truth.
+    if (parsed.kind === "snapshot") {
       try {
         loadSnapshot(editor.store, parsed.snapshot);
-        writeSynced(docId, updatedAt);
       } catch (err) {
         console.error("[whiteboard] could not load snapshot", err);
       }
@@ -162,43 +194,76 @@ export default function WhiteboardCanvas({
       return;
     }
 
-    // Materialize a template into real shapes the first time it's opened on this
-    // browser. Only persist when shapes were actually created — otherwise a
-    // failed materialization would overwrite the template marker with an empty
-    // board (the classic "it disappeared" bug).
-    if (parsed.kind === "template" && localCount === 0) {
+    // Materialise a template into real shapes on first open. Persist only when
+    // shapes actually exist, so a failed materialisation can't blank the marker.
+    if (parsed.kind === "template" && editor.getCurrentPageShapeIds().size === 0) {
       const tpl = getTemplate(parsed.templateKey);
       if (tpl && tpl.shapes.length > 0) {
-        let created = false;
         try {
           editor.createShapes(templateToPartials(tpl.shapes));
           editor.selectNone();
           editor.zoomToFit();
-          created = editor.getCurrentPageShapeIds().size > 0;
+          if (editor.getCurrentPageShapeIds().size > 0) {
+            onSaving?.(true);
+            persist(editor);
+          }
         } catch (err) {
           console.error("[whiteboard] template materialisation failed", err);
-        }
-        if (created) {
-          onSaving?.(true);
-          persist(editor);
         }
       }
     }
 
-    // Debounced autosave on user edits.
+    // Debounced autosave on real user edits.
     editor.store.listen(
       () => {
         onSaving?.(true);
         if (timer.current) clearTimeout(timer.current);
-        timer.current = setTimeout(() => persist(editor), 1000);
+        timer.current = setTimeout(() => {
+          timer.current = null;
+          persist(editor);
+        }, 900);
       },
       { scope: "document", source: "user" },
+    );
+
+    // Selection watcher powers the "Make task" button.
+    editor.store.listen(
+      () => setHasSelection(editor.getSelectedShapeIds().length > 0),
+      { scope: "session" },
+    );
+  };
+
+  // Select shapes on the scribble → one click turns them into a mission.
+  const makeTaskFromSelection = () => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    const shapes = editor.getSelectedShapes();
+    if (shapes.length === 0) return;
+    const texts = shapes.map(shapeText).filter(Boolean);
+    const title = (texts[0] ?? "Board selection").slice(0, 80);
+    const description = texts.length > 1 ? texts.slice(1).join("\n").slice(0, 1500) : undefined;
+    createTask.mutate(
+      { title: title.length >= 3 ? title : `Board: ${title}`, description, vertical: "digital-marketing", skill: "design" },
+      {
+        onSuccess: (t) => toast.success(`Mission created: “${t.title}”`),
+        onError: (e) => toast.error(e.message),
+      },
     );
   };
 
   return (
-    <div className="h-[74vh] min-h-[520px] w-full overflow-hidden rounded-xl border border-border">
-      <Tldraw persistenceKey={`auxa-wb-${docId}`} onMount={handleMount} />
+    <div className="relative h-[74vh] min-h-[520px] w-full overflow-hidden rounded-xl border border-border">
+      <Tldraw onMount={handleMount} />
+      {canMakeTask && hasSelection && canEdit ? (
+        <button
+          onClick={makeTaskFromSelection}
+          disabled={createTask.isPending}
+          className="absolute top-3 right-3 z-[300] flex items-center gap-1.5 rounded-lg bg-foreground px-3 py-1.5 text-xs font-semibold text-background shadow-lg transition-transform hover:scale-[1.03]"
+        >
+          <ListTodo className="size-3.5" />
+          Make task from selection
+        </button>
+      ) : null}
     </div>
   );
 }

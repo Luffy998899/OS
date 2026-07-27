@@ -20,6 +20,14 @@ import { ledgerRouter } from "./ledger";
 import { journalRouter } from "./journal";
 import { bountyRouter } from "./bounty";
 import { skillRouter } from "./skill";
+import { projectRouter } from "./project";
+import { videoRouter } from "./video";
+import { conferenceRouter } from "./conference";
+import { approvalRouter } from "./approval";
+import { outreachRoomRouter } from "./outreach-room";
+import { creativeRouter } from "./creative";
+import { shootRouter } from "./shoot";
+import { timetableRouter } from "./timetable";
 
 export const appRouter = router({
   health: publicProcedure.query(() => ({ ok: true, service: "auxa" })),
@@ -45,6 +53,14 @@ export const appRouter = router({
   journal: journalRouter,
   bounty: bountyRouter,
   skill: skillRouter,
+  project: projectRouter,
+  video: videoRouter,
+  conference: conferenceRouter,
+  approval: approvalRouter,
+  outreachRoom: outreachRoomRouter,
+  creative: creativeRouter,
+  shoot: shootRouter,
+  timetable: timetableRouter,
 });
 
 export type AppRouter = typeof appRouter;

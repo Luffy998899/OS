@@ -47,6 +47,10 @@ model User {
 
   assignedTasks  Task[]             @relation("TaskAssignee")
   createdTasks   Task[]             @relation("TaskCreator")
+  coAssignedTasks TaskCollaborator[]
+  editingJobs    VideoJob[]         @relation("VideoEditor")
+  approvalsRaised ApprovalRequest[] @relation("ApprovalRaisedBy")
+  timetableSlots TimetableSlot[]
   taskComments   TaskComment[]
   shifts         Shift[]
   dayReports     DayReport[]
@@ -86,6 +90,10 @@ model Client {
   timeEntries TimeEntry[]
   invoices    Invoice[]
   rooms       Room[] // dedicated office area(s) for this client
+  projects    Project[]
+  videoJobs   VideoJob[]
+  creativeSpaces CreativeSpace[]
+  shoots      Shoot[]
   createdAt   DateTime      @default(now())
   updatedAt   DateTime      @updatedAt
 }
@@ -138,12 +146,26 @@ model Task {
   client      Client? @relation(fields: [clientId], references: [id])
   roomId      String?
   room        Room?   @relation(fields: [roomId], references: [id])
+  projectId   String?
+  project     Project? @relation(fields: [projectId], references: [id])
 
-  comments    TaskComment[]
-  activities  TaskActivity[]
-  timeEntries TimeEntry[]
+  comments      TaskComment[]
+  activities    TaskActivity[]
+  timeEntries   TimeEntry[]
+  collaborators TaskCollaborator[]
   createdAt   DateTime       @default(now())
   updatedAt   DateTime       @updatedAt
+}
+
+// Co-assignment: a mission one person owns but a squad works on together.
+model TaskCollaborator {
+  id     String @id @default(cuid())
+  taskId String
+  task   Task   @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([taskId, userId])
 }
 
 model TaskComment {
@@ -371,6 +393,216 @@ model Setting {
   key       String   @unique
   value     String // JSON
   updatedAt DateTime @updatedAt
+}
+
+// ---------------------------------------------------------------------------
+// Campus rooms — developer city, video bay, conference, outreach, creative,
+// shoot planning and the timetable. Each model backs one themed room.
+// ---------------------------------------------------------------------------
+
+// A floor in the developer city. buildingKey decides which structure it lives
+// in: "pipeline" (in-progress tower), "complete" (finished tower, 10 floors,
+// AI-rearranged by niche), or "tools" (the internal-tools bungalow).
+model Project {
+  id          String    @id @default(cuid())
+  name        String
+  buildingKey String    @default("pipeline") // pipeline | complete | tools
+  floor       Int       @default(1)
+  niche       String?
+  status      String    @default("active") // active | complete | archived
+  deadline    DateTime?
+  repoUrl     String?
+  siteUrl     String?
+  auditStatus String    @default("unaudited") // unaudited | pass | warn | fail
+  auditNote   String?
+  // Public link a client uses to drop task requests straight onto the floor.
+  shareToken  String    @unique @default(cuid())
+  clientId    String?
+  client      Client?   @relation(fields: [clientId], references: [id])
+  // The floor's pinned data board: address, contacts, gmail, credentials refs…
+  dataBoard   String    @default("[]") // JSON [{label, value}]
+  toolDesc    String? // for bungalow entries
+  tasks       Task[]
+  requests    ClientRequest[]
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+}
+
+// What a client typed into their floor's share page. Converting one creates a
+// real (pending-review) task on the floor.
+model ClientRequest {
+  id        String   @id @default(cuid())
+  projectId String
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  author    String
+  body      String
+  reply     String? // agent/AI acknowledgement shown back on the share page
+  status    String   @default("pending") // pending | converted | dismissed
+  taskId    String?
+  createdAt DateTime @default(now())
+}
+
+// The video bay queue. One job is "editing" at a time per editor; the rest wait
+// on the whiteboard in delivery order.
+model VideoJob {
+  id          String    @id @default(cuid())
+  title       String
+  clientId    String?
+  client      Client?   @relation(fields: [clientId], references: [id])
+  script      String?
+  status      String    @default("queued") // queued | editing | delivered
+  priority    String    @default("medium") // low | medium | high | urgent
+  deliverBy   DateTime?
+  position    Int       @default(0)
+  editorId    String?
+  editor      User?     @relation("VideoEditor", fields: [editorId], references: [id])
+  startedAt   DateTime?
+  deliveredAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+}
+
+// Conference hall feed: urgent meetings, disclosures, incentives and the weekly
+// do's & don'ts feedback round.
+model Announcement {
+  id          String    @id @default(cuid())
+  kind        String    @default("disclosure") // urgent_meeting | disclosure | incentive | feedback
+  title       String
+  body        String?
+  meetingAt   DateTime?
+  pinned      Boolean   @default(false)
+  createdById String
+  acks        AnnouncementAck[]
+  createdAt   DateTime  @default(now())
+}
+
+model AnnouncementAck {
+  id             String       @id @default(cuid())
+  announcementId String
+  announcement   Announcement @relation(fields: [announcementId], references: [id], onDelete: Cascade)
+  userId         String
+  createdAt      DateTime     @default(now())
+
+  @@unique([announcementId, userId])
+}
+
+// Managing-heads desk: leave applications, task approvals, any query.
+model ApprovalRequest {
+  id           String    @id @default(cuid())
+  userId       String
+  user         User      @relation("ApprovalRaisedBy", fields: [userId], references: [id], onDelete: Cascade)
+  kind         String    @default("query") // leave | approval | query
+  title        String
+  detail       String?
+  fromDate     String? // YYYY-MM-DD, leave only
+  toDate       String?
+  status       String    @default("pending") // pending | approved | rejected
+  decisionNote String?
+  decidedById  String?
+  decidedAt    DateTime?
+  createdAt    DateTime  @default(now())
+}
+
+// Outreach room: the pushed lead list, one sector assigned per agent per day.
+model OutreachTarget {
+  id           String   @id @default(cuid())
+  sector       String // nearby location / zone name
+  name         String
+  phone        String?
+  niche        String?
+  notes        String?
+  status       String   @default("pending") // pending | contacted | hot | converted | dropped
+  assignedToId String?
+  assignedDate String? // YYYY-MM-DD
+  order        Int      @default(0) // AI day-plan ordering
+  createdAt    DateTime @default(now())
+}
+
+// OTP a hot lead confirms on the spot; verifying auto-fills them into the CRM.
+model LeadOtp {
+  id        String   @id @default(cuid())
+  phone     String
+  code      String
+  targetId  String?
+  clientId  String? // set once verified → the created CRM client
+  verified  Boolean  @default(false)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+}
+
+// One creative space per client (plus one internal): brand kit pinned, the
+// infinite board, references, scripts, timeline and competitor research.
+model CreativeSpace {
+  id              String   @id @default(cuid())
+  key             String   @unique // client:<clientId> | internal
+  name            String
+  clientId        String?
+  client          Client?  @relation(fields: [clientId], references: [id])
+  boardDocId      String? // whiteboard Document for the infinite board
+  brandKit        String   @default("{}") // JSON {colors:[],fonts:[],links:[]}
+  competitorNotes String?
+  items           CreativeItem[]
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+model CreativeItem {
+  id          String        @id @default(cuid())
+  spaceId     String
+  space       CreativeSpace @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  kind        String // reference | reel | note | script | timeline
+  title       String
+  url         String?
+  content     String?
+  monthKey    String? // YYYY-MM, timeline entries
+  pinned      Boolean       @default(false)
+  createdById String?
+  createdAt   DateTime      @default(now())
+}
+
+// Shoot room: everything planned in front of a camera this day / week.
+model Shoot {
+  id        String   @id @default(cuid())
+  title     String
+  date      String // YYYY-MM-DD
+  timeNote  String? // "10:30 – 13:00"
+  location  String   @default("indoor") // indoor | outdoor
+  scope     String   @default("internal") // client | internal
+  clientId  String?
+  client    Client?  @relation(fields: [clientId], references: [id])
+  priority  String   @default("medium")
+  status    String   @default("planned") // planned | done | cancelled
+  notes     String?
+  createdAt DateTime @default(now())
+}
+
+// School-bell timetable: AI splits everyone's day into blocks; the bell rings
+// on every block change and after lunch the team logs back in.
+model TimetableSlot {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  date      String // YYYY-MM-DD
+  startMin  Int // minutes from midnight
+  endMin    Int
+  label     String
+  kind      String   @default("work") // work | planning | lunch | scripting | followup | journal | posting | outreach
+  clientId  String?
+  source    String   @default("ai") // ai | manual
+  createdAt DateTime @default(now())
+
+  @@index([userId, date])
+}
+
+// Post-lunch re-login + bell acknowledgements, so tracking has no gaps.
+model TimetableLog {
+  id        String   @id @default(cuid())
+  userId    String
+  date      String // YYYY-MM-DD
+  type      String // back_from_lunch | bell_ack
+  at        DateTime @default(now())
+
+  @@unique([userId, date, type])
 }
 
 // ---------------------------------------------------------------------------

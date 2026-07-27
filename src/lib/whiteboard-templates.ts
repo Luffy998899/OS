@@ -667,6 +667,31 @@ export const TEMPLATES: Template[] = [
   },
 ];
 
+// The creative room's infinite board scaffold: brand kit pinned top-left,
+// reference rail, competitor moat box, and a green-zone planning strip.
+const CREATIVE_SPACE: Template = {
+  key: "creative-space",
+  name: "Creative space",
+  category: "Research & design",
+  thumb: "sections",
+  description:
+    "Brand kit pinned, reference rail, competitor moat and the advance-content green zone.",
+  shapes: [
+    { kind: "text", x: 60, y: 60, text: "Brand kit", size: "l" },
+    { kind: "geo", x: 60, y: 110, w: 360, h: 300, color: "violet", fill: "semi", text: "Logos · colours · fonts\n(pinned — keep updated)" },
+    { kind: "text", x: 480, y: 60, text: "References — statics & carousels", size: "l" },
+    { kind: "geo", x: 480, y: 110, w: 640, h: 300, color: "blue", fill: "none", text: "" },
+    { kind: "note", x: 500, y: 130, text: "Drop reference links here", color: "blue" },
+    { kind: "note", x: 720, y: 130, text: "Reel refs — drag from the rail", color: "light-blue" },
+    { kind: "text", x: 60, y: 470, text: "Competitor research & moat", size: "l" },
+    { kind: "geo", x: 60, y: 520, w: 500, h: 280, color: "red", fill: "semi", text: "Done once, pinned forever" },
+    { kind: "text", x: 620, y: 470, text: "Green zone — next month planned", size: "l" },
+    { kind: "geo", x: 620, y: 520, w: 500, h: 280, color: "green", fill: "semi", text: "Advance content lives here" },
+    { kind: "note", x: 1180, y: 130, text: "Select shapes and press Make task", color: "yellow" },
+  ],
+};
+TEMPLATES.push(CREATIVE_SPACE);
+
 export function getTemplate(key: string): Template | undefined {
   return TEMPLATES.find((t) => t.key === key);
 }

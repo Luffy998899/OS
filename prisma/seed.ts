@@ -33,6 +33,20 @@ async function main() {
     db.documentShare.deleteMany(),
     db.document.deleteMany(),
     db.avatarState.deleteMany(),
+    db.timetableLog.deleteMany(),
+    db.timetableSlot.deleteMany(),
+    db.shoot.deleteMany(),
+    db.creativeItem.deleteMany(),
+    db.creativeSpace.deleteMany(),
+    db.leadOtp.deleteMany(),
+    db.outreachTarget.deleteMany(),
+    db.approvalRequest.deleteMany(),
+    db.announcementAck.deleteMany(),
+    db.announcement.deleteMany(),
+    db.videoJob.deleteMany(),
+    db.clientRequest.deleteMany(),
+    db.taskCollaborator.deleteMany(),
+    db.project.deleteMany(),
     db.dayReport.deleteMany(),
     db.shift.deleteMany(),
     db.outreachLog.deleteMany(),
@@ -67,15 +81,18 @@ async function main() {
     roles[name] = r.id;
   }
 
-  // Department rooms (the base office floor). Client areas are added by the admin.
+  // The campus. Positions are semantic (the layout binds zones by key); the
+  // grid coordinates only matter for legacy fallback ordering.
   const roomDefs = [
-    { key: "developer", name: "Developer Room", department: "Engineering", posX: 0, posY: 0 },
-    { key: "creative", name: "Creative Room", department: "Design & Marketing", posX: 1, posY: 0 },
-    { key: "video-editing", name: "Video Editing Room", department: "Media", posX: 2, posY: 0 },
-    { key: "managing-heads", name: "Managing Heads Room", department: "Leadership", posX: 0, posY: 1 },
-    { key: "common-board", name: "Common Board Room", department: "All-hands", posX: 1, posY: 1 },
-    { key: "client", name: "Client Room", department: "Client Success", posX: 2, posY: 1 },
-    { key: "creativity", name: "Creativity Room", department: "Ideation", posX: 1, posY: 2 },
+    { key: "developer", name: "Developer City", department: "Engineering", posX: 0, posY: 0 },
+    { key: "video-editing", name: "Video Editing Bay", department: "Media", posX: 1, posY: 0 },
+    { key: "common-board", name: "Conference Hall", department: "All-hands", posX: 2, posY: 0 },
+    { key: "creative", name: "Creative Studio", department: "Design & Marketing", posX: 0, posY: 1 },
+    { key: "tasks", name: "Task Room", department: "Everyone", posX: 1, posY: 1 },
+    { key: "managing-heads", name: "Managing Heads", department: "Leadership", posX: 2, posY: 1 },
+    { key: "timetable", name: "Timetable Room", department: "Everyone", posX: 0, posY: 2 },
+    { key: "outreach", name: "Outreach Room", department: "Client Success", posX: 1, posY: 2 },
+    { key: "shoot", name: "Shoot Room", department: "Media", posX: 2, posY: 2 },
   ];
   const rooms: Record<string, string> = {};
   for (const r of roomDefs) {
@@ -83,6 +100,19 @@ async function main() {
       data: { ...r, kind: "department" },
     });
     rooms[r.key] = created.id;
+  }
+
+  // The internal-tools bungalow in the developer city.
+  const tools = [
+    { name: "Sync AI", toolDesc: "The agency's AI copilot — check-ins, planning, routing." },
+    { name: "Prompt Library", toolDesc: "Battle-tested prompts for every craft, versioned." },
+    { name: "Portfolio Website", toolDesc: "The public face — case studies and reels." },
+    { name: "Niche Research Documents", toolDesc: "Sector playbooks and research packs." },
+  ];
+  for (const [i, tool] of tools.entries()) {
+    await db.project.create({
+      data: { name: tool.name, toolDesc: tool.toolDesc, buildingKey: "tools", floor: i + 1 },
+    });
   }
 
   // A single owner account to log in with. Everything else is created in-app.
