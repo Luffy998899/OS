@@ -119,7 +119,18 @@ const DRAG_SENSITIVITY = 0.0035;
 const TURN_KEY_SPEED = 0.035;
 const INTERACT_RANGE = 120;
 const SAVE_INTERVAL_MS = 900;
-const RENDER_SCALE = 0.44;
+
+// Dynamic resolution: start sharp and let the frame-time governor find what
+// this machine can hold at ~60fps. The old fixed 0.44 scale is why the world
+// looked pixelated — it never rendered more than ~760 columns.
+const RENDER_SCALE_START = 0.62;
+const RENDER_SCALE_MIN = 0.42;
+const RENDER_SCALE_MAX = 0.85;
+const RENDER_W_MAX = 1360;
+// Patterns (grout, carpet weave, ceiling grid) fade out past these distances —
+// beyond them they only alias into shimmer.
+const FLOOR_PATTERN_DIST = 620;
+const CEIL_PATTERN_DIST = 760;
 
 type PanelKind =
   | "missions"
@@ -224,9 +235,6 @@ const CEIL_BASE: [number, number, number] = [226, 222, 212];
 const CEIL_PANEL: [number, number, number] = [252, 250, 244];
 const SKY_TOP: [number, number, number] = [176, 214, 226];
 const SKY_BOTTOM: [number, number, number] = [214, 230, 219];
-const WINDOW_LIT: [number, number, number] = [255, 226, 158];
-const WINDOW_DARK: [number, number, number] = [52, 66, 82];
-
 function fogged(rgb: [number, number, number], light: number, f: number): number {
   return pack(
     rgb[0] * light * (1 - f) + FOG[0] * f,
@@ -938,15 +946,25 @@ export function FirstPersonFloor({ onExit }: { onExit: () => void }) {
     const hits: Hit[] = [];
     let rowPalette = new Uint32Array(0);
 
+    // Frame-time governor: render as many pixels as this machine can hold at
+    // ~60fps. EMA of frame cost decides; steps are small so it settles quietly.
+    let renderScale = RENDER_SCALE_START;
+    let frameEma = 12;
+    let lastTune = performance.now();
+
     const resize = () => {
       const cssW = Math.max(320, canvasEl.clientWidth);
       const cssH = Math.max(240, canvasEl.clientHeight);
       const dpr = Math.min(2, window.devicePixelRatio || 1);
-      canvasEl.width = Math.round(cssW * dpr);
-      canvasEl.height = Math.round(cssH * dpr);
+      const cw = Math.round(cssW * dpr);
+      const chh = Math.round(cssH * dpr);
+      if (canvasEl.width !== cw || canvasEl.height !== chh) {
+        canvasEl.width = cw;
+        canvasEl.height = chh;
+      }
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      const w = Math.round(clamp(cssW * RENDER_SCALE, 340, 760));
-      const h = Math.max(200, Math.round((w * cssH) / cssW));
+      const w = Math.round(clamp(cssW * renderScale, 380, RENDER_W_MAX));
+      const h = Math.max(220, Math.round((w * cssH) / cssW));
       if (w === bufW && h === bufH) return;
       bufW = w;
       bufH = h;
@@ -959,6 +977,20 @@ export function FirstPersonFloor({ onExit }: { onExit: () => void }) {
     resize();
     const onResize = () => resize();
     window.addEventListener("resize", onResize);
+
+    const tuneResolution = (frameMs: number, now: number) => {
+      frameEma = frameEma * 0.9 + frameMs * 0.1;
+      if (now - lastTune < 700) return;
+      if (frameEma > 19 && renderScale > RENDER_SCALE_MIN) {
+        renderScale = Math.max(RENDER_SCALE_MIN, renderScale - 0.07);
+        lastTune = now;
+        resize();
+      } else if (frameEma < 12.5 && renderScale < RENDER_SCALE_MAX) {
+        renderScale = Math.min(RENDER_SCALE_MAX, renderScale + 0.05);
+        lastTune = now;
+        resize();
+      }
+    };
 
     const update = (dt: number, now: number) => {
       const grid = R.grid;
@@ -1103,6 +1135,9 @@ export function FirstPersonFloor({ onExit }: { onExit: () => void }) {
           rowPalette[i * 2 + 1] = fogged(palette[i], 0.9, f);
         }
         const groutColor = fogged(CORRIDOR_GROUT, 1, f);
+        // Past the fade distance the pattern only aliases into sparkle — draw
+        // the plain material instead.
+        const patterned = rowDist < FLOOR_PATTERN_DIST;
         const stepX = (rowDist * (rightX - leftX)) / bufW;
         const stepY = (rowDist * (rightY - leftY)) / bufW;
         let wx = cam.x + rowDist * leftX;
@@ -1115,7 +1150,9 @@ export function FirstPersonFloor({ onExit }: { onExit: () => void }) {
             cx < 0 || cy < 0 || cx >= index.cols || cy >= index.rows
               ? 0
               : index.ids[cy * index.cols + cx];
-          if (room === 0) {
+          if (!patterned) {
+            colors[o] = rowPalette[room * 2];
+          } else if (room === 0) {
             // Corridor: big tiles with grout lines.
             const gx = wx % 100;
             const gy = wy % 100;
@@ -1147,17 +1184,22 @@ export function FirstPersonFloor({ onExit }: { onExit: () => void }) {
         const base = fogged(CEIL_BASE, 0.88, f);
         const panel = fogged(CEIL_PANEL, 1.05, f);
         const rim = fogged(CEIL_BASE, 0.72, f);
+        const patterned = rowDist < CEIL_PATTERN_DIST;
         const stepX = (rowDist * (rightX - leftX)) / bufW;
         const stepY = (rowDist * (rightY - leftY)) / bufW;
         let wx = cam.x + rowDist * leftX;
         let wy = cam.y + rowDist * leftY;
         let o = y * bufW;
         for (let x = 0; x < bufW; x++, o++) {
-          const lx = ((wx % 200) + 200) % 200;
-          const ly = ((wy % 200) + 200) % 200;
-          const inPanel = lx > 55 && lx < 145 && ly > 55 && ly < 145;
-          const onRim = !inPanel && lx > 48 && lx < 152 && ly > 48 && ly < 152;
-          colors[o] = inPanel ? panel : onRim ? rim : base;
+          if (!patterned) {
+            colors[o] = base;
+          } else {
+            const lx = ((wx % 200) + 200) % 200;
+            const ly = ((wy % 200) + 200) % 200;
+            const inPanel = lx > 55 && lx < 145 && ly > 55 && ly < 145;
+            const onRim = !inPanel && lx > 48 && lx < 152 && ly > 48 && ly < 152;
+            colors[o] = inPanel ? panel : onRim ? rim : base;
+          }
           depth[o] = rowDist;
           wx += stepX;
           wy += stepY;
@@ -1180,11 +1222,28 @@ export function FirstPersonFloor({ onExit }: { onExit: () => void }) {
       const d = hit.dist;
       if (d <= 0.05) return;
       const f = fogAmount(d);
+      const invF = 1 - f;
+      const fogR = FOG[0] * f;
+      const fogG = FOG[1] * f;
+      const fogB = FOG[2] * f;
       const [r, g, b] = hexRgb(s.tint);
 
-      let light = hit.axis === 0 ? 0.72 : 0.97;
-      const seam = hit.u % 0.25;
-      if (s.kind !== "building" && (seam < 0.012 || seam > 0.238)) light *= 0.86;
+      // Face lighting plus world-space panel seams: a fine seam every 40 units
+      // and a stronger joint every 160, so long walls read as built, not
+      // extruded. (The old u%0.25 seams scaled with wall length — on the shell
+      // they were 500+ units apart and everything in between was one flat run.)
+      const wallLen = hit.axis === 0 ? s.h : s.w;
+      const along = hit.u * wallLen;
+      let lightBase = hit.axis === 0 ? 0.74 : 0.98;
+      if (s.kind === "partition" || s.kind === "shell") {
+        const joint = along % 160;
+        if (joint < 2.4) lightBase *= 0.85;
+        else if (along % 40 < 1.3) lightBase *= 0.93;
+      } else if (s.kind === "desk" || s.kind === "table") {
+        // Wood grain.
+        if (along % 14 < 0.9) lightBase *= 0.94;
+      }
+      const nearFade = Math.min(1, d / 90); // soften faces you stand against
 
       const yBottom = projectHeight(cam, 0, d);
       const yTop = projectHeight(cam, s.height, d);
@@ -1192,19 +1251,19 @@ export function FirstPersonFloor({ onExit }: { onExit: () => void }) {
       const y1 = Math.min(bufH - 1, Math.floor(yBottom));
       if (y1 < 0 || y0 > bufH - 1) return;
 
-      const body = fogged([r, g, b], light, f);
-      const capColor = fogged([r, g, b], 1.06, f);
-      const baseShadow = fogged([r, g, b], light * 0.6, f);
-
-      // Low furniture shows its top surface.
+      // Low furniture shows its top surface, lit from above with a subtle
+      // depth gradient so the cap reads as a plane rather than a flat sticker.
       if (s.height < cam.eye) {
         const yTopBack = projectHeight(cam, s.height, Math.max(hit.exit, d + 0.01));
         const capTop = Math.max(0, Math.ceil(yTopBack));
         const capBottom = Math.min(bufH - 1, Math.floor(yTop));
+        const capSpan = Math.max(1, capBottom - capTop);
         for (let y = capTop; y <= capBottom; y++) {
           const o = y * bufW + x;
           if (d >= depth[o]) continue;
-          colors[o] = capColor;
+          const t = (y - capTop) / capSpan; // far edge → near edge
+          const L = 1.0 + 0.1 * t;
+          colors[o] = pack(r * L * invF + fogR, g * L * invF + fogG, b * L * invF + fogB);
           depth[o] = d;
         }
         y0 = Math.max(y0, capTop);
@@ -1212,50 +1271,85 @@ export function FirstPersonFloor({ onExit }: { onExit: () => void }) {
 
       const span = yBottom - yTop;
       const invSpan = span > 0.0001 ? 1 / span : 0;
-      const contact = Math.max(y0, y1 - 1);
       const isTower = s.windows === "tower";
       const isShell = s.windows === "shell";
-      const wallLen = hit.axis === 0 ? s.h : s.w;
+      const invHeight = 1 / s.height;
 
       for (let y = y0; y <= y1; y++) {
         const o = y * bufW + x;
         if (d >= depth[o]) continue;
-        let c: number;
         // Height above the floor at this pixel.
         const z = s.height * (yBottom - y) * invSpan;
+        let cr: number;
+        let cg: number;
+        let cb: number;
+
         if (isTower && z > 24 && z < s.height - 14) {
-          // Lit window grid on the towers.
-          const row = ((z - 24) / 40) | 0;
-          const inRow = (z - 24) % 40 < 24;
-          const along = hit.u * wallLen;
-          const col = (along / 34) | 0;
-          const inCol = along % 34 > 7;
-          if (inRow && inCol) {
+          // The tower window grid, with real glass: lit panes glow warmer at
+          // the top, dark panes cool off toward the sill.
+          const rowF = (z - 24) / 40;
+          const row = rowF | 0;
+          const inRowF = rowF - row;
+          const colF = along / 34;
+          const col = colF | 0;
+          const inColF = colF - col;
+          if (inRowF < 0.6 && inColF > 0.2) {
             const lit = hash2(col + (s.seed ?? 0) * 97, row) % 10 < 6;
-            c = fogged(lit ? WINDOW_LIT : WINDOW_DARK, hit.axis === 0 ? 0.9 : 1, f);
+            const gt = inRowF / 0.6; // 0 top of pane → 1 sill
+            if (lit) {
+              cr = 255 - 44 * gt;
+              cg = 226 - 52 * gt;
+              cb = 158 - 56 * gt;
+            } else {
+              cr = 62 - 22 * gt;
+              cg = 78 - 26 * gt;
+              cb = 96 - 28 * gt;
+            }
+            const sideL = hit.axis === 0 ? 0.88 : 1;
+            cr *= sideL;
+            cg *= sideL;
+            cb *= sideL;
           } else {
-            c = body;
+            const L = lightBase * (0.9 + 0.12 * z * invHeight);
+            cr = r * L;
+            cg = g * L;
+            cb = b * L;
           }
         } else if (isShell && z > 96 && z < 176) {
-          // Daylight band around the shell.
+          // Daylight band around the shell, with mullions and a bright sill.
           const t = (z - 96) / 80;
-          const sky: [number, number, number] = [
-            SKY_BOTTOM[0] + (SKY_TOP[0] - SKY_BOTTOM[0]) * t,
-            SKY_BOTTOM[1] + (SKY_TOP[1] - SKY_BOTTOM[1]) * t,
-            SKY_BOTTOM[2] + (SKY_TOP[2] - SKY_BOTTOM[2]) * t,
-          ];
-          const along = hit.u * wallLen;
-          c = along % 90 < 4 ? body : fogged(sky, 1.04, f * 0.5);
-        } else if (z < 7) {
-          c = baseShadow; // baseboard
-        } else if (s.kind === "shell" && z < 42) {
-          c = fogged([r, g, b], light * 0.82, f); // wainscot
-        } else if (y >= contact) {
-          c = baseShadow;
+          if (along % 90 < 4) {
+            const L = lightBase;
+            cr = r * L;
+            cg = g * L;
+            cb = b * L;
+          } else if (z < 100) {
+            cr = 245;
+            cg = 242;
+            cb = 232; // sill highlight
+          } else {
+            const halfFog = f * 0.5;
+            cr = (SKY_BOTTOM[0] + (SKY_TOP[0] - SKY_BOTTOM[0]) * t) * (1 - halfFog) + FOG[0] * halfFog;
+            cg = (SKY_BOTTOM[1] + (SKY_TOP[1] - SKY_BOTTOM[1]) * t) * (1 - halfFog) + FOG[1] * halfFog;
+            cb = (SKY_BOTTOM[2] + (SKY_TOP[2] - SKY_BOTTOM[2]) * t) * (1 - halfFog) + FOG[2] * halfFog;
+            colors[o] = pack(cr, cg, cb);
+            depth[o] = d;
+            continue;
+          }
         } else {
-          c = body;
+          // Plain face: ambient occlusion at the floor, brighter toward the
+          // ceiling lights, baseboard and wainscot bands.
+          let L = lightBase * (0.86 + 0.18 * z * invHeight) * (0.82 + 0.18 * nearFade);
+          if (z < 6) L *= 0.6; // baseboard
+          else if (z < 9) L *= 0.82;
+          else if (s.kind === "shell" && z < 42) L *= 0.86; // wainscot
+          else if (z > s.height - 3 && s.height >= cam.eye) L *= 1.08; // top rail
+          cr = r * L;
+          cg = g * L;
+          cb = b * L;
         }
-        colors[o] = c;
+
+        colors[o] = pack(cr * invF + fogR, cg * invF + fogG, cb * invF + fogB);
         depth[o] = d;
       }
     };
@@ -1282,27 +1376,78 @@ export function FirstPersonFloor({ onExit }: { onExit: () => void }) {
       const glowRgb = glow ? hexRgb(glow) : null;
       const pulse = glowRgb ? 0.18 + 0.1 * Math.sin(performance.now() / 320) : 0;
       const f = fogAmount(d);
+      const invF = 1 - f;
+      const fogR = FOG[0] * f;
+      const fogG = FOG[1] * f;
+      const fogB = FOG[2] * f;
       const px0 = Math.max(0, x0);
       const px1 = Math.min(bufW - 1, x1);
       const py0 = Math.max(0, Math.floor(yTop));
       const py1 = Math.min(bufH - 1, Math.ceil(yBottom));
       const sx = bitmap.w / spanX;
       const sy = bitmap.h / spanY;
+      const bw = bitmap.w;
+      const bh = bitmap.h;
+      const px = bitmap.px;
 
+      // Bilinear sampling over the 2×-supersampled sprite. Each texel's colour
+      // is weighted by its own alpha so transparent neighbours can't smear
+      // dark fringes into the edge pixels — this is what removes the jaggies.
       for (let x = px0; x <= px1; x++) {
-        const tx = ((x - x0) * sx) | 0;
-        if (tx < 0 || tx >= bitmap.w) continue;
+        const txf = (x - x0 + 0.5) * sx - 0.5;
+        let tx0 = txf | 0;
+        if (txf < 0) tx0 = 0;
+        if (tx0 > bw - 2) tx0 = bw - 2;
+        const fx = Math.min(1, Math.max(0, txf - tx0));
+        const fx1 = 1 - fx;
+
         for (let y = py0; y <= py1; y++) {
           const o = y * bufW + x;
           if (d >= depth[o]) continue;
-          const ty = ((y - yTop) * sy) | 0;
-          if (ty < 0 || ty >= bitmap.h) continue;
-          const texel = bitmap.px[ty * bitmap.w + tx];
-          const a = texel >>> 24;
-          if (a < 24) continue;
-          let sr = texel & 255;
-          let sg = (texel >>> 8) & 255;
-          let sb = (texel >>> 16) & 255;
+          const tyf = (y - yTop + 0.5) * sy - 0.5;
+          let ty0 = tyf | 0;
+          if (tyf < 0) ty0 = 0;
+          if (ty0 > bh - 2) ty0 = bh - 2;
+          const fy = Math.min(1, Math.max(0, tyf - ty0));
+          const fy1 = 1 - fy;
+
+          const row0 = ty0 * bw + tx0;
+          const t00 = px[row0];
+          const t10 = px[row0 + 1];
+          const t01 = px[row0 + bw];
+          const t11 = px[row0 + bw + 1];
+
+          const w00 = fx1 * fy1;
+          const w10 = fx * fy1;
+          const w01 = fx1 * fy;
+          const w11 = fx * fy;
+
+          const a00 = t00 >>> 24;
+          const a10 = t10 >>> 24;
+          const a01 = t01 >>> 24;
+          const a11 = t11 >>> 24;
+          const a = a00 * w00 + a10 * w10 + a01 * w01 + a11 * w11;
+          if (a < 20) continue;
+
+          const wa00 = w00 * a00;
+          const wa10 = w10 * a10;
+          const wa01 = w01 * a01;
+          const wa11 = w11 * a11;
+          const invA = 1 / (wa00 + wa10 + wa01 + wa11);
+          let sr = ((t00 & 255) * wa00 + (t10 & 255) * wa10 + (t01 & 255) * wa01 + (t11 & 255) * wa11) * invA;
+          let sg =
+            (((t00 >>> 8) & 255) * wa00 +
+              ((t10 >>> 8) & 255) * wa10 +
+              ((t01 >>> 8) & 255) * wa01 +
+              ((t11 >>> 8) & 255) * wa11) *
+            invA;
+          let sb =
+            (((t00 >>> 16) & 255) * wa00 +
+              ((t10 >>> 16) & 255) * wa10 +
+              ((t01 >>> 16) & 255) * wa01 +
+              ((t11 >>> 16) & 255) * wa11) *
+            invA;
+
           if (glowRgb) {
             sr = sr * (1 - pulse) + glowRgb[0] * pulse;
             sg = sg * (1 - pulse) + glowRgb[1] * pulse;
@@ -1315,11 +1460,7 @@ export function FirstPersonFloor({ onExit }: { onExit: () => void }) {
             sg = sg * t + ((prev >>> 8) & 255) * (1 - t);
             sb = sb * t + ((prev >>> 16) & 255) * (1 - t);
           }
-          colors[o] = pack(
-            sr * (1 - f) + FOG[0] * f,
-            sg * (1 - f) + FOG[1] * f,
-            sb * (1 - f) + FOG[2] * f,
-          );
+          colors[o] = pack(sr * invF + fogR, sg * invF + fogG, sb * invF + fogB);
           depth[o] = d;
         }
       }
@@ -1567,10 +1708,13 @@ export function FirstPersonFloor({ onExit }: { onExit: () => void }) {
       last = now;
       if (!overlayRef.current) update(dt, now);
       if (R.grid && image) {
+        const t0 = performance.now();
         drawWorld(now);
         ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = "high";
         ctx.drawImage(off, 0, 0, canvasEl.clientWidth, canvasEl.clientHeight);
         drawOverlayLayer();
+        tuneResolution(performance.now() - t0, now);
       }
       frames++;
       if (now - fpsAt > 500) {

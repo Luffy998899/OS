@@ -22,6 +22,13 @@ const OUTLINE = "#26211b";
 
 const cache = new Map<string, SpriteBitmap>();
 
+/**
+ * Supersampling factor. Every sprite is painted at 2× its layout size, so a
+ * billboard magnified by the renderer stays smooth instead of turning into
+ * blocks — the bilinear sampler in the blitter always has real detail to read.
+ */
+const SS = 2;
+
 function bake(
   key: string,
   w: number,
@@ -31,15 +38,20 @@ function bake(
   const hit = cache.get(key);
   if (hit) return hit;
   const canvas = document.createElement("canvas");
-  canvas.width = w;
-  canvas.height = h;
+  canvas.width = w * SS;
+  canvas.height = h * SS;
   const ctx = canvas.getContext("2d", { willReadFrequently: true });
   if (!ctx) return { w: 1, h: 1, px: new Uint32Array(1) };
+  ctx.scale(SS, SS);
   ctx.lineJoin = "round";
   ctx.lineCap = "round";
   paint(ctx);
-  const image = ctx.getImageData(0, 0, w, h);
-  const bitmap: SpriteBitmap = { w, h, px: new Uint32Array(image.data.buffer.slice(0)) };
+  const image = ctx.getImageData(0, 0, w * SS, h * SS);
+  const bitmap: SpriteBitmap = {
+    w: w * SS,
+    h: h * SS,
+    px: new Uint32Array(image.data.buffer.slice(0)),
+  };
   cache.set(key, bitmap);
   return bitmap;
 }
