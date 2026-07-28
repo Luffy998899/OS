@@ -50,6 +50,8 @@ import { OutreachPanel } from "./rooms/outreach-panel";
 import { CreativePanel } from "./rooms/creative-panel";
 import { ShootPanel } from "./rooms/shoot-panel";
 import { TimetablePanel } from "./rooms/timetable-panel";
+import { DocsPanel } from "./rooms/docs-panel";
+import { LairPanel } from "./rooms/lair-panel";
 
 const STATUSES = ["online", "busy", "away"] as const;
 
@@ -64,6 +66,8 @@ const ROOM_LAUNCHERS = [
   { key: "creative", label: "Creative Studio", desc: "Client houses & boards" },
   { key: "shoot", label: "Shoot Room", desc: "This week's call sheet" },
   { key: "timetable", label: "Timetable", desc: "The bell schedule" },
+  { key: "docs", label: "Writing Desk", desc: "Scripts, notes & boards" },
+  { key: "lair", label: "The Upside Down", desc: "Vecna's overwatch", adminOnly: true },
 ] as const;
 type LauncherKey = (typeof ROOM_LAUNCHERS)[number]["key"];
 
@@ -71,6 +75,7 @@ export function WorkspaceGame() {
   const router = useRouter();
   const currentUser = useCurrentUser();
   const canManage = hasPermission(currentUser.permissions, PERMISSIONS.CLIENTS_MANAGE);
+  const isAdmin = hasPermission(currentUser.permissions, PERMISSIONS.ADMIN);
   const utils = trpc.useUtils();
   const state = trpc.workspace.state.useQuery(undefined, { refetchInterval: 15_000 });
   const enter = trpc.workspace.enter.useMutation();
@@ -217,16 +222,22 @@ export function WorkspaceGame() {
               <p className="text-xs text-muted-foreground">or walk there on the floor</p>
             </div>
             <div className="grid grid-cols-2 gap-2 px-4 sm:grid-cols-3">
-              {ROOM_LAUNCHERS.map((r) => (
-                <button
-                  key={r.key}
-                  onClick={() => setRoomOpen(r.key)}
-                  className="rounded-lg border border-border p-2.5 text-left transition-colors hover:border-foreground/30"
-                >
-                  <p className="text-xs font-semibold">{r.label}</p>
-                  <p className="text-[0.65rem] text-muted-foreground">{r.desc}</p>
-                </button>
-              ))}
+              {ROOM_LAUNCHERS.filter((r) => !("adminOnly" in r && r.adminOnly) || isAdmin).map(
+                (r) => (
+                  <button
+                    key={r.key}
+                    onClick={() => setRoomOpen(r.key)}
+                    className={cn(
+                      "rounded-lg border border-border p-2.5 text-left transition-colors hover:border-foreground/30",
+                      r.key === "lair" &&
+                        "border-destructive/40 bg-destructive/5 hover:border-destructive",
+                    )}
+                  >
+                    <p className="text-xs font-semibold">{r.label}</p>
+                    <p className="text-[0.65rem] text-muted-foreground">{r.desc}</p>
+                  </button>
+                ),
+              )}
             </div>
           </Card>
 
@@ -336,6 +347,8 @@ export function WorkspaceGame() {
           ) : null}
           {roomOpen === "shoot" ? <ShootPanel /> : null}
           {roomOpen === "timetable" ? <TimetablePanel /> : null}
+          {roomOpen === "docs" ? <DocsPanel /> : null}
+          {roomOpen === "lair" ? <LairPanel /> : null}
         </DialogContent>
       </Dialog>
 

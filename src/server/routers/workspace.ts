@@ -63,7 +63,7 @@ async function ensureCampus(db: typeof import("@/lib/db").db): Promise<void> {
 
 export const workspaceRouter = router({
   state: protectedProcedure.query(async ({ ctx }) => {
-    const [rooms, avatars, openByRoom, aiCheckin, bountyByRoom, levels, editingJob, meeting, mySlots, relog] = await Promise.all([
+    const [rooms, avatars, openByRoom, aiCheckin, bountyByRoom, levels, editingJob, meeting, mySlots, relog, scare] = await Promise.all([
       ctx.db.room.findMany({
         orderBy: [{ posY: "asc" }, { posX: "asc" }],
         include: { client: { select: { companyName: true } } },
@@ -119,6 +119,11 @@ export const workspaceRouter = router({
         where: {
           userId_date_type: { userId: ctx.user.id, date: dateKey(), type: "back_from_lunch" },
         },
+      }),
+      ctx.db.notification.findFirst({
+        where: { userId: ctx.user.id, type: "demogorgon", read: false },
+        orderBy: { createdAt: "desc" },
+        select: { id: true, body: true, createdAt: true },
       }),
     ]);
 
@@ -197,8 +202,112 @@ export const workspaceRouter = router({
         needsRelogin: needsRelogin(mySlots, nowMin, !!relog),
         hasPlan: mySlots.length > 0,
       },
+      // An unread demogorgon means the Upside Down noticed you slacking.
+      myScare: scare,
     };
   }),
+
+  /**
+   * The view from the Upside Down: every active teammate with the signals an
+   * admin needs to spot slackers — presence, the block they should be in, and
+   * how much is actually moving on their desk.
+   */
+  lair: permissionProcedure(PERMISSIONS.ADMIN).query(async ({ ctx }) => {
+    const today = dateKey();
+    const nowMin = minutesNow();
+    const [users, avatars, slots, inProgress, doneToday] = await Promise.all([
+      ctx.db.user.findMany({
+        where: { status: "active" },
+        select: { id: true, name: true, department: true, points: true },
+        orderBy: { name: "asc" },
+      }),
+      ctx.db.avatarState.findMany({ select: { userId: true, status: true, updatedAt: true } }),
+      ctx.db.timetableSlot.findMany({ where: { date: today } }),
+      ctx.db.task.groupBy({
+        by: ["assigneeId"],
+        where: { status: "in_progress", approvalStatus: "approved" },
+        _count: { _all: true },
+      }),
+      ctx.db.task.groupBy({
+        by: ["assigneeId"],
+        where: {
+          status: "done",
+          completedAt: { gte: new Date(new Date().setHours(0, 0, 0, 0)) },
+        },
+        _count: { _all: true },
+      }),
+    ]);
+    const avatarOf = new Map(avatars.map((a) => [a.userId, a]));
+    const activeOf = new Map(inProgress.map((g) => [g.assigneeId, g._count._all]));
+    const doneOf = new Map(doneToday.map((g) => [g.assigneeId, g._count._all]));
+    return users
+      .filter((u) => u.id !== ctx.user.id)
+      .map((u) => {
+        const avatar = avatarOf.get(u.id);
+        const mySlots = slots.filter((s) => s.userId === u.id);
+        const current = currentSlot(mySlots, nowMin);
+        const active = activeOf.get(u.id) ?? 0;
+        const done = doneOf.get(u.id) ?? 0;
+        // Slacking: away (or absent) while the timetable says work, with
+        // nothing in progress and nothing shipped today.
+        const inWorkBlock = !!current && current.kind !== "lunch";
+        const idle = !avatar || avatar.status === "away";
+        return {
+          id: u.id,
+          name: u.name,
+          department: u.department,
+          points: u.points,
+          presence: avatar?.status ?? "offline",
+          lastMoveAt: avatar?.updatedAt ?? null,
+          currentSlot: current ? { label: current.label, kind: current.kind } : null,
+          inProgress: active,
+          doneToday: done,
+          slacking: inWorkBlock && idle && active === 0 && done === 0,
+        };
+      });
+  }),
+
+  /**
+   * Cheap app-wide poll: is a demogorgon waiting on my screen? Kept tiny so the
+   * shell can ask often — the scare has to land even when the victim is nowhere
+   * near the workspace page.
+   */
+  myScare: protectedProcedure.query(({ ctx }) =>
+    ctx.db.notification.findFirst({
+      where: { userId: ctx.user.id, type: "demogorgon", read: false },
+      orderBy: { createdAt: "desc" },
+      select: { id: true, body: true, createdAt: true },
+    }),
+  ),
+
+  /** Vecna's finger: drop a demogorgon on someone's screen. */
+  scare: permissionProcedure(PERMISSIONS.ADMIN)
+    .input(z.object({ userId: z.string() }))
+    .mutation(async ({ ctx, input }) => {
+      const target = await ctx.db.user.findUnique({
+        where: { id: input.userId },
+        select: { id: true, name: true, status: true },
+      });
+      if (!target || target.status !== "active") {
+        throw new TRPCError({ code: "NOT_FOUND" });
+      }
+      // One live demogorgon per victim — a horde is just noise.
+      const pending = await ctx.db.notification.findFirst({
+        where: { userId: target.id, type: "demogorgon", read: false },
+      });
+      if (pending) {
+        return { ok: true, already: true };
+      }
+      await ctx.db.notification.create({
+        data: {
+          userId: target.id,
+          type: "demogorgon",
+          title: "👹 The Upside Down is watching",
+          body: `${ctx.user.name} noticed the slack. Back to work before it crawls out again.`,
+        },
+      });
+      return { ok: true, already: false };
+    }),
 
   /**
    * Step onto the floor. Makes sure the player has an avatar and claims them a

@@ -11,6 +11,7 @@
 import {
   outerWalls,
   roomWalls,
+  vaultWalls,
   type Layout,
   type Rect,
   type RoomGeom,
@@ -29,7 +30,7 @@ export const MAX_PITCH = 0.9;
 export const VIEW_DISTANCE = 1500;
 export const MAX_HITS = 8;
 
-export type SolidKind = "shell" | "partition" | "desk" | "table" | "building";
+export type SolidKind = "shell" | "partition" | "desk" | "table" | "building" | "vault";
 
 export type Solid = Rect & {
   kind: SolidKind;
@@ -71,6 +72,13 @@ const SHELL_TINT = "#b9ae97";
 const PARTITION_TINT = "#d6cdb9";
 const DESK_TINT = "#c08a5c";
 const TABLE_TINT = "#8a6f52";
+/** Interior shells by theme — the lair reads wrong on purpose. */
+const VAULT_TINTS: Record<string, string> = {
+  lobby: "#9aa5b8",
+  gallery: "#a8b89a",
+  library: "#b89f78",
+  lair: "#2a2234",
+};
 export const BUILDING_HEIGHT = CEILING_HEIGHT; // towers meet the ceiling — full occluders
 export const BUNGALOW_HEIGHT = 120;
 export const TABLE_HEIGHT = 38;
@@ -122,6 +130,18 @@ export function buildSolids(layout: Layout): Solid[] {
       seed: i + 1,
     });
   });
+  // Interiors are sealed vaults: full-height walls, entered by portal only.
+  for (const interior of layout.interiors) {
+    for (const w of vaultWalls(interior.rect)) {
+      solids.push({
+        ...w,
+        kind: "vault",
+        height: CEILING_HEIGHT,
+        tint: VAULT_TINTS[interior.theme] ?? "#9aa5b8",
+        roomId: null,
+      });
+    }
+  }
   return solids;
 }
 
@@ -410,19 +430,31 @@ export type FloorIndex = {
   ids: Uint8Array;
 };
 
+/** Special floor ids beyond room indexes. */
+export const FLOOR_PARK = 250;
+export const FLOOR_INTERIOR_BASE = 200;
+
 export function buildFloorIndex(layout: Layout, cell = 20): FloorIndex {
   const cols = Math.max(1, Math.ceil(layout.world.w / cell));
   const rows = Math.max(1, Math.ceil(layout.world.h / cell));
   const ids = new Uint8Array(cols * rows);
-  layout.rooms.forEach((room, i) => {
-    if (i >= 255) return; // 255 rooms is far more floor than anyone will build
-    const x0 = clampInt(Math.floor(room.rect.x / cell), 0, cols - 1);
-    const x1 = clampInt(Math.ceil((room.rect.x + room.rect.w) / cell) - 1, 0, cols - 1);
-    const y0 = clampInt(Math.floor(room.rect.y / cell), 0, rows - 1);
-    const y1 = clampInt(Math.ceil((room.rect.y + room.rect.h) / cell) - 1, 0, rows - 1);
+  const paint = (rect: Rect, id: number) => {
+    const x0 = clampInt(Math.floor(rect.x / cell), 0, cols - 1);
+    const x1 = clampInt(Math.ceil((rect.x + rect.w) / cell) - 1, 0, cols - 1);
+    const y0 = clampInt(Math.floor(rect.y / cell), 0, rows - 1);
+    const y1 = clampInt(Math.ceil((rect.y + rect.h) / cell) - 1, 0, rows - 1);
     for (let cy = y0; cy <= y1; cy++) {
-      for (let cx = x0; cx <= x1; cx++) ids[cy * cols + cx] = i + 1;
+      for (let cx = x0; cx <= x1; cx++) ids[cy * cols + cx] = id;
     }
+  };
+  for (const park of layout.parks) paint(park, FLOOR_PARK);
+  layout.rooms.forEach((room, i) => {
+    if (i >= 150) return;
+    paint(room.rect, i + 1);
+  });
+  layout.interiors.forEach((interior, i) => {
+    if (i >= 40) return;
+    paint(interior.rect, FLOOR_INTERIOR_BASE + i);
   });
   return { cell, cols, rows, ids };
 }
