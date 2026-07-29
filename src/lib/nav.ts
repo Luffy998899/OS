@@ -1,7 +1,5 @@
 import {
-  LayoutDashboard,
   ListChecks,
-  Clock,
   FileText,
   Users2,
   Trophy,
@@ -39,12 +37,10 @@ export const NAV: NavSection[] = [
   {
     items: [
       { title: "Gamified Workspace", href: "/workspace", icon: Gamepad2 },
-      { title: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
       { title: "My Work", href: "/my-work", icon: ListChecks },
       { title: "Chat", href: "/chat", icon: MessageSquare },
       { title: "Bounty Board", href: "/bounties", icon: ScrollText },
       { title: "Daily check-in", href: "/journal", icon: NotebookPen },
-      { title: "Timesheet", href: "/timesheet", icon: Clock },
       { title: "Documents", href: "/documents", icon: FileText },
       { title: "Clients", href: "/clients", icon: Users2 },
       { title: "Outreach CRM", href: "/outreach", icon: Contact },

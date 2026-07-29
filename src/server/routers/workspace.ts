@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
-import { router, protectedProcedure, permissionProcedure } from "../trpc";
+import { router, protectedProcedure, permissionProcedure, adminRoleProcedure } from "../trpc";
 import { PERMISSIONS } from "@/lib/auth/permissions";
 import { assignCharacter, characterById } from "@/lib/characters";
 import { ROOM_SKILL, normalizeSkill } from "@/lib/skills";
@@ -219,7 +219,7 @@ export const workspaceRouter = router({
    * admin needs to spot slackers — presence, the block they should be in, and
    * how much is actually moving on their desk.
    */
-  lair: permissionProcedure(PERMISSIONS.ADMIN).query(async ({ ctx }) => {
+  lair: adminRoleProcedure.query(async ({ ctx }) => {
     const today = dateKey();
     const nowMin = minutesNow();
     const [users, avatars, slots, inProgress, doneToday] = await Promise.all([
@@ -288,7 +288,7 @@ export const workspaceRouter = router({
   ),
 
   /** Vecna's finger: drop a demogorgon on someone's screen. */
-  scare: permissionProcedure(PERMISSIONS.ADMIN)
+  scare: adminRoleProcedure
     .input(z.object({ userId: z.string() }))
     .mutation(async ({ ctx, input }) => {
       const target = await ctx.db.user.findUnique({

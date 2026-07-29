@@ -527,11 +527,13 @@ export function buildWorld(input: WorldInput): World {
     sign("THE BELL SCHEDULE", MH_FRONT - 0.05, FLOOR + 5.3, 124.5, "w", 0.8);
     poi({
       id: "timetable-board",
-      label: "The bell schedule",
-      sublabel: "today's blocks · check-ins",
+      label: "Daily timetable",
+      sublabel: "your blocks today · the bell rings on the change",
       panel: "timetable",
-      min: { x: MH_FRONT, y: FLOOR + 2, z: 123 },
-      max: { x: MH_FRONT + 1, y: FLOOR + 5, z: 126 },
+      // Reaches down to floor level: the old box started above eye height, so
+      // you had to jump to put the crosshair on it.
+      min: { x: MH_FRONT, y: FLOOR, z: 120 },
+      max: { x: MH_FRONT + 1, y: FLOOR + 5, z: 129 },
     });
     workstation(102, 126, "w", {
       id: "timetable-pc",

@@ -11,7 +11,6 @@ import { toast } from "sonner";
 import { useRouter } from "next/navigation";
 import { trpc } from "@/lib/trpc/client";
 import { useCurrentUser } from "@/components/app/user-context";
-import { hasPermission, PERMISSIONS } from "@/lib/auth/permissions";
 import { characterFor } from "@/lib/characters";
 import {
   blockAt,
@@ -249,7 +248,7 @@ const INTERACT_RANGE = 4.4;
 
 export function BlockWorld({ onExit }: { onExit: () => void }) {
   const currentUser = useCurrentUser();
-  const isAdmin = hasPermission(currentUser.permissions, PERMISSIONS.ADMIN);
+  const isAdmin = currentUser.roleName === "Admin";
   const router = useRouter();
   const utils = trpc.useUtils();
   const state = trpc.workspace.state.useQuery(undefined, { refetchInterval: 3500 });
@@ -347,6 +346,12 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
       delete (window as unknown as { __bw?: unknown }).__bw;
     };
   }, [E]);
+
+  /** Stable reader so the minimap effect isn't torn down every render. */
+  const readPose = useCallback(
+    () => ({ x: E.st.pos.x, y: E.st.pos.y, z: E.st.pos.z, yaw: E.yaw }),
+    [E],
+  );
 
   const applySettings = useCallback(
     (patch: Partial<ViewSettings>) => {
@@ -526,27 +531,37 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
     ];
     for (const m of meshes) scene.add(m);
 
-    // Text signs.
+    // Door signs. Every sign gets a solid dark plate with light lettering —
+    // dark text floating on a pale wall was unreadable at any distance.
     const signMeshes: THREE.Mesh[] = [];
     for (const s of world.signs) {
-      const pad = 8;
-      const fontPx = 42;
+      const padX = 22;
+      const padY = 14;
+      const fontPx = 46;
+      const font = `700 ${fontPx}px "Segoe UI", "Helvetica Neue", Arial, sans-serif`;
       const cv = document.createElement("canvas");
       const cx = cv.getContext("2d")!;
-      cx.font = `700 ${fontPx}px "Courier New", monospace`;
-      const w = Math.ceil(cx.measureText(s.text).width) + pad * 2;
-      cv.width = Math.max(2, w);
-      cv.height = fontPx + pad * 2;
+      cx.font = font;
+      const textW = Math.ceil(cx.measureText(s.text).width);
+      cv.width = Math.max(2, textW + padX * 2);
+      cv.height = fontPx + padY * 2;
       const c2 = cv.getContext("2d")!;
-      if (s.bg) {
-        c2.fillStyle = s.bg;
-        c2.fillRect(0, 0, cv.width, cv.height);
-      }
-      c2.font = `700 ${fontPx}px "Courier New", monospace`;
+      const plate = s.bg ?? "#10151c";
+      const ink = s.color ?? "#f6f9fd";
+      // Plate with a soft inner border so it reads as signage, not floating text.
+      c2.fillStyle = plate;
+      c2.fillRect(0, 0, cv.width, cv.height);
+      c2.strokeStyle = "rgba(255,255,255,0.22)";
+      c2.lineWidth = 3;
+      c2.strokeRect(4.5, 4.5, cv.width - 9, cv.height - 9);
+      c2.font = font;
       c2.textAlign = "center";
       c2.textBaseline = "middle";
-      c2.fillStyle = s.color ?? "#1d1a14";
-      c2.fillText(s.text, cv.width / 2, cv.height / 2 + 2);
+      // Slight shadow keeps the lettering crisp against the plate.
+      c2.fillStyle = "rgba(0,0,0,0.55)";
+      c2.fillText(s.text, cv.width / 2 + 2, cv.height / 2 + 3);
+      c2.fillStyle = ink;
+      c2.fillText(s.text, cv.width / 2, cv.height / 2 + 1);
       const tex = new THREE.CanvasTexture(cv);
       tex.magFilter = THREE.LinearFilter;
       tex.minFilter = THREE.LinearFilter;
@@ -750,7 +765,7 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
       let best: Poi | null = null;
       let bestT = INTERACT_RANGE;
       for (const poi of world.pois) {
-        if (poi.adminOnly && !E.isAdmin && poi.panel !== "rift") continue;
+        if (poi.adminOnly && !E.isAdmin) continue;
         box.min.set(poi.min.x, poi.min.y, poi.min.z);
         box.max.set(poi.max.x, poi.max.y, poi.max.z);
         const hit = ray.intersectBox(box, hitScratch);
@@ -1137,6 +1152,11 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
         </div>
       ) : null}
 
+      {/* Always-on minimap */}
+      {world && !overlay ? (
+        <Minimap world={world} read={readPose} />
+      ) : null}
+
       {/* Hint line */}
       {!overlay && !locked ? (
         <p className="absolute bottom-24 left-1/2 -translate-x-1/2 rounded-full bg-black/45 px-3 py-1 font-mono text-[0.62rem] tracking-wide text-white/60">
@@ -1226,6 +1246,110 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
 // ---------------------------------------------------------------------------
 // Map overlay: a top-down painting of the voxel world
 // ---------------------------------------------------------------------------
+
+/**
+ * The always-on HUD minimap. Samples the storey you're standing on in a window
+ * around you, so you can navigate without opening the full plan.
+ */
+function Minimap({
+  world,
+  read,
+}: {
+  world: World;
+  read: () => { x: number; y: number; z: number; yaw: number };
+}) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const SIZE = 168;
+    const SPAN = 52; // blocks across the window
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    canvas.width = SIZE * dpr;
+    canvas.height = SIZE * dpr;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.scale(dpr, dpr);
+    const cell = SIZE / SPAN;
+
+    let timer = 0;
+    const draw = () => {
+      const me = read();
+      const level = Math.floor(me.y);
+      const top = Math.min(world.sy - 1, level + 4);
+      const bottom = Math.max(0, level - 2);
+      const x0 = Math.floor(me.x - SPAN / 2);
+      const z0 = Math.floor(me.z - SPAN / 2);
+
+      ctx.clearRect(0, 0, SIZE, SIZE);
+      for (let gz = 0; gz < SPAN; gz++) {
+        for (let gx = 0; gx < SPAN; gx++) {
+          const wx = x0 + gx;
+          const wz = z0 + gz;
+          let color: string | null = null;
+          for (let y = top; y >= bottom; y--) {
+            const id = blockAt(world, wx, y, wz);
+            if (id !== 0) {
+              const def = BLOCKS[id];
+              color = def.tint ?? MAP_FALLBACK[def.key] ?? "#8a8a8a";
+              break;
+            }
+          }
+          ctx.fillStyle = color ?? "#0d1014";
+          ctx.fillRect(gx * cell, gz * cell, cell + 0.5, cell + 0.5);
+        }
+      }
+
+      // Points of interest nearby.
+      for (const p of world.pois) {
+        const px = (p.min.x + p.max.x) / 2;
+        const pz = (p.min.z + p.max.z) / 2;
+        const py = (p.min.y + p.max.y) / 2;
+        if (Math.abs(py - me.y) > 5) continue;
+        const gx = (px - x0) * cell;
+        const gz = (pz - z0) * cell;
+        if (gx < 0 || gz < 0 || gx > SIZE || gz > SIZE) continue;
+        ctx.fillStyle = "#ffd166";
+        ctx.strokeStyle = "rgba(0,0,0,0.6)";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.arc(gx, gz, 2.6, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+      }
+
+      // Me, in the centre, pointing where I look.
+      ctx.save();
+      ctx.translate(SIZE / 2, SIZE / 2);
+      ctx.rotate(me.yaw);
+      ctx.fillStyle = "#ffffff";
+      ctx.strokeStyle = "rgba(0,0,0,0.8)";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(0, -6);
+      ctx.lineTo(4.5, 5);
+      ctx.lineTo(-4.5, 5);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+    };
+
+    draw();
+    timer = window.setInterval(draw, 120);
+    return () => window.clearInterval(timer);
+  }, [world, read]);
+
+  return (
+    <div className="pointer-events-none absolute bottom-4 left-4 overflow-hidden rounded-xl border border-white/15 bg-black/50 shadow-lg backdrop-blur-sm">
+      <canvas ref={canvasRef} style={{ width: 168, height: 168, display: "block" }} />
+      <p className="border-t border-white/10 px-2 py-1 text-center font-mono text-[0.58rem] tracking-widest text-white/60 uppercase">
+        M · full plan
+      </p>
+    </div>
+  );
+}
 
 function CampusMap({
   world,

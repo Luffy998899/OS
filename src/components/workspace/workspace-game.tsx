@@ -75,7 +75,8 @@ export function WorkspaceGame() {
   const router = useRouter();
   const currentUser = useCurrentUser();
   const canManage = hasPermission(currentUser.permissions, PERMISSIONS.CLIENTS_MANAGE);
-  const isAdmin = hasPermission(currentUser.permissions, PERMISSIONS.ADMIN);
+  // The Upside Down is Admin-role only — Managers hold workspace:admin too.
+  const isAdmin = currentUser.roleName === "Admin";
   const utils = trpc.useUtils();
   const state = trpc.workspace.state.useQuery(undefined, { refetchInterval: 15_000 });
   const enter = trpc.workspace.enter.useMutation();
@@ -187,32 +188,6 @@ export function WorkspaceGame() {
               <Stat icon={<ScrollText className="size-3.5" />} label="On the board" value={openBounties} />
               <Stat icon={<Trophy className="size-3.5" />} label="Open missions" value={state.data?.totalOpen ?? 0} />
               <Stat icon={<Users className="size-3.5" />} label="In the world" value={state.data?.online ?? 0} />
-            </div>
-          </Card>
-
-          {/* ---- Quick doors ---- */}
-          <Card className="gap-3">
-            <div className="flex items-center justify-between px-4">
-              <h2 className="font-heading text-sm font-semibold">Go straight to a room</h2>
-              <p className="text-xs text-muted-foreground">the same tools, without the walk</p>
-            </div>
-            <div className="grid grid-cols-2 gap-2 px-4 sm:grid-cols-3">
-              {ROOM_LAUNCHERS.filter((r) => !("adminOnly" in r && r.adminOnly) || isAdmin).map(
-                (r) => (
-                  <button
-                    key={r.key}
-                    onClick={() => setRoomOpen(r.key)}
-                    className={cn(
-                      "rounded-lg border border-border p-2.5 text-left transition-colors hover:border-foreground/30",
-                      r.key === "lair" &&
-                        "border-destructive/40 bg-destructive/5 hover:border-destructive",
-                    )}
-                  >
-                    <p className="text-xs font-semibold">{r.label}</p>
-                    <p className="text-[0.65rem] text-muted-foreground">{r.desc}</p>
-                  </button>
-                ),
-              )}
             </div>
           </Card>
 

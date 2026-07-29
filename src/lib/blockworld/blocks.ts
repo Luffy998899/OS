@@ -133,7 +133,7 @@ export const BLOCKS: BlockDef[] = [
     label: "Desk",
     solid: true,
     opaque: false,
-    height: 0.75,
+    height: 1,
     tiles: { top: TILE.DESK_TOP, bottom: TILE.WOOD_DARK, side: TILE.WOOD_VENEER },
   },
   {
@@ -141,7 +141,7 @@ export const BLOCKS: BlockDef[] = [
     label: "Dark Desk",
     solid: true,
     opaque: false,
-    height: 0.75,
+    height: 1,
     tiles: { top: TILE.WOOD_DARK, bottom: TILE.WOOD_DARK, side: TILE.WOOD_DARK },
   },
   {
@@ -166,7 +166,7 @@ export const BLOCKS: BlockDef[] = [
     label: "Meeting Table",
     solid: true,
     opaque: false,
-    height: 0.75,
+    height: 1,
     tiles: { top: TILE.WOOD_VENEER, bottom: TILE.WOOD_DARK, side: TILE.WOOD_DARK },
   },
   cube("whiteboard", "Whiteboard", TILE.WHITEBOARD),
