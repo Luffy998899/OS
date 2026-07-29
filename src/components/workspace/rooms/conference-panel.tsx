@@ -3,7 +3,7 @@
 // The conference hall: urgent meetings, disclosures, incentives, and the weekly
 // do's & don'ts round. Acks show who has actually seen each item.
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Bell, Check, Gift, Loader2, Megaphone, Plus, ThumbsUp, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -32,12 +32,21 @@ const KIND_META: Record<string, { label: string; icon: typeof Bell; cls: string 
   feedback: { label: "Weekly feedback", icon: ThumbsUp, cls: "bg-warning/10 text-warning" },
 };
 
-export function ConferencePanel() {
+export function ConferencePanel({ initialCompose }: { initialCompose?: boolean }) {
   const currentUser = useCurrentUser();
   const canPost = hasPermission(currentUser.permissions, PERMISSIONS.TASKS_ASSIGN);
   const utils = trpc.useUtils();
   const list = trpc.conference.list.useQuery(undefined, { refetchInterval: 15_000 });
   const [postOpen, setPostOpen] = useState(false);
+
+  // The game can deep-link straight into the composer; only ever auto-open once.
+  const autoOpened = useRef(false);
+  useEffect(() => {
+    if (initialCompose && canPost && !autoOpened.current) {
+      autoOpened.current = true;
+      setPostOpen(true);
+    }
+  }, [initialCompose, canPost]);
 
   const refresh = () => {
     utils.conference.list.invalidate();
@@ -55,9 +64,11 @@ export function ConferencePanel() {
         {canPost ? (
           <Button size="sm" onClick={() => setPostOpen(true)}>
             <Plus className="size-3.5" />
-            Announce
+            Post announcement
           </Button>
-        ) : null}
+        ) : (
+          <p className="shrink-0 text-xs text-muted-foreground">Only leads can post — ask a manager</p>
+        )}
       </div>
 
       {list.isLoading ? (
@@ -148,9 +159,12 @@ function PostDialog({
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
   const [meetingAt, setMeetingAt] = useState("");
+  // Mirrors the router's rules so the Post button never submits a rejected shape.
+  const titleReady = title.trim().length >= 2;
+  const meetingReady = kind !== "urgent_meeting" || meetingAt !== "";
   const post = trpc.conference.post.useMutation({
     onSuccess: () => {
-      toast.success(kind === "urgent_meeting" ? "Meeting called — the whole team gets pinged." : "On the hall screen.");
+      toast.success("Announcement posted to the hall");
       onOpenChange(false);
       setTitle("");
       setBody("");
@@ -177,11 +191,13 @@ function PostDialog({
           <div className="space-y-1.5">
             <Label htmlFor="ann-title">Title</Label>
             <Input id="ann-title" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Q3 kickoff — all hands" />
+            {!titleReady ? <p className="text-xs text-muted-foreground">At least 2 characters.</p> : null}
           </div>
           {kind === "urgent_meeting" ? (
             <div className="space-y-1.5">
               <Label htmlFor="ann-at">When</Label>
               <Input id="ann-at" type="datetime-local" value={meetingAt} onChange={(e) => setMeetingAt(e.target.value)} />
+              {!meetingReady ? <p className="text-xs text-muted-foreground">Urgent meetings need a time.</p> : null}
             </div>
           ) : null}
           <div className="space-y-1.5">
@@ -194,7 +210,7 @@ function PostDialog({
             Cancel
           </Button>
           <Button
-            disabled={title.trim().length < 2 || post.isPending || (kind === "urgent_meeting" && !meetingAt)}
+            disabled={!titleReady || !meetingReady || post.isPending}
             onClick={() =>
               post.mutate({
                 kind: kind as "disclosure",

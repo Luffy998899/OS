@@ -292,6 +292,8 @@ model AvatarState {
   room   Room?  @relation(fields: [roomId], references: [id])
   x      Float  @default(0)
   y      Float  @default(0)
+  // Altitude (block Y of the feet) — the voxel campus has real floors to stand on.
+  alt    Float  @default(0)
   // Heading in radians — first person needs to know which way someone is looking.
   facing Float  @default(0)
   status String @default("online") // online | away | busy

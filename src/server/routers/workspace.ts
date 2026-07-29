@@ -63,7 +63,7 @@ async function ensureCampus(db: typeof import("@/lib/db").db): Promise<void> {
 
 export const workspaceRouter = router({
   state: protectedProcedure.query(async ({ ctx }) => {
-    const [rooms, avatars, openByRoom, aiCheckin, bountyByRoom, levels, editingJob, meeting, mySlots, relog, scare] = await Promise.all([
+    const [rooms, avatars, openByRoom, aiCheckin, bountyByRoom, levels, editingJob, meeting, mySlots, relog, scare, projects] = await Promise.all([
       ctx.db.room.findMany({
         orderBy: [{ posY: "asc" }, { posX: "asc" }],
         include: { client: { select: { companyName: true } } },
@@ -125,6 +125,11 @@ export const workspaceRouter = router({
         orderBy: { createdAt: "desc" },
         select: { id: true, body: true, createdAt: true },
       }),
+      // Dev City floors: one storey per project in the voxel campus.
+      ctx.db.project.findMany({
+        select: { id: true, name: true, floor: true, buildingKey: true },
+        orderBy: [{ buildingKey: "asc" }, { floor: "asc" }],
+      }),
     ]);
 
     const countFor = (roomId: string) =>
@@ -155,6 +160,7 @@ export const workspaceRouter = router({
       characterId: a.characterId,
       x: a.x,
       y: a.y,
+      alt: a.alt,
       facing: a.facing,
       roomId: a.roomId,
       status: a.status,
@@ -204,6 +210,7 @@ export const workspaceRouter = router({
       },
       // An unread demogorgon means the Upside Down noticed you slacking.
       myScare: scare,
+      projects,
     };
   }),
 
@@ -320,7 +327,7 @@ export const workspaceRouter = router({
       where: { userId: ctx.user.id },
     });
     if (existing && characterById(existing.characterId)) {
-      return { characterId: existing.characterId, x: existing.x, y: existing.y };
+      return { characterId: existing.characterId, x: existing.x, y: existing.y, alt: existing.alt };
     }
 
     // Read-then-claim can lose a race with someone entering at the same moment;
@@ -340,7 +347,7 @@ export const workspaceRouter = router({
           create: { userId: ctx.user.id, characterId: pick.id, status: "online" },
           update: { characterId: pick.id },
         });
-        return { characterId: saved.characterId, x: saved.x, y: saved.y };
+        return { characterId: saved.characterId, x: saved.x, y: saved.y, alt: saved.alt };
       } catch {
         // Slot taken between the read and the write — try the next free one.
       }
@@ -352,7 +359,7 @@ export const workspaceRouter = router({
       create: { userId: ctx.user.id, status: "online" },
       update: {},
     });
-    return { characterId: fallback.characterId, x: fallback.x, y: fallback.y };
+    return { characterId: fallback.characterId, x: fallback.x, y: fallback.y, alt: fallback.alt };
   }),
 
   roomMissions: protectedProcedure
@@ -389,6 +396,7 @@ export const workspaceRouter = router({
       z.object({
         x: z.number(),
         y: z.number(),
+        alt: z.number().optional(),
         facing: z.number().optional(),
         roomId: z.string().nullable().optional(),
         status: z.enum(["online", "away", "busy"]).optional(),
@@ -401,6 +409,7 @@ export const workspaceRouter = router({
           userId: ctx.user.id,
           x: input.x,
           y: input.y,
+          alt: input.alt ?? 0,
           facing: input.facing ?? 0,
           roomId: input.roomId ?? null,
           status: input.status ?? "online",
@@ -409,6 +418,7 @@ export const workspaceRouter = router({
           x: input.x,
           y: input.y,
           roomId: input.roomId ?? null,
+          ...(input.alt === undefined ? {} : { alt: input.alt }),
           ...(input.facing === undefined ? {} : { facing: input.facing }),
           ...(input.status ? { status: input.status } : {}),
         },

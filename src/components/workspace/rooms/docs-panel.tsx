@@ -11,8 +11,11 @@ import {
   ExternalLink,
   FileText,
   Loader2,
+  Lock,
   NotebookPen,
   Presentation,
+  Save,
+  TriangleAlert,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -180,30 +183,101 @@ export function DocsPanel() {
   );
 }
 
-/** The in-game script editor: a focused page with debounced autosave. */
+type SaveState = "saving" | "saved" | "error";
+
+/** The in-game script editor: debounced autosave with an explicit save path. */
 function ScriptEditor({ docId, onBack }: { docId: string; onBack: () => void }) {
+  const utils = trpc.useUtils();
   const doc = trpc.document.byId.useQuery({ id: docId });
-  const save = trpc.document.updateContent.useMutation();
   const [value, setValue] = useState<string | null>(null);
-  const [saved, setSaved] = useState(true);
+  const [state, setState] = useState<SaveState>("saved");
+
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const valueRef = useRef<string | null>(null);
+  // Monotonic sequence per keystroke; only the ack for the newest edit may
+  // flip the header to "saved", so a stale ack can't mask a newer failure.
+  const editSeq = useRef(0);
+  const savedSeq = useRef(0);
+  // Newest sequence already handed to the mutation — keeps flush-on-unmount
+  // from double-firing after flush-on-back; rolled back on error so retry works.
+  const sentSeq = useRef(0);
+
+  // Callbacks live on useMutation (not mutate) so they still run when the
+  // flush fires during unmount cleanup.
+  const save = trpc.document.updateContent.useMutation({
+    onMutate: () => ({ seq: sentSeq.current }),
+    onSuccess: (data, vars, ctx) => {
+      if (ctx.seq < savedSeq.current) return; // an older save acked late
+      savedSeq.current = ctx.seq;
+      utils.document.byId.setData({ id: docId }, (prev) =>
+        prev
+          ? { ...prev, content: vars.content, updatedAt: new Date(data.updatedAt) }
+          : prev,
+      );
+      utils.document.list.invalidate();
+      if (ctx.seq === editSeq.current) setState("saved");
+    },
+    onError: (e, _vars, ctx) => {
+      if (!ctx || ctx.seq === sentSeq.current) sentSeq.current = savedSeq.current;
+      if (ctx && ctx.seq < editSeq.current) return; // superseded by a newer edit
+      setState("error");
+      toast.error(`Save failed — ${e.message}`);
+    },
+  });
+
+  const flush = () => {
+    if (timer.current) {
+      clearTimeout(timer.current);
+      timer.current = null;
+    }
+    const v = valueRef.current;
+    if (v === null) return;
+    if (editSeq.current <= savedSeq.current || editSeq.current <= sentSeq.current) return;
+    setState("saving");
+    sentSeq.current = editSeq.current;
+    save.mutate({ id: docId, content: v });
+  };
+
+  const flushRef = useRef(flush);
+  useEffect(() => {
+    flushRef.current = flush;
+  });
 
   useEffect(() => {
-    if (doc.data && value === null) setValue(doc.data.content ?? "");
+    if (doc.data && value === null) {
+      setValue(doc.data.content ?? "");
+      valueRef.current = doc.data.content ?? "";
+    }
   }, [doc.data, value]);
 
+  // Edits typed in the last 800ms must not die with the component: flush
+  // (which also clears the timer) instead of just clearing the debounce.
   useEffect(() => {
     return () => {
-      if (timer.current) clearTimeout(timer.current);
+      flushRef.current();
     };
   }, []);
 
+  useEffect(() => {
+    const warn = (e: BeforeUnloadEvent) => {
+      if (editSeq.current <= savedSeq.current) return;
+      e.preventDefault();
+      e.returnValue = ""; // legacy Chrome only shows the prompt with returnValue set
+    };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, []);
+
   const onChange = (v: string) => {
+    if (!doc.data?.canEdit) return;
     setValue(v);
-    setSaved(false);
+    valueRef.current = v;
+    editSeq.current += 1;
+    setState("saving");
     if (timer.current) clearTimeout(timer.current);
     timer.current = setTimeout(() => {
-      save.mutate({ id: docId, content: v }, { onSuccess: () => setSaved(true) });
+      timer.current = null;
+      flush();
     }, 800);
   };
 
@@ -215,31 +289,72 @@ function ScriptEditor({ docId, onBack }: { docId: string; onBack: () => void }) 
     );
   }
 
+  const canEdit = doc.data?.canEdit ?? false;
+
   return (
-    <div className="flex h-full flex-col gap-2">
-      <div className="flex items-center justify-between">
+    <div
+      className="flex h-full flex-col gap-2"
+      onKeyDown={(e) => {
+        if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") {
+          e.preventDefault();
+          flush();
+        }
+      }}
+    >
+      <div className="flex items-center justify-between gap-2">
         <button
-          onClick={onBack}
+          onClick={() => {
+            flush();
+            onBack();
+          }}
           className="flex items-center gap-1 text-xs text-muted-foreground transition-colors hover:text-foreground"
         >
           <ArrowLeft className="size-3.5" />
           All documents
         </button>
-        <span
-          className={cn(
-            "flex items-center gap-1 font-mono text-[0.65rem] uppercase",
-            saved ? "text-success" : "text-muted-foreground",
-          )}
-        >
-          {saved ? <Check className="size-3" /> : <Loader2 className="size-3 animate-spin" />}
-          {saved ? "saved" : "saving"}
-        </span>
+        {canEdit && (
+          <div className="flex items-center gap-2">
+            {state === "error" ? (
+              <button
+                onClick={flush}
+                className="flex items-center gap-1 font-mono text-[0.65rem] text-destructive uppercase transition-colors hover:underline"
+              >
+                <TriangleAlert className="size-3" />
+                not saved — retry
+              </button>
+            ) : (
+              <span
+                className={cn(
+                  "flex items-center gap-1 font-mono text-[0.65rem] uppercase",
+                  state === "saved" ? "text-success" : "text-muted-foreground",
+                )}
+              >
+                {state === "saved" ? (
+                  <Check className="size-3" />
+                ) : (
+                  <Loader2 className="size-3 animate-spin" />
+                )}
+                {state === "saved" ? "saved" : "saving…"}
+              </span>
+            )}
+            <Button size="sm" disabled={state === "saved"} onClick={flush}>
+              <Save className="size-3.5" />
+              Save
+            </Button>
+          </div>
+        )}
       </div>
       <h3 className="font-display text-lg font-semibold">{doc.data?.title}</h3>
+      {!canEdit && (
+        <p className="flex items-center gap-1.5 rounded-lg border border-border bg-muted/50 px-3 py-2 text-xs text-muted-foreground">
+          <Lock className="size-3.5" />
+          View only — ask the owner for edit access
+        </p>
+      )}
       <Textarea
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        readOnly={!doc.data?.canEdit}
+        readOnly={!canEdit}
         placeholder="INT. STUDIO — DAY&#10;&#10;Write the script here. It autosaves."
         className="min-h-[46vh] flex-1 resize-none font-mono text-sm leading-relaxed"
       />
