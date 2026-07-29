@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
+  FLOOR_INTERIOR_BASE,
+  FLOOR_PARK,
   buildCastGrid,
   buildFloorIndex,
   buildSolids,
@@ -91,6 +93,12 @@ describe("buildSolids", () => {
     expect(buildings).toHaveLength(3);
     expect(buildings.filter((s) => s.windows === "tower")).toHaveLength(2);
     expect(buildings.some((s) => s.height === CEILING_HEIGHT)).toBe(true);
+  });
+
+  it("seals every interior in full-height vault walls", () => {
+    const vaults = solids.filter((s) => s.kind === "vault");
+    expect(vaults).toHaveLength(layout.interiors.length * 4);
+    expect(vaults.every((s) => s.height === CEILING_HEIGHT)).toBe(true);
   });
 });
 
@@ -295,10 +303,18 @@ describe("buildFloorIndex", () => {
     expect(id).toBe(2); // rooms[1] stored as index + 1
   });
 
-  it("returns corridor for the gaps between rooms and outside the world", () => {
-    const a = layout.rooms[0].rect;
-    expect(floorRoomAt(index, a.x + a.w + 40, a.y + a.h + 40)).toBe(0);
+  it("returns corridor for true gaps and outside the world", () => {
+    expect(floorRoomAt(index, layout.world.w - 40, 40)).toBe(0);
     expect(floorRoomAt(index, -50, -50)).toBe(0);
     expect(floorRoomAt(index, layout.world.w + 500, 10)).toBe(0);
+  });
+
+  it("marks parks and interiors with their special floor ids", () => {
+    const park = layout.parks[0];
+    expect(floorRoomAt(index, park.x + park.w / 2, park.y + park.h / 2)).toBe(FLOOR_PARK);
+    const interior = layout.interiors[0];
+    expect(
+      floorRoomAt(index, interior.rect.x + interior.rect.w / 2, interior.rect.y + interior.rect.h / 2),
+    ).toBe(FLOOR_INTERIOR_BASE);
   });
 });
