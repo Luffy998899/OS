@@ -14,6 +14,7 @@ function makeWorld(sx = 5, sy = 5, sz = 5): World {
     pois: [],
     regions: [],
     signs: [],
+  npcs: [],
     lair: { min: { x: 0, y: 0, z: 0 }, max: { x: 0, y: 0, z: 0 } },
   };
 }
@@ -61,7 +62,7 @@ describe("buildMeshData", () => {
   it("culls the shared faces of stone under grass", () => {
     const w = makeWorld();
     set(w, 1, 1, 1, B.stone);
-    set(w, 1, 2, 1, B.grass);
+    set(w, 1, 2, 1, B.carpet_gray);
     const { opaque } = buildMeshData(w);
     expect(faceCount(opaque)).toBe(10);
   });
@@ -84,7 +85,7 @@ describe("buildMeshData", () => {
 
   it("meshes a slab with its top at y+0.5 and sides spanning 0..0.5", () => {
     const w = makeWorld();
-    set(w, 1, 0, 1, B.slab_stone);
+    set(w, 1, 0, 1, B.step);
     const { opaque } = buildMeshData(w);
     const vs = verts(opaque);
     const top = vs.filter((v) => v.normal[1] === 1);
@@ -99,18 +100,18 @@ describe("buildMeshData", () => {
 
   it("routes glowstone to the emissive bucket with colors >= emissive", () => {
     const w = makeWorld();
-    set(w, 1, 1, 1, B.glowstone);
+    set(w, 1, 1, 1, B.ceiling_light);
     const { opaque, cutout, emissive } = buildMeshData(w);
     expect(faceCount(emissive)).toBe(6);
     expect(opaque.positions.length).toBe(0);
     expect(cutout.positions.length).toBe(0);
-    const e = BLOCKS[B.glowstone].emissive ?? 0;
+    const e = BLOCKS[B.ceiling_light].emissive ?? 0;
     for (const c of emissive.colors) expect(c).toBeGreaterThanOrEqual(e);
   });
 
   it("routes leaves to the cutout bucket", () => {
     const w = makeWorld();
-    set(w, 1, 1, 1, B.leaves);
+    set(w, 1, 1, 1, B.plant);
     const { opaque, cutout, emissive } = buildMeshData(w);
     expect(faceCount(cutout)).toBe(6);
     expect(opaque.positions.length).toBe(0);

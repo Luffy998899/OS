@@ -11,7 +11,6 @@ import { toast } from "sonner";
 import { useRouter } from "next/navigation";
 import { trpc } from "@/lib/trpc/client";
 import { useCurrentUser } from "@/components/app/user-context";
-import { hasPermission, PERMISSIONS } from "@/lib/auth/permissions";
 import { characterFor } from "@/lib/characters";
 import {
   blockAt,
@@ -47,6 +46,7 @@ import { ShootPanel } from "../rooms/shoot-panel";
 import { TimetablePanel } from "../rooms/timetable-panel";
 import { DocsPanel } from "../rooms/docs-panel";
 import { LairPanel } from "../rooms/lair-panel";
+import { ChatPanel } from "@/components/chat/chat-panel";
 
 // ---------------------------------------------------------------------------
 // Settings
@@ -106,7 +106,8 @@ type OverlayKind =
   | "timetable"
   | "docs"
   | "lair"
-  | "missions";
+  | "missions"
+  | "chat";
 
 type Overlay = { kind: OverlayKind; refId?: string; name?: string } | null;
 
@@ -115,7 +116,7 @@ const OVERLAY_TITLES: Record<OverlayKind, string> = {
   skills: "Skill Tree",
   roster: "Crew",
   help: "How to play",
-  map: "Campus Map",
+  map: "Floor Plan",
   settings: "View Settings",
   video: "Video Editing Bay",
   city: "Dev City",
@@ -129,6 +130,7 @@ const OVERLAY_TITLES: Record<OverlayKind, string> = {
   docs: "Writing Desk",
   lair: "The Upside Down — Vecna's Desk",
   missions: "Missions",
+  chat: "Chat",
 };
 
 // ---------------------------------------------------------------------------
@@ -165,39 +167,80 @@ function ringBell() {
 // ---------------------------------------------------------------------------
 
 const MAP_FALLBACK: Record<string, string> = {
-  grass: "#7aa15c",
-  dirt: "#8a6a48",
+  carpet_gray: "#8b8d91",
+  carpet_blue: "#6b7f9e",
+  carpet_green: "#6f9177",
+  carpet_red: "#a06a68",
+  concrete: "#9a9a97",
+  marble: "#e2ddd2",
+  paving: "#a8a49c",
+  wood_floor: "#b08a54",
+  drywall: "#e8e6e1",
+  drywall_accent: "#4a6d8c",
+  drywall_warm: "#d8c9b0",
+  trim: "#d5d2cc",
+  glass: "#cfe0e8",
+  glass_frosted: "#dbe6ea",
+  curtain_wall: "#8fb0c8",
+  facade: "#b9bcc0",
+  facade_blue: "#7f95c8",
+  facade_green: "#79b07c",
+  facade_warm: "#d0a878",
+  metal: "#9aa0a6",
+  elevator: "#b6bcc2",
   stone: "#8d8d8d",
-  cobble: "#7e7e7e",
-  planks: "#b08a54",
-  planks_dark: "#6d4f33",
-  log: "#6b4f2e",
-  leaves: "#4d8a3c",
-  glass: "#b8d4e0",
-  brick: "#9c5b4d",
-  sandstone: "#d8caa0",
-  path: "#a99c82",
-  water: "#4d7fc4",
   roof: "#4a5058",
-  glowstone: "#e8c86a",
-  scaffold: "#c9a86a",
-  slab_stone: "#909090",
-  slab_plank: "#b08a54",
-  slab_sandstone: "#d8caa0",
-  slab_dark: "#6d4f33",
+  ceiling: "#eceae5",
+  ceiling_light: "#fff6d8",
+  desk: "#b08a54",
+  desk_dark: "#6d4f33",
+  chair: "#4b4e54",
+  monitor: "#2a2f38",
+  table: "#a67c4e",
+  whiteboard: "#f0efe8",
+  corkboard: "#c2a072",
+  tv: "#20242e",
+  books: "#8a5a3a",
+  server_rack: "#2c3138",
+  pantry: "#c9c3b6",
+  felt: "#9a9691",
+  felt_orange: "#e0a13a",
+  felt_teal: "#4fae9c",
+  clock: "#f2f0ea",
+  sign: "#2f333a",
+  plant: "#5da944",
+  planter: "#a8785c",
+  rug: "#a03a34",
+  step: "#9a9a97",
+  step_marble: "#e2ddd2",
+  water: "#6f8fa8",
   lair_stone: "#241c26",
   lair_vine: "#7d1e30",
   vecna_flesh: "#5a1f26",
   obsidian: "#2a2036",
-  carpet_red: "#a03a34",
-  marble: "#e2ddd2",
-  whiteboard: "#f0efe8",
-  screen: "#20242e",
-  books: "#8a5a3a",
-  clock: "#d8caa0",
-  desk: "#7a5a38",
   lair_glow: "#e05a3a",
-  metal: "#9aa0a6",
+  cpu: "#2f333a",
+  coffee: "#5c3a24",
+  papers: "#eceae4",
+  phone: "#22262b",
+  book_stack: "#6b4a7a",
+  printer: "#3a3f46",
+  cooler: "#cfd3d7",
+  art: "#8a6a45",
+  vent: "#c9ccd0",
+  exit_sign: "#12331f",
+  lamp: "#ffd98f",
+  sofa: "#4a5560",
+  rug_pattern: "#7d5a63",
+  plant_fern: "#4f9b46",
+  plant_tall: "#57a84d",
+  pot: "#b1653f",
+  pot_white: "#d9d5cd",
+  camera: "#26292e",
+  tripod: "#3c4148",
+  softbox: "#fff6e0",
+  clapboard: "#1c1f24",
+  mic: "#43484f",
 };
 
 function hexToRgb(hex: string): [number, number, number] {
@@ -227,7 +270,7 @@ const INTERACT_RANGE = 4.4;
 
 export function BlockWorld({ onExit }: { onExit: () => void }) {
   const currentUser = useCurrentUser();
-  const isAdmin = hasPermission(currentUser.permissions, PERMISSIONS.ADMIN);
+  const isAdmin = currentUser.roleName === "Admin";
   const router = useRouter();
   const utils = trpc.useUtils();
   const state = trpc.workspace.state.useQuery(undefined, { refetchInterval: 3500 });
@@ -325,6 +368,12 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
       delete (window as unknown as { __bw?: unknown }).__bw;
     };
   }, [E]);
+
+  /** Stable reader so the minimap effect isn't torn down every render. */
+  const readPose = useCallback(
+    () => ({ x: E.st.pos.x, y: E.st.pos.y, z: E.st.pos.z, yaw: E.yaw }),
+    [E],
+  );
 
   const applySettings = useCallback(
     (patch: Partial<ViewSettings>) => {
@@ -504,27 +553,37 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
     ];
     for (const m of meshes) scene.add(m);
 
-    // Text signs.
+    // Door signs. Every sign gets a solid dark plate with light lettering —
+    // dark text floating on a pale wall was unreadable at any distance.
     const signMeshes: THREE.Mesh[] = [];
     for (const s of world.signs) {
-      const pad = 8;
-      const fontPx = 42;
+      const padX = 22;
+      const padY = 14;
+      const fontPx = 46;
+      const font = `700 ${fontPx}px "Segoe UI", "Helvetica Neue", Arial, sans-serif`;
       const cv = document.createElement("canvas");
       const cx = cv.getContext("2d")!;
-      cx.font = `700 ${fontPx}px "Courier New", monospace`;
-      const w = Math.ceil(cx.measureText(s.text).width) + pad * 2;
-      cv.width = Math.max(2, w);
-      cv.height = fontPx + pad * 2;
+      cx.font = font;
+      const textW = Math.ceil(cx.measureText(s.text).width);
+      cv.width = Math.max(2, textW + padX * 2);
+      cv.height = fontPx + padY * 2;
       const c2 = cv.getContext("2d")!;
-      if (s.bg) {
-        c2.fillStyle = s.bg;
-        c2.fillRect(0, 0, cv.width, cv.height);
-      }
-      c2.font = `700 ${fontPx}px "Courier New", monospace`;
+      const plate = s.bg ?? "#10151c";
+      const ink = s.color ?? "#f6f9fd";
+      // Plate with a soft inner border so it reads as signage, not floating text.
+      c2.fillStyle = plate;
+      c2.fillRect(0, 0, cv.width, cv.height);
+      c2.strokeStyle = "rgba(255,255,255,0.22)";
+      c2.lineWidth = 3;
+      c2.strokeRect(4.5, 4.5, cv.width - 9, cv.height - 9);
+      c2.font = font;
       c2.textAlign = "center";
       c2.textBaseline = "middle";
-      c2.fillStyle = s.color ?? "#1d1a14";
-      c2.fillText(s.text, cv.width / 2, cv.height / 2 + 2);
+      // Slight shadow keeps the lettering crisp against the plate.
+      c2.fillStyle = "rgba(0,0,0,0.55)";
+      c2.fillText(s.text, cv.width / 2 + 2, cv.height / 2 + 3);
+      c2.fillStyle = ink;
+      c2.fillText(s.text, cv.width / 2, cv.height / 2 + 1);
       const tex = new THREE.CanvasTexture(cv);
       tex.magFilter = THREE.LinearFilter;
       tex.minFilter = THREE.LinearFilter;
@@ -594,6 +653,24 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
     const spores = new THREE.Points(sporeGeo, sporeMat);
     spores.visible = false;
     scene.add(spores);
+
+    // The people. Staff are scenery that makes the floor feel worked-in;
+    // client NPCs stand at their booth so the interaction has a face.
+    const npcRigs: PlayerRig[] = [];
+    for (const person of world.npcs) {
+      const rig = createPlayerRig({
+        name: person.kind === "client" ? `${person.name} · client` : person.name,
+        hue: person.hue,
+        showName: true,
+      });
+      // Seated figures drop onto the chair; standing ones sit on the floor.
+      rig.group.position.set(person.x, person.y + (person.seated ? 0.42 : 0), person.z);
+      rig.setHeading(person.yaw);
+      rig.setSeated(!!person.seated);
+      rig.setStatus(person.kind === "client" ? "busy" : "online");
+      scene.add(rig.group);
+      npcRigs.push(rig);
+    }
 
     // POI highlight box.
     const hlGeo = new THREE.BoxGeometry(1, 1, 1);
@@ -667,16 +744,25 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
     let frames = 0;
     let fpsAt = last;
     let frameEma = 16;
+    // Fixed-timestep physics so movement speed never depends on framerate.
+    const FIXED_STEP = 1 / 60;
+    const MAX_STEPS = 20;
+    let physicsAcc = 0;
     const ray = new THREE.Ray();
     const box = new THREE.Box3();
     const camDir = new THREE.Vector3();
     const hitScratch = new THREE.Vector3();
 
     const loop = (now: number) => {
-      const dt = Math.min(0.05, Math.max(0.0005, (now - last) / 1000));
+      // Real elapsed time, capped only to stop a huge stall from exploding the
+      // catch-up loop. dt is NOT the physics step.
+      const dt = Math.min(0.25, Math.max(0.0005, (now - last) / 1000));
       last = now;
 
-      // Input → physics.
+      // Input → physics, on a FIXED timestep. Walking used to be clamped to a
+      // single 50ms step per frame, so a machine rendering at 5fps moved at a
+      // quarter speed — "sprint feels slow" was really "your GPU is slow".
+      // Accumulating real time and running whole fixed steps decouples the two.
       if (!overlayRef.current) {
         const k = E.keys;
         const input: MoveInput = {
@@ -687,7 +773,17 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
         };
         if (k.has("ArrowLeft")) E.yaw -= 2.2 * dt * E.settings.sensitivity;
         if (k.has("ArrowRight")) E.yaw += 2.2 * dt * E.settings.sensitivity;
-        stepPlayer(world, E.st, input, E.yaw, dt);
+
+        physicsAcc += dt;
+        let steps = 0;
+        while (physicsAcc >= FIXED_STEP && steps < MAX_STEPS) {
+          stepPlayer(world, E.st, input, E.yaw, FIXED_STEP);
+          physicsAcc -= FIXED_STEP;
+          steps++;
+        }
+        // Never let the backlog grow without bound on a very slow frame.
+        if (physicsAcc > FIXED_STEP * MAX_STEPS) physicsAcc = 0;
+
         const moving =
           Math.abs(E.st.vel.x) + Math.abs(E.st.vel.z) > 0.4 && E.st.onGround;
         if (input.forward !== 0 || input.strafe !== 0) E.moved = true;
@@ -709,7 +805,7 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
       let best: Poi | null = null;
       let bestT = INTERACT_RANGE;
       for (const poi of world.pois) {
-        if (poi.adminOnly && !E.isAdmin && poi.panel !== "rift") continue;
+        if (poi.adminOnly && !E.isAdmin) continue;
         box.min.set(poi.min.x, poi.min.y, poi.min.z);
         box.max.set(poi.max.x, poi.max.y, poi.max.z);
         const hit = ray.intersectBox(box, hitScratch);
@@ -872,6 +968,10 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
         entry.rig.dispose();
       }
       E.rigs.clear();
+      for (const rig of npcRigs) {
+        scene.remove(rig.group);
+        rig.dispose();
+      }
       for (const m of meshes) {
         m.geometry.dispose();
       }
@@ -930,6 +1030,9 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
           return;
         case "KeyO":
           setOverlay({ kind: "settings" });
+          return;
+        case "KeyC":
+          setOverlay({ kind: "chat" });
           return;
         case "Tab":
           setOverlay({ kind: "roster" });
@@ -1072,6 +1175,7 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
         <div className="absolute bottom-4 left-1/2 flex -translate-x-1/2 items-center gap-1.5">
           {(
             [
+              ["C", "Chat", "chat"],
               ["B", "Bounties", "bounties"],
               ["T", "Skills", "skills"],
               ["M", "Map", "map"],
@@ -1090,6 +1194,11 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
             </button>
           ))}
         </div>
+      ) : null}
+
+      {/* Always-on minimap */}
+      {world && !overlay ? (
+        <Minimap world={world} read={readPose} />
       ) : null}
 
       {/* Hint line */}
@@ -1159,8 +1268,12 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
               {overlay.kind === "timetable" ? <TimetablePanel /> : null}
               {overlay.kind === "docs" ? <DocsPanel /> : null}
               {overlay.kind === "lair" ? <LairPanel /> : null}
+              {overlay.kind === "chat" ? <ChatPanel className="h-[62vh]" /> : null}
               {overlay.kind === "map" && world ? (
-                <CampusMap world={world} me={{ x: E.st.pos.x, z: E.st.pos.z, yaw: E.yaw }} />
+                <CampusMap
+                  world={world}
+                  me={{ x: E.st.pos.x, y: E.st.pos.y, z: E.st.pos.z, yaw: E.yaw }}
+                />
               ) : null}
               {overlay.kind === "help" ? <HelpPanel /> : null}
               {overlay.kind === "settings" ? (
@@ -1178,14 +1291,119 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
 // Map overlay: a top-down painting of the voxel world
 // ---------------------------------------------------------------------------
 
+/**
+ * The always-on HUD minimap. Samples the storey you're standing on in a window
+ * around you, so you can navigate without opening the full plan.
+ */
+function Minimap({
+  world,
+  read,
+}: {
+  world: World;
+  read: () => { x: number; y: number; z: number; yaw: number };
+}) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const SIZE = 168;
+    const SPAN = 52; // blocks across the window
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    canvas.width = SIZE * dpr;
+    canvas.height = SIZE * dpr;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.scale(dpr, dpr);
+    const cell = SIZE / SPAN;
+
+    let timer = 0;
+    const draw = () => {
+      const me = read();
+      const level = Math.floor(me.y);
+      const top = Math.min(world.sy - 1, level + 4);
+      const bottom = Math.max(0, level - 2);
+      const x0 = Math.floor(me.x - SPAN / 2);
+      const z0 = Math.floor(me.z - SPAN / 2);
+
+      ctx.clearRect(0, 0, SIZE, SIZE);
+      for (let gz = 0; gz < SPAN; gz++) {
+        for (let gx = 0; gx < SPAN; gx++) {
+          const wx = x0 + gx;
+          const wz = z0 + gz;
+          let color: string | null = null;
+          for (let y = top; y >= bottom; y--) {
+            const id = blockAt(world, wx, y, wz);
+            if (id !== 0) {
+              const def = BLOCKS[id];
+              color = def.tint ?? MAP_FALLBACK[def.key] ?? "#8a8a8a";
+              break;
+            }
+          }
+          ctx.fillStyle = color ?? "#0d1014";
+          ctx.fillRect(gx * cell, gz * cell, cell + 0.5, cell + 0.5);
+        }
+      }
+
+      // Points of interest nearby.
+      for (const p of world.pois) {
+        const px = (p.min.x + p.max.x) / 2;
+        const pz = (p.min.z + p.max.z) / 2;
+        const py = (p.min.y + p.max.y) / 2;
+        if (Math.abs(py - me.y) > 5) continue;
+        const gx = (px - x0) * cell;
+        const gz = (pz - z0) * cell;
+        if (gx < 0 || gz < 0 || gx > SIZE || gz > SIZE) continue;
+        ctx.fillStyle = "#ffd166";
+        ctx.strokeStyle = "rgba(0,0,0,0.6)";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.arc(gx, gz, 2.6, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+      }
+
+      // Me, in the centre, pointing where I look.
+      ctx.save();
+      ctx.translate(SIZE / 2, SIZE / 2);
+      ctx.rotate(me.yaw);
+      ctx.fillStyle = "#ffffff";
+      ctx.strokeStyle = "rgba(0,0,0,0.8)";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(0, -6);
+      ctx.lineTo(4.5, 5);
+      ctx.lineTo(-4.5, 5);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+    };
+
+    draw();
+    timer = window.setInterval(draw, 120);
+    return () => window.clearInterval(timer);
+  }, [world, read]);
+
+  return (
+    <div className="pointer-events-none absolute bottom-4 left-4 overflow-hidden rounded-xl border border-white/15 bg-black/50 shadow-lg backdrop-blur-sm">
+      <canvas ref={canvasRef} style={{ width: 168, height: 168, display: "block" }} />
+      <p className="border-t border-white/10 px-2 py-1 text-center font-mono text-[0.58rem] tracking-widest text-white/60 uppercase">
+        M · full plan
+      </p>
+    </div>
+  );
+}
+
 function CampusMap({
   world,
   me,
 }: {
   world: World;
-  me: { x: number; z: number; yaw: number };
+  me: { x: number; z: number; y: number; yaw: number };
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const level = Math.floor(me.y);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -1196,10 +1414,13 @@ function CampusMap({
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
+    // A floor plan of the storey you're standing on: scan down from just below
+    // this floor's ceiling, so the roof never hides the layout.
+    const top = Math.min(world.sy - 1, level + 4);
     for (let z = 0; z < world.sz; z++) {
       for (let x = 0; x < world.sx; x++) {
-        let color = "#6f9455";
-        for (let y = world.sy - 1; y >= 0; y--) {
+        let color = "#1b1e24";
+        for (let y = top; y >= Math.max(0, level - 2); y--) {
           const id = blockAt(world, x, y, z);
           if (id !== 0) {
             const def = BLOCKS[id];
@@ -1212,14 +1433,27 @@ function CampusMap({
       }
     }
 
-    // Region labels for major places.
+    // Name the rooms on THIS storey only. Nested spaces (a studio's two wings,
+    // the timetable alcove inside reception) share a centre, so nudge each
+    // colliding label clear of the one before it instead of overprinting.
     ctx.textAlign = "center";
+    ctx.font = "700 11px monospace";
+    const placed: { x: number; y: number }[] = [];
     for (const r of world.regions) {
-      if (r.label.includes("Floor") || r.lair) continue;
+      if (r.lair) continue;
+      if (level < r.min.y || level >= r.max.y) continue;
       const cx = ((r.min.x + r.max.x) / 2) * scale;
-      const cz = ((r.min.z + r.max.z) / 2) * scale;
-      ctx.font = "700 11px monospace";
-      ctx.fillStyle = "rgba(0,0,0,0.65)";
+      let cz = ((r.min.z + r.max.z) / 2) * scale;
+      const half = ctx.measureText(r.label).width / 2 + 6;
+      let guard = 0;
+      while (
+        guard++ < 8 &&
+        placed.some((p) => Math.abs(p.y - cz) < 13 && Math.abs(p.x - cx) < half + 40)
+      ) {
+        cz += 13;
+      }
+      placed.push({ x: cx, y: cz });
+      ctx.fillStyle = "rgba(0,0,0,0.7)";
       ctx.fillText(r.label.toUpperCase(), cx + 1, cz + 1);
       ctx.fillStyle = "#fefbf2";
       ctx.fillText(r.label.toUpperCase(), cx, cz);
@@ -1242,12 +1476,12 @@ function CampusMap({
     ctx.fill();
     ctx.stroke();
     ctx.restore();
-  }, [world, me]);
+  }, [world, me, level]);
 
   return (
     <div className="space-y-2">
       <p className="text-xs text-muted-foreground">
-        The campus from above. The Upside Down doesn&apos;t show on any map.
+        Floor plan of the storey you&apos;re on. The Upside Down is on no plan.
       </p>
       <div className="overflow-auto rounded-xl border border-border">
         <canvas ref={canvasRef} className="block w-full" style={{ imageRendering: "pixelated" }} />
@@ -1262,11 +1496,12 @@ function CampusMap({
 
 function HelpPanel() {
   const rows: [string, string][] = [
-    ["W A S D", "Walk · Shift sprints"],
-    ["Space", "Jump — one block high, slabs are stairs"],
-    ["Mouse", "Look (click the world to capture the mouse)"],
-    ["E / Click", "Use what you're aiming at: boards, desks, doors"],
-    ["B / T / M", "Bounties · Skill tree · Campus map"],
+    ["W A S D", "Walk the office · Shift to hurry"],
+    ["Space", "Step up · hop"],
+    ["Mouse", "Look (click the view to capture the mouse)"],
+    ["E / Click", "Sit down at a computer, use a board, call a lift"],
+    ["C", "Chat — servers and channels, like Slack"],
+    ["B / T / M", "Bounties · Skill tree · Floor plan"],
     ["Tab / H / O", "Crew · Help · View settings"],
     ["F", "Fullscreen"],
     ["Esc", "Close panel → release mouse → leave"],
@@ -1274,9 +1509,9 @@ function HelpPanel() {
   return (
     <div className="space-y-4">
       <p className="text-sm text-muted-foreground">
-        The campus is built from real blocks. Walk in through real doors: Dev City is a mall of
-        named floors — take the stairs. Write scripts at the writing desk (they save now — really).
-        Admins know what the obsidian ring in Managing Heads does.
+        This is the office. Walk the corridor, go through a door, sit at a computer — every
+        workstation opens the real tool it belongs to, and every room has its own board of open
+        work. The lifts in the Dev Wing run both project towers, a floor per project.
       </p>
       <div className="grid gap-1.5 sm:grid-cols-2">
         {rows.map(([key, label]) => (

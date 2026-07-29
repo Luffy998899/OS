@@ -79,6 +79,21 @@ export function ClientStatusBadge({ status }: { status: string }) {
   return <Swatch label={s.label} cls={s.cls} />;
 }
 
+export function LeadStatusBadge({ status }: { status: string }) {
+  const map: Record<string, { label: string; cls: string }> = {
+    pending: { label: "Pending", cls: "bg-muted text-muted-foreground" },
+    contacted: { label: "Contacted", cls: "bg-info/10 text-info" },
+    hot: { label: "Hot", cls: "bg-destructive/10 text-destructive" },
+    converted: { label: "Converted", cls: "bg-success/10 text-success" },
+    dropped: { label: "Dropped", cls: "bg-muted text-muted-foreground" },
+  };
+  const s = map[status] ?? {
+    label: status,
+    cls: "bg-muted text-muted-foreground",
+  };
+  return <Swatch label={s.label} cls={s.cls} dot />;
+}
+
 export function TemperatureBadge({ temperature }: { temperature: string }) {
   const map: Record<string, { label: string; cls: string }> = {
     hot: { label: "Hot", cls: "bg-destructive/10 text-destructive" },

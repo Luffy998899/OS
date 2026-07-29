@@ -9,6 +9,8 @@ import { paintSkinFace } from "./textures";
 export type PlayerRig = {
   group: THREE.Group;
   setPose(walkPhase: number, moving: boolean, dt: number): void;
+  /** Sit the rig down: thighs forward, shins down, arms resting on the desk. */
+  setSeated(seated: boolean): void;
   setHeading(yaw: number): void;
   setStatus(status: string): void;
   dispose(): void;
@@ -289,11 +291,13 @@ export function createPlayerRig(opts: {
   }
 
   const limbs = [armL, armR, legL, legR];
+  let seated = false;
 
   return {
     group,
 
     setPose(walkPhase, moving, dt) {
+      if (seated) return; // the seated pose is fixed
       if (moving) {
         const s = Math.sin(walkPhase) * SWING;
         armL.rotation.x = s;
@@ -303,6 +307,21 @@ export function createPlayerRig(opts: {
       } else {
         const k = Math.min(1, dt / EASE_S);
         for (const limb of limbs) limb.rotation.x -= limb.rotation.x * k;
+      }
+    },
+
+    setSeated(next) {
+      if (next === seated) return;
+      seated = next;
+      if (next) {
+        // Knees forward, shins hanging, arms angled onto the desk. Placement
+        // owns the height drop onto the chair, not the pose.
+        legL.rotation.x = -Math.PI / 2;
+        legR.rotation.x = -Math.PI / 2;
+        armL.rotation.x = -Math.PI / 3;
+        armR.rotation.x = -Math.PI / 3;
+      } else {
+        for (const limb of limbs) limb.rotation.x = 0;
       }
     },
 

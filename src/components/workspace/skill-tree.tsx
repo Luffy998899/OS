@@ -57,7 +57,67 @@ export function SkillTreePanel({ compact = false }: { compact?: boolean }) {
           <CraftTrack key={track.key} track={track} compact={compact} />
         ))}
       </div>
+
+      {!compact ? <XpRules /> : null}
     </div>
+  );
+}
+
+/**
+ * The rules, written down. They were only ever implied by the numbers moving,
+ * so nobody could tell how XP was earned or what a level was worth.
+ */
+function XpRules() {
+  return (
+    <details className="rounded-xl border border-border p-3.5">
+      <summary className="cursor-pointer text-sm font-semibold select-none">
+        How XP and levels actually work
+      </summary>
+      <div className="mt-3 space-y-3 text-xs text-muted-foreground">
+        <div>
+          <p className="mb-1 font-semibold text-foreground">Earning it</p>
+          <ul className="space-y-1">
+            <li>· Completing a mission pays its points to you.</li>
+            <li>
+              · Claiming an urgent mission off the bounty board freezes an urgency bonus onto
+              it — you get that on top when it lands.
+            </li>
+            <li>
+              · XP goes to two places at once: your lifetime total (the leaderboard) and the
+              craft track the mission belongs to.
+            </li>
+            <li>
+              · Reopening a finished mission takes back exactly what it gave — never more, and a
+              craft track never drops below zero.
+            </li>
+          </ul>
+        </div>
+        <div>
+          <p className="mb-1 font-semibold text-foreground">Overall level</p>
+          <p>
+            Lifetime XP ÷ 100. Every 100 XP is one level — it is the leaderboard number, and it
+            does not gate anything on its own.
+          </p>
+        </div>
+        <div>
+          <p className="mb-1 font-semibold text-foreground">Craft tiers — these are the gates</p>
+          <p className="mb-1.5">
+            Each craft climbs on its own XP. Your tier in a craft decides which missions on the
+            board you are eligible to claim.
+          </p>
+          <div className="flex flex-wrap gap-1.5">
+            {SKILL_TIERS.map((t) => (
+              <span
+                key={t.level}
+                className="rounded-md border border-border px-1.5 py-0.5 font-mono text-[0.65rem]"
+              >
+                {t.name} · {t.at} XP
+              </span>
+            ))}
+          </div>
+        </div>
+      </div>
+    </details>
   );
 }
 

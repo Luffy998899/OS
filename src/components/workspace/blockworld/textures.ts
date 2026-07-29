@@ -1,7 +1,8 @@
-// Procedural 16px texture atlas for Blockworld. Every tile is painted from
-// scratch with a per-tile seeded PRNG, so the atlas is byte-identical on every
-// load — no image assets, no network. Original pixel art, Minecraft-inspired
-// but not copied.
+// Procedural 16px texture atlas for the office workspace. Every tile is painted
+// from scratch with a per-tile seeded PRNG, so the atlas is byte-identical on
+// every load — no image assets, no network. These are office materials: carpet
+// tile, acoustic ceiling, painted drywall, glass, veneer, brushed metal. Muted
+// and low contrast on purpose — a real floorplate is not saturated.
 
 import { ATLAS_COLS, ATLAS_ROWS, TILE, TILE_PX } from "@/lib/blockworld/blocks";
 
@@ -42,6 +43,8 @@ const fill = (c: Ctx, color: string): void => {
 
 const pick = <T,>(r: Rand, items: T[]): T => items[Math.floor(r() * items.length)];
 
+const dist = (x: number, y: number): number => Math.hypot(x - 7.5, y - 7.5);
+
 /** Per-pixel noise over a base fill: each color gets `chance` odds per pixel. */
 function speckle(c: Ctx, r: Rand, colors: string[], chance: number): void {
   for (let y = 0; y < TILE_PX; y++) {
@@ -49,6 +52,23 @@ function speckle(c: Ctx, r: Rand, colors: string[], chance: number): void {
       if (r() < chance) px(c, x, y, pick(r, colors));
     }
   }
+}
+
+/** A `w`px border hugging the tile edge — bezels, frames, mullions. */
+function border(c: Ctx, color: string, w: number): void {
+  c.fillStyle = color;
+  c.fillRect(0, 0, TILE_PX, w);
+  c.fillRect(0, TILE_PX - w, TILE_PX, w);
+  c.fillRect(0, 0, w, TILE_PX);
+  c.fillRect(TILE_PX - w, 0, w, TILE_PX);
+}
+
+/** Multiply every existing pixel's alpha by `alpha` (glass, water). */
+function fadeAlpha(c: Ctx, alpha: number): void {
+  c.globalCompositeOperation = "destination-in";
+  c.fillStyle = `rgba(0,0,0,${alpha})`;
+  c.fillRect(0, 0, TILE_PX, TILE_PX);
+  c.globalCompositeOperation = "source-over";
 }
 
 /** A short random walk of dark pixels — cracks in stone-like tiles. */
@@ -70,60 +90,74 @@ function crack(c: Ctx, r: Rand, color: string): void {
   }
 }
 
-/** Horizontal boards with seams, grain streaks and nail dots. */
-function planks(
+/**
+ * Commercial carpet tile: dithered fleck pile with the square tile seam
+ * showing on two edges, the way a glue-down 500mm tile reads from above.
+ */
+function carpet(
   c: Ctx,
   r: Rand,
   base: string,
+  light: string,
+  dark: string,
   seam: string,
-  grain: string,
-  nail: string,
 ): void {
   fill(c, base);
-  for (let board = 0; board < 4; board++) {
-    const y0 = board * 4;
-    c.fillStyle = seam;
-    c.fillRect(0, y0 + 3, TILE_PX, 1);
-    // Staggered board-end joint + a nail either side of it.
-    const jx = 2 + Math.floor(r() * 12);
-    c.fillRect(jx, y0, 1, 3);
-    px(c, (jx + 2) % TILE_PX, y0 + 1, nail);
-    px(c, (jx + 14) % TILE_PX, y0 + 1, nail);
-    for (let i = 0; i < 5; i++) {
-      const gx = Math.floor(r() * 14);
-      px(c, gx, y0 + Math.floor(r() * 3), grain);
-      px(c, gx + 1, y0 + Math.floor(r() * 3), grain);
-    }
+  speckle(c, r, [light, dark, light], 0.55);
+  c.fillStyle = seam;
+  c.fillRect(0, 0, TILE_PX, 1);
+  c.fillRect(0, 0, 1, TILE_PX);
+  // Feather the seam one pixel in so it reads as pile, not a drawn line.
+  for (let i = 0; i < TILE_PX; i++) {
+    if (r() < 0.4) px(c, i, 1, seam);
+    if (r() < 0.4) px(c, 1, i, seam);
   }
 }
 
-/** Bands of staggered rectangles — bricks, shingles. */
-function courses(
+/** Flat painted drywall with a faint roller nap. */
+function paintedWall(c: Ctx, r: Rand): void {
+  fill(c, "#e8e6e1");
+  speckle(c, r, ["#ecebe6", "#e3e1dc"], 0.3);
+  for (let i = 0; i < 4; i++) {
+    c.fillStyle = "#e4e2dd";
+    c.fillRect(Math.floor(r() * TILE_PX), Math.floor(r() * 11), 1, 3 + Math.floor(r() * 4));
+  }
+}
+
+/** Timber veneer: horizontal bands plus drawn-out grain streaks. */
+function veneer(
   c: Ctx,
   r: Rand,
-  mortar: string,
-  faces: string[],
-  bandH: number,
-  brickW: number,
+  base: string,
+  light: string,
+  mid: string,
+  grain: string,
 ): void {
-  fill(c, mortar);
-  const rows = TILE_PX / bandH;
-  for (let i = 0; i < rows; i++) {
-    const y = i * bandH;
-    const off = (i % 2) * Math.floor(brickW / 2);
-    for (let bx = off - brickW; bx < TILE_PX; bx += brickW) {
-      c.fillStyle = pick(r, faces);
-      c.fillRect(bx, y, brickW - 1, bandH - 1);
-    }
+  fill(c, base);
+  for (let y = 0; y < TILE_PX; y++) {
+    c.fillStyle = pick(r, [base, light, mid, base]);
+    c.fillRect(0, y, TILE_PX, 1);
+  }
+  for (let i = 0; i < 7; i++) {
+    const y = Math.floor(r() * TILE_PX);
+    const x = Math.floor(r() * 12);
+    c.fillStyle = grain;
+    c.fillRect(x, y, 3 + Math.floor(r() * 5), 1);
+    if (r() < 0.4) px(c, x + 1, y + 1, mid);
   }
 }
 
-/** Multiply every existing pixel's alpha by `alpha` (for water). */
-function fadeAlpha(c: Ctx, alpha: number): void {
-  c.globalCompositeOperation = "destination-in";
-  c.fillStyle = `rgba(0,0,0,${alpha})`;
-  c.fillRect(0, 0, TILE_PX, TILE_PX);
-  c.globalCompositeOperation = "source-over";
+/** Brushed aluminium: fine vertical brush lines with a couple of bright ones. */
+function brushed(c: Ctx, r: Rand, base: string, shades: string[], sheen: string): void {
+  fill(c, base);
+  for (let x = 0; x < TILE_PX; x++) {
+    c.fillStyle = pick(r, shades);
+    c.fillRect(x, 0, 1, TILE_PX);
+    if (r() < 0.35) {
+      c.fillStyle = sheen;
+      c.fillRect(x, Math.floor(r() * 11), 1, 3 + Math.floor(r() * 4));
+    }
+  }
 }
 
 /** A wandering vertical tendril for the lair vines. */
@@ -139,28 +173,443 @@ function tendril(c: Ctx, r: Rand, x0: number): void {
   }
 }
 
-const dist = (x: number, y: number): number => Math.hypot(x - 7.5, y - 7.5);
-
 const PAINTERS: Record<keyof typeof TILE, Painter> = {
-  GRASS_TOP: (c, r) => {
-    fill(c, "#69a83d");
-    speckle(c, r, ["#7dbc4e", "#5b9432", "#4e8629", "#88c657"], 0.45);
+  CARPET_GRAY: (c, r) => carpet(c, r, "#8b8d91", "#95979b", "#818387", "#75777b"),
+
+  CARPET_BLUE: (c, r) => carpet(c, r, "#6b7f9e", "#7589a8", "#617594", "#566a88"),
+
+  CARPET_GREEN: (c, r) => carpet(c, r, "#6f9177", "#799b81", "#65876d", "#5a7c62"),
+
+  CARPET_RED: (c, r) => carpet(c, r, "#a06a68", "#aa7472", "#96605e", "#8a5654"),
+
+  CEILING_TILE: (c, r) => {
+    // Mineral fibre: near-white board, pinhole perforations, grid tee on two edges.
+    fill(c, "#eceae5");
+    speckle(c, r, ["#dedcd6", "#f3f1ec", "#e4e2dd"], 0.4);
+    for (let i = 0; i < 10; i++) {
+      px(c, 2 + Math.floor(r() * 13), 2 + Math.floor(r() * 13), "#d3d0ca");
+    }
+    c.fillStyle = "#c6c3bd";
+    c.fillRect(0, 0, TILE_PX, 1);
+    c.fillRect(0, 0, 1, TILE_PX);
   },
 
-  GRASS_SIDE: (c, r) => {
-    fill(c, "#8a6039");
-    speckle(c, r, ["#9b7146", "#74502e", "#5f4126"], 0.35);
-    c.fillStyle = "#69a83d";
-    c.fillRect(0, 0, TILE_PX, 2);
-    for (let x = 0; x < TILE_PX; x++) {
-      if (r() < 0.55) px(c, x, 2, "#5b9432");
-      if (r() < 0.35) px(c, x, 1, "#7dbc4e");
+  CEILING_LIGHT: (c, r) => {
+    // Recessed LED panel: gray housing, evenly lit diffuser brightest mid-panel.
+    fill(c, "#f2f4f6");
+    for (let y = 1; y < TILE_PX - 1; y++) {
+      for (let x = 1; x < TILE_PX - 1; x++) {
+        const d = Math.max(Math.abs(x - 7.5), Math.abs(y - 7.5));
+        px(c, x, y, d < 3 ? "#ffffff" : d < 5.5 ? "#fbfcfd" : "#f1f3f6");
+      }
+    }
+    speckle(c, r, ["#fdfdfe"], 0.12);
+    border(c, "#b6babe", 1);
+    px(c, 1, 1, "#9ea3a8");
+    px(c, 14, 14, "#9ea3a8");
+  },
+
+  DRYWALL: (c, r) => paintedWall(c, r),
+
+  DRYWALL_TRIM: (c, r) => {
+    paintedWall(c, r);
+    // Skirting board along the bottom three pixels.
+    c.fillStyle = "#b3b1ac";
+    c.fillRect(0, TILE_PX - 3, TILE_PX, 3);
+    c.fillStyle = "#c6c4bf";
+    c.fillRect(0, TILE_PX - 3, TILE_PX, 1);
+    c.fillStyle = "#9d9b97";
+    c.fillRect(0, TILE_PX - 1, TILE_PX, 1);
+  },
+
+  GLASS_CLEAR: (c) => {
+    // Almost entirely see-through: a cool wash, a thin frame, one wipe streak.
+    fill(c, "rgba(212,230,238,0.05)");
+    c.fillStyle = "rgba(198,216,226,0.4)";
+    c.fillRect(0, 0, TILE_PX, 1);
+    c.fillRect(0, TILE_PX - 1, TILE_PX, 1);
+    c.fillRect(0, 0, 1, TILE_PX);
+    c.fillRect(TILE_PX - 1, 0, 1, TILE_PX);
+    for (let i = 3; i < 12; i++) px(c, i, 13 - i, "rgba(255,255,255,0.24)");
+  },
+
+  GLASS_FROSTED: (c, r) => {
+    fill(c, "rgba(246,248,249,0.55)");
+    for (let y = 0; y < TILE_PX; y++) {
+      if (y % 3 === 0) {
+        c.fillStyle = "rgba(255,255,255,0.1)";
+        c.fillRect(0, y, TILE_PX, 1);
+      } else if (y % 4 === 2) {
+        c.fillStyle = "rgba(202,212,218,0.08)";
+        c.fillRect(0, y, TILE_PX, 1);
+      }
+    }
+    for (let i = 0; i < 6; i++) {
+      c.fillStyle = "rgba(255,255,255,0.12)";
+      c.fillRect(Math.floor(r() * 10), Math.floor(r() * TILE_PX), 4 + Math.floor(r() * 5), 1);
     }
   },
 
-  DIRT: (c, r) => {
-    fill(c, "#8a6039");
-    speckle(c, r, ["#9b7146", "#74502e", "#a9825a", "#5f4126"], 0.4);
+  WOOD_VENEER: (c, r) => veneer(c, r, "#c8a878", "#d2b485", "#bd9d6e", "#a8874f"),
+
+  WOOD_DARK: (c, r) => veneer(c, r, "#6a4b33", "#74553b", "#5e412c", "#4a3323"),
+
+  CONCRETE: (c, r) => {
+    // Power-floated slab: soft mottling, a couple of exposed aggregate specks.
+    fill(c, "#b7b8b5");
+    speckle(c, r, ["#bdbeba", "#b1b2af", "#c2c3bf"], 0.3);
+    for (let i = 0; i < 2; i++) {
+      const x = 3 + Math.floor(r() * 10);
+      const y = 3 + Math.floor(r() * 10);
+      px(c, x, y, "#8f918d");
+      px(c, x + 1, y, "#d0d1cd");
+    }
+  },
+
+  MARBLE: (c, r) => {
+    fill(c, "#efece6");
+    speckle(c, r, ["#e6e3dc", "#f4f2ec"], 0.22);
+    for (let i = 0; i < 3; i++) {
+      let x = Math.floor(r() * TILE_PX);
+      let y = 0;
+      while (y < TILE_PX) {
+        px(c, x, y, "#b8b6b0");
+        if (r() < 0.3) px(c, x + 1, y, "#a5a39d");
+        x += Math.floor(r() * 3) - 1;
+        y += r() < 0.7 ? 1 : 0;
+        if (x < 0) x = 0;
+        if (x > 15) x = 15;
+        if (r() < 0.05) break;
+      }
+    }
+  },
+
+  PAVING: (c, r) => {
+    // Four big plaza slabs with a recessed joint between them.
+    fill(c, "#8d887f");
+    for (const [sx, sy] of [[1, 1], [9, 1], [1, 9], [9, 9]] as const) {
+      c.fillStyle = pick(r, ["#aaa59c", "#a49f96", "#afaaa1"]);
+      c.fillRect(sx, sy, 6, 6);
+    }
+    speckle(c, r, ["#b0aba2", "#9d988f"], 0.2);
+    c.fillStyle = "#8d887f";
+    c.fillRect(0, 0, TILE_PX, 1);
+    c.fillRect(0, 8, TILE_PX, 1);
+    c.fillRect(0, 0, 1, TILE_PX);
+    c.fillRect(8, 0, 1, TILE_PX);
+  },
+
+  FACADE: (c, r) => {
+    // Flat cladding panel; the shadow gap runs down the left edge.
+    fill(c, "#ada9a3");
+    speckle(c, r, ["#b1ada7", "#a9a59f"], 0.18);
+    c.fillStyle = "#8e8a85";
+    c.fillRect(0, 0, 1, TILE_PX);
+    c.fillStyle = "#bcb8b2";
+    c.fillRect(1, 0, 1, TILE_PX);
+  },
+
+  CURTAIN_WALL: (c, r) => {
+    // Vision glass graded from sky at the head to a deeper reflection at the
+    // cill, held in a 2px mullion frame.
+    for (let y = 0; y < TILE_PX; y++) {
+      const t = y / (TILE_PX - 1);
+      const rr = (152 - 36 * t) | 0;
+      const gg = (170 - 34 * t) | 0;
+      const bb = (188 - 28 * t) | 0;
+      c.fillStyle = `rgba(${rr},${gg},${bb},0.7)`;
+      c.fillRect(0, y, TILE_PX, 1);
+    }
+    for (let y = 3; y < 8; y++) {
+      c.fillStyle = "rgba(255,255,255,0.12)";
+      c.fillRect(3, y, 11 - y, 1);
+    }
+    px(c, 5 + Math.floor(r() * 4), 10, "rgba(255,255,255,0.14)");
+    border(c, "#7c8188", 2);
+    c.fillStyle = "#9ba0a6";
+    c.fillRect(0, 0, TILE_PX, 1);
+  },
+
+  MONITOR_ON: (c, r) => {
+    // A display, read head-on: black bezel, slate panel, a header strip and a
+    // few UI bars in the usual dashboard colors.
+    fill(c, "#0d0f12");
+    c.fillStyle = "#1d232c";
+    c.fillRect(1, 1, 14, 13);
+    c.fillStyle = "#2d3644";
+    c.fillRect(1, 1, 14, 3);
+    px(c, 2, 2, "#8fa4c4");
+    px(c, 13, 2, "#5f6b7d");
+    c.fillStyle = "#151a21";
+    c.fillRect(11, 5, 4, 8);
+    c.fillStyle = "#4a7fd0";
+    c.fillRect(3, 6, 6, 1);
+    c.fillStyle = "#4aa36a";
+    c.fillRect(3, 8, 4, 1);
+    c.fillStyle = "#d3a34a";
+    c.fillRect(3, 10, 7, 1);
+    c.fillStyle = "#39414d";
+    c.fillRect(3, 12, 5, 1);
+    for (let i = 0; i < 3; i++) {
+      px(c, 12 + Math.floor(r() * 2), 6 + i * 2, "#3b4a5f");
+    }
+    c.fillStyle = "#16191d";
+    c.fillRect(6, 14, 4, 2);
+  },
+
+  MONITOR_BACK: (c, r) => {
+    fill(c, "#2a2d31");
+    speckle(c, r, ["#2e3135", "#26292d"], 0.25);
+    c.fillStyle = "#33363b";
+    c.fillRect(2, 2, 12, 1);
+    // Stand notch.
+    c.fillStyle = "#1e2124";
+    c.fillRect(6, 11, 4, 5);
+    c.fillStyle = "#3a3e43";
+    c.fillRect(6, 11, 4, 1);
+  },
+
+  DESK_TOP: (c, r) => {
+    veneer(c, r, "#c8a878", "#d2b485", "#bd9d6e", "#a8874f");
+    // Paper sheet with ruled lines.
+    c.fillStyle = "#f6f4ee";
+    c.fillRect(2, 2, 5, 7);
+    c.fillStyle = "#cbc9c2";
+    c.fillRect(3, 4, 3, 1);
+    c.fillRect(3, 6, 3, 1);
+    // Keyboard.
+    c.fillStyle = "#2a2d33";
+    c.fillRect(8, 10, 7, 4);
+    c.fillStyle = "#3d424b";
+    for (let x = 9; x < 15; x += 2) {
+      px(c, x, 11, "#3d424b");
+      px(c, x, 12, "#3d424b");
+    }
+    // Mouse.
+    c.fillStyle = "#31353b";
+    c.fillRect(12, 5, 2, 3);
+    px(c, 12, 5, "#464b52");
+  },
+
+  CHAIR: (c, r) => {
+    // Mesh weave: alternating warp/weft with a soft sheen across the seat.
+    for (let y = 0; y < TILE_PX; y++) {
+      for (let x = 0; x < TILE_PX; x++) {
+        px(c, x, y, (x + y) % 2 === 0 ? "#3a3d43" : "#2f3237");
+      }
+    }
+    speckle(c, r, ["#44474d", "#2a2d31"], 0.14);
+    c.fillStyle = "rgba(255,255,255,0.06)";
+    c.fillRect(0, 4, TILE_PX, 3);
+    c.fillStyle = "rgba(0,0,0,0.12)";
+    c.fillRect(0, 13, TILE_PX, 3);
+  },
+
+  PLANT: (c, r) => {
+    // Cutout foliage — roughly a third of the tile stays fully transparent.
+    for (let i = 0; i < 66; i++) {
+      const x = Math.floor(r() * 15);
+      const y = Math.floor(r() * 15);
+      c.fillStyle = pick(r, ["#4a7a3c", "#568c45", "#3f6a33", "#61994e"]);
+      c.fillRect(x, y, 2, 2);
+    }
+    for (let i = 0; i < 10; i++) {
+      px(c, Math.floor(r() * TILE_PX), Math.floor(r() * TILE_PX), "#6ea658");
+    }
+  },
+
+  PLANTER: (c, r) => {
+    fill(c, "#a5674a");
+    speckle(c, r, ["#ad6f52", "#9a5f43", "#b47a5c"], 0.3);
+    // Rim: highlight over a shadow line, then the body darkens at the edges.
+    c.fillStyle = "#c08363";
+    c.fillRect(0, 0, TILE_PX, 2);
+    c.fillStyle = "#cf9575";
+    c.fillRect(0, 0, TILE_PX, 1);
+    c.fillStyle = "#8a5039";
+    c.fillRect(0, 2, TILE_PX, 1);
+    c.fillStyle = "rgba(0,0,0,0.12)";
+    c.fillRect(0, 3, 2, TILE_PX - 3);
+    c.fillRect(TILE_PX - 2, 3, 2, TILE_PX - 3);
+  },
+
+  METAL: (c, r) => brushed(c, r, "#a4a9ae", ["#a9aeb3", "#9ba0a5", "#a4a9ae"], "#b6bbc0"),
+
+  ELEVATOR: (c, r) => {
+    brushed(c, r, "#9ba1a7", ["#a0a6ac", "#949aa0", "#9ba1a7"], "#b0b6bc");
+    // Centre seam between the two leaves.
+    c.fillStyle = "#6f7479";
+    c.fillRect(7, 0, 1, TILE_PX);
+    c.fillStyle = "#c2c8ce";
+    c.fillRect(8, 0, 1, TILE_PX);
+    // Call-button plate.
+    c.fillStyle = "#b8bcc0";
+    c.fillRect(12, 5, 3, 5);
+    c.fillStyle = "#8d9297";
+    c.fillRect(12, 5, 3, 1);
+    px(c, 13, 7, "#e8c96a");
+    px(c, 13, 8, "#6f7479");
+  },
+
+  WHITEBOARD: (c, r) => {
+    fill(c, "#f6f6f4");
+    speckle(c, r, ["#f2f2f0"], 0.1);
+    border(c, "#b9bdc1", 1);
+    c.fillStyle = "#d9dcdf";
+    c.fillRect(1, 1, TILE_PX - 2, 1);
+    // Faint marker strokes.
+    c.fillStyle = "#93aed6";
+    c.fillRect(3, 5, 7, 1);
+    c.fillStyle = "#a8c6ac";
+    c.fillRect(3, 8, 4, 1);
+    px(c, 9, 9, "#d6a9a4");
+    px(c, 10, 10, "#d6a9a4");
+    px(c, 11, 11, "#d6a9a4");
+    // Marker resting in the tray.
+    c.fillStyle = "#6f7479";
+    c.fillRect(4 + Math.floor(r() * 5), 13, 3, 1);
+  },
+
+  CORKBOARD: (c, r) => {
+    fill(c, "#b99b74");
+    speckle(c, r, ["#c2a37c", "#ae8f68", "#c8ab86", "#a4855f"], 0.6);
+    // Pinned paper corners.
+    for (const [x, y] of [[2, 2], [10, 4], [5, 10]] as const) {
+      c.fillStyle = "#f2efe6";
+      c.fillRect(x, y, 4, 4);
+      c.fillStyle = "#d8d4c8";
+      c.fillRect(x, y + 3, 4, 1);
+      px(c, x + 1, y + 1, "#c0574c");
+    }
+    px(c, 13, 12, "#8f7350");
+  },
+
+  BOOKS: (c, r) => {
+    // A shelf of ring binders, spines out.
+    fill(c, "#4e4a45");
+    const spines = ["#7d6a5e", "#5f6d7d", "#6b7d68", "#8a7a5e", "#77607a", "#6d6f74"];
+    let x = 0;
+    while (x < TILE_PX) {
+      const w = 2 + Math.floor(r() * 2);
+      c.fillStyle = pick(r, spines);
+      c.fillRect(x, 1, w, 14);
+      c.fillStyle = "rgba(0,0,0,0.18)";
+      c.fillRect(x + w - 1, 1, 1, 14);
+      c.fillStyle = "#e6e2d8";
+      c.fillRect(x, 4, Math.max(1, w - 1), 2);
+      if (r() < 0.4) px(c, x, 10, "#3a3733");
+      x += w;
+    }
+    c.fillStyle = "#3a3733";
+    c.fillRect(0, 15, TILE_PX, 1);
+    c.fillRect(0, 0, TILE_PX, 1);
+  },
+
+  SERVER_RACK: (c, r) => {
+    fill(c, "#23262b");
+    for (let u = 0; u < 5; u++) {
+      const y = u * 3 + 1;
+      c.fillStyle = "#1b1e22";
+      c.fillRect(1, y, 14, 2);
+      c.fillStyle = "#2b2f35";
+      c.fillRect(1, y + 2, 14, 1);
+      // Status LEDs down the left of each unit.
+      px(c, 2, y, r() < 0.75 ? "#57c46a" : "#2f5c39");
+      px(c, 4, y, r() < 0.4 ? "#d8a53f" : "#5c4a24");
+      if (r() < 0.5) px(c, 6, y + 1, "#57c46a");
+      for (let x = 9; x < 15; x += 2) px(c, x, y + 1, "#33373d");
+    }
+    speckle(c, r, ["#26292e"], 0.1);
+  },
+
+  TV_SCREEN: (c, r) => {
+    // Big panel on standby: near-black with the backlight sitting slightly
+    // proud across the upper half, not a hotspot.
+    fill(c, "#0a0c10");
+    for (let y = 1; y < TILE_PX - 1; y++) {
+      for (let x = 1; x < TILE_PX - 1; x++) {
+        const glow = 1 - Math.abs(y - 6) / 12 - Math.abs(x - 7.5) / 40;
+        px(c, x, y, glow > 0.85 ? "#161e2e" : glow > 0.72 ? "#121927" : "#0f1522");
+      }
+    }
+    speckle(c, r, ["#0d1119"], 0.1);
+    border(c, "#191c21", 1);
+    px(c, 8, 14, "#2b6ea8");
+  },
+
+  PANTRY: (c, r) => {
+    // Stone counter with the ring somebody left behind.
+    fill(c, "#d9d5cd");
+    speckle(c, r, ["#cfcbc3", "#e2ded6", "#c4c0b8"], 0.45);
+    for (let y = 0; y < TILE_PX; y++) {
+      for (let x = 0; x < TILE_PX; x++) {
+        const d = Math.hypot(x - 10.5, y - 5.5);
+        if (d > 2.2 && d < 3.1) px(c, x, y, "#bfae97");
+      }
+    }
+    px(c, 3, 12, "#b3aea4");
+    px(c, 4, 12, "#c9c4ba");
+  },
+
+  ACOUSTIC_FELT: (c, r) => {
+    // Neutral gray: the felt blocks tint this at mesh time.
+    fill(c, "#9a9a98");
+    speckle(c, r, ["#a2a2a0", "#929290", "#9e9e9c", "#969694"], 0.6);
+    for (let i = 0; i < 8; i++) {
+      c.fillStyle = pick(r, ["#a6a6a4", "#8e8e8c"]);
+      c.fillRect(Math.floor(r() * 14), Math.floor(r() * TILE_PX), 2, 1);
+    }
+  },
+
+  CLOCK: (c, r) => {
+    // Analogue wall clock on the painted wall, hands at ten past ten.
+    paintedWall(c, r);
+    for (let y = 0; y < TILE_PX; y++) {
+      for (let x = 0; x < TILE_PX; x++) {
+        const d = dist(x, y);
+        if (d <= 5.6) px(c, x, y, "#fbfaf7");
+        else if (d <= 6.6) px(c, x, y, "#71757a");
+      }
+    }
+    for (const [x, y] of [[7, 3], [8, 3], [12, 7], [12, 8], [7, 12], [8, 12], [3, 7], [3, 8]] as const) {
+      px(c, x, y, "#5c6065");
+    }
+    // Minute hand up-right, hour hand up-left.
+    for (const [x, y] of [[9, 6], [10, 5], [11, 4]] as const) px(c, x, y, "#24272b");
+    for (const [x, y] of [[6, 6], [5, 5]] as const) px(c, x, y, "#24272b");
+    c.fillStyle = "#24272b";
+    c.fillRect(7, 7, 2, 2);
+  },
+
+  SIGN_STRIP: (c, r) => {
+    fill(c, "#1a1d22");
+    speckle(c, r, ["#1e2127"], 0.15);
+    c.fillStyle = "#3f4c62";
+    c.fillRect(0, 5, TILE_PX, 6);
+    c.fillStyle = "#8ba2c6";
+    c.fillRect(0, 6, TILE_PX, 4);
+    c.fillStyle = "#e6eefb";
+    c.fillRect(0, 7, TILE_PX, 2);
+    for (let i = 0; i < 4; i++) {
+      px(c, Math.floor(r() * TILE_PX), 7 + Math.floor(r() * 2), "#ffffff");
+    }
+    c.fillStyle = "#14171b";
+    c.fillRect(0, 0, 1, TILE_PX);
+    c.fillRect(TILE_PX - 1, 0, 1, TILE_PX);
+  },
+
+  ROOF: (c, r) => {
+    // Single-ply membrane with welded seams.
+    fill(c, "#6f7378");
+    speckle(c, r, ["#747880", "#6a6e73"], 0.3);
+    for (const y of [0, 5, 10, 15] as const) {
+      c.fillStyle = "#5e6267";
+      c.fillRect(0, y, TILE_PX, 1);
+      if (y + 1 < TILE_PX) {
+        c.fillStyle = "#7c8085";
+        c.fillRect(0, y + 1, TILE_PX, 1);
+      }
+    }
   },
 
   STONE: (c, r) => {
@@ -168,149 +617,6 @@ const PAINTERS: Record<keyof typeof TILE, Painter> = {
     speckle(c, r, ["#9a9a9a", "#828282", "#a3a3a3"], 0.35);
     crack(c, r, "#6e6e6e");
     crack(c, r, "#767676");
-  },
-
-  COBBLE: (c, r) => {
-    fill(c, "#6f6f6f");
-    for (let cy = 0; cy < 4; cy++) {
-      for (let cx = 0; cx < 4; cx++) {
-        const shade = pick(r, ["#8d8d8d", "#979797", "#858585", "#7e8386"]);
-        c.fillStyle = shade;
-        c.fillRect(cx * 4, cy * 4, 3, 3);
-        px(c, cx * 4, cy * 4, "#a2a2a2");
-        px(c, cx * 4 + 2, cy * 4 + 2, "#787878");
-      }
-    }
-  },
-
-  PLANKS: (c, r) => planks(c, r, "#b08945", "#8a6a33", "#a07a3a", "#6b4d22"),
-
-  PLANKS_DARK: (c, r) => planks(c, r, "#6b4a2c", "#4e3520", "#5d3f24", "#3c2917"),
-
-  LOG_SIDE: (c, r) => {
-    fill(c, "#6d5433");
-    for (let x = 0; x < TILE_PX; x++) {
-      const shade = pick(r, ["#5e4728", "#7a5f3a", "#6d5433", "#654d2d"]);
-      c.fillStyle = shade;
-      c.fillRect(x, 0, 1, TILE_PX);
-    }
-    for (let i = 0; i < 6; i++) {
-      const x = Math.floor(r() * TILE_PX);
-      const y0 = Math.floor(r() * 10);
-      c.fillStyle = "#4a3820";
-      c.fillRect(x, y0, 1, 3 + Math.floor(r() * 4));
-    }
-  },
-
-  LOG_TOP: (c, r) => {
-    fill(c, "#c29a5b");
-    const ringColors = ["#6d5433", "#5e4728", "#c29a5b", "#a87e44", "#c29a5b", "#a87e44", "#c29a5b", "#a87e44"];
-    for (let i = 0; i < 8; i++) {
-      c.fillStyle = ringColors[i];
-      c.fillRect(i, i, TILE_PX - i * 2, 1);
-      c.fillRect(i, TILE_PX - 1 - i, TILE_PX - i * 2, 1);
-      c.fillRect(i, i, 1, TILE_PX - i * 2);
-      c.fillRect(TILE_PX - 1 - i, i, 1, TILE_PX - i * 2);
-    }
-    speckle(c, r, ["#b28e4f"], 0.08);
-  },
-
-  LEAVES: (c, r) => {
-    // 2x2 clumps at random spots leave ~25% of the tile fully transparent.
-    for (let i = 0; i < 88; i++) {
-      const x = Math.floor(r() * 15);
-      const y = Math.floor(r() * 15);
-      c.fillStyle = pick(r, ["#3e7a2a", "#4f9134", "#356b24", "#5aa03c"]);
-      c.fillRect(x, y, 2, 2);
-    }
-    speckle(c, r, ["#63ad44"], 0.06);
-  },
-
-  GLASS: (c) => {
-    c.fillStyle = "rgba(214,233,238,0.85)";
-    c.fillRect(0, 0, TILE_PX, 1);
-    c.fillRect(0, TILE_PX - 1, TILE_PX, 1);
-    c.fillRect(0, 0, 1, TILE_PX);
-    c.fillRect(TILE_PX - 1, 0, 1, TILE_PX);
-    px(c, 4, 5, "rgba(255,255,255,0.75)");
-    px(c, 5, 4, "rgba(255,255,255,0.75)");
-  },
-
-  BRICK: (c, r) => {
-    courses(c, r, "#b5aaa2", ["#9c4a3a", "#a35240", "#8f4234", "#a85a45"], 4, 8);
-    speckle(c, r, ["#8a3f30"], 0.05);
-  },
-
-  SANDSTONE: (c, r) => {
-    fill(c, "#d8c790");
-    for (let y = 0; y < TILE_PX; y++) {
-      const band = (y / 3) | 0;
-      c.fillStyle = band % 2 === 0 ? "#e0d09c" : "#cdbc82";
-      c.fillRect(0, y, TILE_PX, 1);
-    }
-    speckle(c, r, ["#c4b276", "#e6d8a8"], 0.15);
-  },
-
-  PATH: (c, r) => {
-    fill(c, "#8f846e");
-    speckle(c, r, ["#a39781", "#7c7258", "#6d6450", "#b0a48c"], 0.5);
-    for (let i = 0; i < 5; i++) {
-      c.fillStyle = pick(r, ["#a39781", "#6d6450"]);
-      c.fillRect(Math.floor(r() * 14), Math.floor(r() * 15), 2, 1);
-    }
-  },
-
-  WATER: (c, r) => {
-    fill(c, "#2662c4");
-    speckle(c, r, ["#1f55ad", "#2d6fd4"], 0.25);
-    for (let i = 0; i < 6; i++) {
-      c.fillStyle = "#78aae6";
-      c.fillRect(Math.floor(r() * 13), Math.floor(r() * TILE_PX), 2 + Math.floor(r() * 2), 1);
-    }
-    fadeAlpha(c, 0.78);
-  },
-
-  CONCRETE: (c, r) => {
-    // Kept near-neutral: block tints multiply in at mesh time.
-    fill(c, "#d8d6d0");
-    speckle(c, r, ["#dedcd6", "#d0cec8"], 0.25);
-  },
-
-  ROOF: (c, r) => {
-    courses(c, r, "#262a32", ["#3f4550", "#434a56", "#3a404b"], 4, 4);
-    speckle(c, r, ["#4a515e"], 0.06);
-  },
-
-  GLOWSTONE: (c, r) => {
-    fill(c, "#c8862b");
-    speckle(c, r, ["#a86c1f", "#d69939"], 0.25);
-    for (let i = 0; i < 7; i++) {
-      const x = Math.floor(r() * 13);
-      const y = Math.floor(r() * 13);
-      c.fillStyle = "#ffd966";
-      c.fillRect(x, y, 2 + Math.floor(r() * 2), 2);
-      px(c, x + 1, y, "#ffe9a3");
-      if (r() < 0.5) px(c, x + 1, y + 1, "#fff6cc");
-    }
-  },
-
-  SCAFFOLD: (c, r) => {
-    // Frame + X-brace; the gaps stay transparent.
-    c.fillStyle = "#b08945";
-    c.fillRect(0, 0, TILE_PX, 1);
-    c.fillRect(0, TILE_PX - 1, TILE_PX, 1);
-    c.fillRect(0, 0, 1, TILE_PX);
-    c.fillRect(TILE_PX - 1, 0, 1, TILE_PX);
-    for (let i = 0; i < TILE_PX; i++) {
-      px(c, i, i, "#a07a3a");
-      px(c, TILE_PX - 1 - i, i, "#8a6a33");
-      if (i < TILE_PX - 1) {
-        px(c, i + 1, i, "#b08945");
-        px(c, TILE_PX - 2 - i, i, "#b08945");
-      }
-    }
-    px(c, 1, 1, r() < 0.5 ? "#6b4d22" : "#8a6a33");
-    px(c, 14, 14, "#6b4d22");
   },
 
   LAIR_STONE: (c, r) => {
@@ -359,127 +665,6 @@ const PAINTERS: Record<keyof typeof TILE, Painter> = {
     px(c, 3 + Math.floor(r() * 10), 3 + Math.floor(r() * 10), "#6b4a8e");
   },
 
-  CARPET: (c, r) => {
-    for (let y = 0; y < TILE_PX; y++) {
-      for (let x = 0; x < TILE_PX; x++) {
-        const even = ((x >> 1) + (y >> 1)) % 2 === 0;
-        px(c, x, y, even ? "#9c2a2a" : "#7f1f1f");
-      }
-    }
-    speckle(c, r, ["#a83434", "#731b1b"], 0.15);
-  },
-
-  WHITEBOARD: (c, r) => {
-    fill(c, "#f4f4f2");
-    c.strokeStyle = "#b9bcbe";
-    c.strokeRect(0.5, 0.5, TILE_PX - 1, TILE_PX - 1);
-    c.fillStyle = "#d04a3e";
-    c.fillRect(3, 4, 4, 1);
-    c.fillStyle = "#3a6fc4";
-    px(c, 9, 6, "#3a6fc4");
-    px(c, 10, 7, "#3a6fc4");
-    px(c, 11, 8, "#3a6fc4");
-    c.fillStyle = "#3f9c4d";
-    c.fillRect(4, 10, 3, 1);
-    px(c, 5 + Math.floor(r() * 6), 12, "#dcdcd8");
-  },
-
-  SCREEN: (c, r) => {
-    fill(c, "#0b0e14");
-    for (let y = 1; y < TILE_PX; y += 2) {
-      c.fillStyle = "#101a29";
-      c.fillRect(0, y, TILE_PX, 1);
-    }
-    px(c, 12, 11, "#1d3a5c");
-    px(c, 13, 11, "#2b5580");
-    px(c, 13, 12, "#1d3a5c");
-    px(c, 12 + Math.floor(r() * 2), 10, "#16304c");
-  },
-
-  BOOKS: (c, r) => {
-    fill(c, "#6b4a2c");
-    const spineColors = ["#8e3b3b", "#3b5e8e", "#3f7a44", "#8e7a3b", "#6a4a8e", "#a06030"];
-    for (const y0 of [1, 9]) {
-      let x = 0;
-      while (x < TILE_PX) {
-        const w = 1 + Math.floor(r() * 2);
-        if (r() < 0.12) {
-          c.fillStyle = "#241812";
-          c.fillRect(x, y0, w, 6);
-        } else {
-          const col = pick(r, spineColors);
-          c.fillStyle = col;
-          c.fillRect(x, y0, w, 6);
-          px(c, x, y0 + 1, "#e8e0cc");
-        }
-        x += w;
-      }
-    }
-  },
-
-  CLOCK: (c) => {
-    // Drawn analytically: wood corners, dark ring, white face, hands at ~10:10.
-    for (let y = 0; y < TILE_PX; y++) {
-      for (let x = 0; x < TILE_PX; x++) {
-        const d = dist(x, y);
-        if (d > 7.2) px(c, x, y, "#6b4a2c");
-        else if (d > 5.8) px(c, x, y, "#4a4038");
-        else px(c, x, y, "#f2efe6");
-      }
-    }
-    px(c, 7, 3, "#4a4038");
-    px(c, 8, 3, "#4a4038");
-    px(c, 12, 7, "#4a4038");
-    px(c, 12, 8, "#4a4038");
-    px(c, 7, 12, "#4a4038");
-    px(c, 8, 12, "#4a4038");
-    px(c, 3, 7, "#4a4038");
-    px(c, 3, 8, "#4a4038");
-    c.fillStyle = "#2e2a24";
-    c.fillRect(7, 4, 1, 4);
-    c.fillRect(8, 7, 3, 1);
-    px(c, 7, 7, "#2e2a24");
-  },
-
-  MARBLE: (c, r) => {
-    fill(c, "#ece9e2");
-    speckle(c, r, ["#e2dfd8", "#f2efe8"], 0.2);
-    for (let i = 0; i < 3; i++) {
-      let x = Math.floor(r() * TILE_PX);
-      let y = 0;
-      while (y < TILE_PX) {
-        px(c, x, y, "#b8b6b0");
-        if (r() < 0.3) px(c, x + 1, y, "#a3a19b");
-        x += Math.floor(r() * 3) - 1;
-        y += r() < 0.7 ? 1 : 0;
-        if (x < 0) x = 0;
-        if (x > 15) x = 15;
-        if (r() < 0.05) break;
-      }
-    }
-  },
-
-  DESK_TOP: (c, r) => {
-    fill(c, "#8a6236");
-    for (let i = 0; i < 14; i++) {
-      c.fillStyle = pick(r, ["#7c5730", "#966c3c"]);
-      c.fillRect(Math.floor(r() * 13), Math.floor(r() * TILE_PX), 3, 1);
-    }
-    // Paper sheet with faint ruled lines.
-    c.fillStyle = "#f4f2ec";
-    c.fillRect(2, 3, 5, 6);
-    c.fillStyle = "#c9c7c0";
-    c.fillRect(3, 5, 3, 1);
-    c.fillRect(3, 7, 3, 1);
-    // Keyboard: dark slab with a key grid.
-    c.fillStyle = "#2a2d33";
-    c.fillRect(9, 10, 6, 3);
-    c.fillStyle = "#3d424b";
-    for (let x = 10; x < 15; x += 2) {
-      px(c, x, 11, "#3d424b");
-    }
-  },
-
   LAIR_GLOW: (c, r) => {
     for (let y = 0; y < TILE_PX; y++) {
       for (let x = 0; x < TILE_PX; x++) {
@@ -493,20 +678,329 @@ const PAINTERS: Record<keyof typeof TILE, Painter> = {
     }
   },
 
-  METAL: (c, r) => {
-    fill(c, "#9aa0a6");
-    for (let y = 0; y < TILE_PX; y++) {
-      c.fillStyle = pick(r, ["#a3a9af", "#92989e", "#9aa0a6"]);
-      c.fillRect(0, y, TILE_PX, 1);
-      if (r() < 0.4) {
-        c.fillStyle = "#adb3b9";
-        c.fillRect(Math.floor(r() * 12), y, 2 + Math.floor(r() * 3), 1);
+  WATER: (c, r) => {
+    fill(c, "#4a6f86");
+    speckle(c, r, ["#446677", "#527a92"], 0.3);
+    for (let i = 0; i < 6; i++) {
+      c.fillStyle = "#8fb0c2";
+      c.fillRect(Math.floor(r() * 13), Math.floor(r() * TILE_PX), 2 + Math.floor(r() * 2), 1);
+    }
+    fadeAlpha(c, 0.72);
+  },
+
+  // ---- props & decoration -------------------------------------------------
+
+  /** Desktop tower: vented front, power LED, optical slot. */
+  CPU_TOWER: (c, r) => {
+    fill(c, "#2f333a");
+    speckle(c, r, ["#343941", "#292d33"], 0.22);
+    border(c, "#23262b", 1);
+    // vent grille
+    for (let y = 3; y < 8; y++) for (let x = 3; x < 8; x++) if ((x + y) % 2 === 0) px(c, x, y, "#1b1e22");
+    // optical drive slot
+    c.fillStyle = "#1b1e22";
+    c.fillRect(3, 10, 10, 1);
+    // power button + LED
+    px(c, 11, 4, "#7b828c");
+    px(c, 11, 6, "#4fd0ff");
+    px(c, 11, 12, "#3ad07a");
+  },
+
+  /** Bushy fern — leafy cutout with a transparent surround. */
+  PLANT_FERN: (c, r) => {
+    for (let i = 0; i < 46; i++) {
+      const x = 2 + Math.floor(r() * 12);
+      const y = 3 + Math.floor(r() * 12);
+      px(c, x, y, pick(r, ["#4f9b46", "#5eb054", "#3f8038", "#68c05c"]));
+      if (r() < 0.5) px(c, x, y - 1, pick(r, ["#5eb054", "#427f3a"]));
+    }
+    // a few fronds reaching up
+    for (const sx of [5, 8, 11]) for (let y = 1; y < 5; y++) px(c, sx, y, "#4f9b46");
+  },
+
+  /** Tall leafy stem plant. */
+  PLANT_TALL: (c, r) => {
+    for (let y = 1; y < TILE_PX; y++) {
+      px(c, 7, y, "#5a7a3e");
+      px(c, 8, y, "#4a6a34");
+    }
+    for (let i = 0; i < 34; i++) {
+      const y = 1 + Math.floor(r() * 13);
+      const spread = 1 + Math.floor(r() * 4);
+      const dir = r() < 0.5 ? -1 : 1;
+      for (let k = 1; k <= spread; k++) {
+        px(c, 7 + dir * k, y, pick(r, ["#57a84d", "#469a3e", "#63bb59"]));
       }
     }
-    for (const [rx, ry] of [[2, 2], [13, 2], [2, 13], [13, 13]] as const) {
-      px(c, rx, ry, "#5d6268");
-      px(c, rx + 1, ry, "#c3c9cf");
+  },
+
+  POT_TERRACOTTA: (c, r) => {
+    fill(c, "#b1653f");
+    speckle(c, r, ["#bb6f47", "#a35b38", "#9a5433"], 0.28);
+    // rim
+    c.fillStyle = "#c47a52";
+    c.fillRect(0, 0, TILE_PX, 3);
+    c.fillStyle = "#8f4f31";
+    c.fillRect(0, 3, TILE_PX, 1);
+    // taper shading down the sides
+    for (let y = 4; y < TILE_PX; y++) { px(c, 0, y, "#8f4f31"); px(c, 15, y, "#8f4f31"); }
+  },
+
+  POT_WHITE: (c, r) => {
+    fill(c, "#d9d5cd");
+    speckle(c, r, ["#e2ded6", "#cec9c1"], 0.22);
+    c.fillStyle = "#eae7e1";
+    c.fillRect(0, 0, TILE_PX, 3);
+    c.fillStyle = "#bdb8b0";
+    c.fillRect(0, 3, TILE_PX, 1);
+    for (let y = 4; y < TILE_PX; y++) { px(c, 0, y, "#bdb8b0"); px(c, 15, y, "#bdb8b0"); }
+  },
+
+  /** Video camera body: lens barrel, hood, record tally. */
+  CAMERA: (c, r) => {
+    fill(c, "#26292e");
+    speckle(c, r, ["#2c3036", "#212429"], 0.2);
+    // lens
+    for (let y = 0; y < TILE_PX; y++) {
+      for (let x = 0; x < TILE_PX; x++) {
+        const d = Math.hypot(x - 6, y - 8);
+        if (d < 4.6) px(c, x, y, "#15181c");
+        if (d < 3.2) px(c, x, y, "#1d2733");
+        if (d < 1.8) px(c, x, y, "#2f4a63");
+        if (d < 0.9) px(c, x, y, "#6fa8d8");
+      }
     }
+    // grip / body detail
+    c.fillStyle = "#3a3f46";
+    c.fillRect(11, 4, 4, 8);
+    px(c, 13, 2, "#e0483c"); // tally light
+    px(c, 12, 2, "#3b3f45");
+  },
+
+  /** Tripod legs on transparent background. */
+  TRIPOD: (c) => {
+    for (let y = 0; y < TILE_PX; y++) {
+      const spread = Math.floor(y * 0.42);
+      px(c, 7 - spread, y, "#3c4148");
+      px(c, 8 + spread, y, "#3c4148");
+      if (y < 6) { px(c, 7, y, "#4a5058"); px(c, 8, y, "#4a5058"); }
+    }
+    c.fillStyle = "#5a616a";
+    c.fillRect(5, 4, 6, 2);
+  },
+
+  /** Softbox / studio light — bright diffuser in a dark frame. */
+  SOFTBOX: (c, r) => {
+    fill(c, "#2a2d32");
+    c.fillStyle = "#fff6e0";
+    c.fillRect(2, 2, 12, 12);
+    for (let y = 3; y < 13; y++) {
+      for (let x = 3; x < 13; x++) {
+        if (r() < 0.25) px(c, x, y, "#fffdf6");
+      }
+    }
+    border(c, "#1e2126", 1);
+    // diffuser cross-bars
+    c.fillStyle = "#f0e4cc";
+    c.fillRect(7, 2, 1, 12);
+    c.fillRect(2, 7, 12, 1);
+  },
+
+  /** Clapperboard, seen from above. */
+  CLAPBOARD: (c) => {
+    fill(c, "#1c1f24");
+    // the striped clapper
+    for (let x = 0; x < TILE_PX; x++) {
+      const on = Math.floor(x / 2) % 2 === 0;
+      c.fillStyle = on ? "#eceae4" : "#22262b";
+      c.fillRect(x, 0, 1, 4);
+    }
+    // slate rows
+    c.fillStyle = "#3a3f46";
+    c.fillRect(2, 7, 12, 1);
+    c.fillRect(2, 10, 12, 1);
+    c.fillRect(2, 13, 8, 1);
+  },
+
+  /** Microphone on a slim stand. */
+  MIC: (c) => {
+    for (let y = 6; y < TILE_PX; y++) px(c, 7, y, "#43484f");
+    for (let y = 6; y < TILE_PX; y++) px(c, 8, y, "#33383e");
+    // head
+    for (let y = 1; y < 7; y++) {
+      for (let x = 5; x < 11; x++) {
+        const d = Math.hypot(x - 7.5, y - 3.6);
+        if (d < 3.1) px(c, x, y, d < 2.1 ? "#4d545c" : "#3a3f46");
+      }
+    }
+    px(c, 6, 3, "#6d757e");
+    px(c, 9, 4, "#292d32");
+  },
+
+  /** A mug of coffee seen from above. */
+  COFFEE: (c) => {
+    for (let y = 0; y < TILE_PX; y++) {
+      for (let x = 0; x < TILE_PX; x++) {
+        const d = dist(x, y);
+        if (d < 5.4) px(c, x, y, "#f2efe9");
+        if (d < 4.2) px(c, x, y, "#4a2c1c");
+        if (d < 3.0) px(c, x, y, "#5c3a24");
+      }
+    }
+    // handle
+    c.fillStyle = "#f2efe9";
+    c.fillRect(12, 7, 3, 2);
+  },
+
+  /** Loose paperwork on a desk. */
+  PAPERS: (c, r) => {
+    for (const [ox, oy, tone] of [
+      [1, 2, "#d9d6ce"],
+      [3, 4, "#eceae4"],
+      [2, 6, "#f6f4ef"],
+    ] as const) {
+      c.fillStyle = tone;
+      c.fillRect(ox, oy, 11, 8);
+    }
+    c.fillStyle = "#a9adb4";
+    for (let i = 0; i < 5; i++) {
+      c.fillRect(4, 8 + i, 6 + Math.floor(r() * 3), 1);
+    }
+  },
+
+  DESK_PHONE: (c) => {
+    fill(c, "#22262b");
+    c.fillStyle = "#2c3138";
+    c.fillRect(1, 4, 14, 10);
+    // handset
+    c.fillStyle = "#171a1e";
+    c.fillRect(2, 1, 12, 4);
+    // keypad
+    for (let ky = 0; ky < 3; ky++) {
+      for (let kx = 0; kx < 3; kx++) px(c, 5 + kx * 2, 7 + ky * 2, "#5a616a");
+    }
+    px(c, 12, 7, "#3ad07a");
+  },
+
+  PRINTER: (c, r) => {
+    fill(c, "#3a3f46");
+    speckle(c, r, ["#41464e", "#33383f"], 0.18);
+    // paper tray
+    c.fillStyle = "#eceae4";
+    c.fillRect(2, 3, 12, 3);
+    // output slot
+    c.fillStyle = "#1c1f24";
+    c.fillRect(2, 8, 12, 2);
+    // status lights
+    px(c, 3, 12, "#3ad07a");
+    px(c, 5, 12, "#e0a13a");
+  },
+
+  WATER_COOLER: (c, r) => {
+    fill(c, "#e8eaec");
+    speckle(c, r, ["#eff1f3", "#dfe2e5"], 0.18);
+    // bottle
+    c.fillStyle = "#8fc8e0";
+    c.fillRect(3, 0, 10, 7);
+    for (let i = 0; i < 8; i++) px(c, 3 + Math.floor(r() * 10), Math.floor(r() * 7), "#b5dced");
+    // body + taps
+    c.fillStyle = "#cfd3d7";
+    c.fillRect(2, 7, 12, 9);
+    px(c, 6, 10, "#3f7fa8");
+    px(c, 9, 10, "#b04a4a");
+    c.fillStyle = "#9aa0a6";
+    c.fillRect(4, 13, 8, 1);
+  },
+
+  /** Framed artwork for blank walls. */
+  ART_FRAME: (c, r) => {
+    fill(c, "#8a6a45");
+    border(c, "#6d5335", 1);
+    c.fillStyle = "#f2efe8";
+    c.fillRect(2, 2, 12, 12);
+    // abstract blocks of colour
+    const tones = ["#6f9ff0", "#e0a862", "#63c98a", "#d98a8a", "#a48fd8"];
+    for (let i = 0; i < 7; i++) {
+      c.fillStyle = pick(r, tones);
+      c.fillRect(3 + Math.floor(r() * 8), 3 + Math.floor(r() * 8), 2 + Math.floor(r() * 3), 2 + Math.floor(r() * 3));
+    }
+  },
+
+  BOOK_STACK: (c, r) => {
+    const tones = ["#8a4a3c", "#3f6b8a", "#5c7a45", "#8a7a3c", "#6b4a7a"];
+    let y = 15;
+    while (y > 2) {
+      const h = 2 + Math.floor(r() * 2);
+      const inset = Math.floor(r() * 2);
+      c.fillStyle = pick(r, tones);
+      c.fillRect(1 + inset, y - h, 14 - inset * 2, h);
+      c.fillStyle = "#efeadd";
+      c.fillRect(1 + inset, y - h, 14 - inset * 2, 1);
+      y -= h + 1;
+    }
+  },
+
+  SOFA: (c, r) => {
+    fill(c, "#4a5560");
+    speckle(c, r, ["#515d69", "#434e58"], 0.22);
+    // seat cushions
+    c.fillStyle = "#56626e";
+    c.fillRect(1, 6, 6, 9);
+    c.fillRect(9, 6, 6, 9);
+    // backrest
+    c.fillStyle = "#3e4852";
+    c.fillRect(0, 0, TILE_PX, 5);
+    px(c, 8, 9, "#3a444d");
+  },
+
+  /** Floor lamp — warm shade over a slim stand. */
+  LAMP: (c) => {
+    for (let y = 8; y < TILE_PX; y++) px(c, 7, y, "#4a5058");
+    for (let y = 8; y < TILE_PX; y++) px(c, 8, y, "#3c4148");
+    c.fillStyle = "#5a616a";
+    c.fillRect(5, 15, 6, 1);
+    // shade
+    for (let y = 1; y < 8; y++) {
+      const w = 3 + y;
+      c.fillStyle = y < 3 ? "#f7e6bd" : "#ffd98f";
+      c.fillRect(8 - Math.floor(w / 2), y, w, 1);
+    }
+  },
+
+  RUG_PATTERN: (c, r) => {
+    fill(c, "#7d5a63");
+    speckle(c, r, ["#87626c", "#73525b"], 0.2);
+    border(c, "#5f434b", 2);
+    // simple woven diamond
+    for (let i = 0; i < 6; i++) {
+      px(c, 7 + i, 7 + i, "#d8c3a8");
+      px(c, 8 - i, 7 + i, "#d8c3a8");
+      px(c, 7 + i, 8 - i, "#d8c3a8");
+      px(c, 8 - i, 8 - i, "#d8c3a8");
+    }
+  },
+
+  VENT: (c) => {
+    fill(c, "#c9ccd0");
+    border(c, "#a8acb1", 1);
+    c.fillStyle = "#8f9499";
+    for (let y = 3; y < 14; y += 2) c.fillRect(2, y, 12, 1);
+    px(c, 2, 2, "#7d8287");
+    px(c, 13, 2, "#7d8287");
+    px(c, 2, 13, "#7d8287");
+    px(c, 13, 13, "#7d8287");
+  },
+
+  EXIT_SIGN: (c) => {
+    fill(c, "#12331f");
+    border(c, "#0d2417", 1);
+    // "EXIT" block letters in a lit green
+    const on = "#5df08a";
+    const cols = [2, 5, 8, 11];
+    for (const x of cols) for (let y = 5; y < 11; y++) px(c, x, y, on);
+    for (const y of [5, 7, 10]) { px(c, 3, y, on); }
+    px(c, 6, 7, on); px(c, 7, 8, on); px(c, 6, 9, on);
+    px(c, 12, 5, on); px(c, 13, 5, on); px(c, 10, 5, on);
   },
 };
 

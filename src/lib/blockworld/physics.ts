@@ -10,8 +10,10 @@ export const PLAYER_HEIGHT = 1.8;
 export const EYE_HEIGHT = 1.62;
 export const GRAVITY = 24;
 export const JUMP_SPEED = 8.2;
-export const WALK_SPEED = 4.3;
-export const SPRINT_SPEED = 6.5;
+// Office pace: you cross a floor in a few seconds, not a hike. Sprint is a
+// real sprint — the old Minecraft-ish 4.3/6.5 felt like wading.
+export const WALK_SPEED = 6.2;
+export const SPRINT_SPEED = 12.5;
 export const STEP_UP = 0.55;
 
 export type PlayerState = { pos: Vec3; vel: Vec3; onGround: boolean };

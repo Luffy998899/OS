@@ -50,13 +50,15 @@ import { ShootPanel } from "./rooms/shoot-panel";
 import { TimetablePanel } from "./rooms/timetable-panel";
 import { DocsPanel } from "./rooms/docs-panel";
 import { LairPanel } from "./rooms/lair-panel";
+import { ChatPanel } from "@/components/chat/chat-panel";
 
 const STATUSES = ["online", "busy", "away"] as const;
 
 // Every building, reachable without the walk.
 const ROOM_LAUNCHERS = [
+  { key: "chat", label: "Chat", desc: "Servers, channels, DMs" },
   { key: "video", label: "Video Editing Bay", desc: "Queue, timers & scripts" },
-  { key: "city", label: "Dev City", desc: "The mall of named floors" },
+  { key: "city", label: "Dev Wing", desc: "Project towers, floor by floor" },
   { key: "conference", label: "Conference Hall", desc: "Meetings & announcements" },
   { key: "tasks", label: "Task Hall", desc: "Your wall & squad work" },
   { key: "approvals", label: "Managing Heads", desc: "Leave & sign-offs" },
@@ -73,7 +75,8 @@ export function WorkspaceGame() {
   const router = useRouter();
   const currentUser = useCurrentUser();
   const canManage = hasPermission(currentUser.permissions, PERMISSIONS.CLIENTS_MANAGE);
-  const isAdmin = hasPermission(currentUser.permissions, PERMISSIONS.ADMIN);
+  // The Upside Down is Admin-role only — Managers hold workspace:admin too.
+  const isAdmin = currentUser.roleName === "Admin";
   const utils = trpc.useUtils();
   const state = trpc.workspace.state.useQuery(undefined, { refetchInterval: 15_000 });
   const enter = trpc.workspace.enter.useMutation();
@@ -140,13 +143,13 @@ export function WorkspaceGame() {
                   <BlockyAvatar character={character} size={92} status={myStatus} />
                   <div>
                     <p className="font-mono text-[0.62rem] tracking-[0.35em] text-[#ffd166] uppercase">
-                      Auxa presents
+                      Virtual office
                     </p>
                     <h1 className="font-display mt-1 text-3xl font-bold tracking-tight">
-                      BLOCKWORLD
+                      AUXA HQ
                     </h1>
                     <p className="mt-1 text-sm text-white/60">
-                      The whole company, rebuilt block by block. You are{" "}
+                      Walk the floor, sit at a desk, do the actual work. You are{" "}
                       <span className="font-semibold text-white/90">{character.name}</span> — lvl{" "}
                       {lvl.level}.
                     </p>
@@ -172,10 +175,10 @@ export function WorkspaceGame() {
                     className="h-12 bg-[#ffd166] px-7 text-base font-bold text-[#10141c] hover:bg-[#ffdd8f]"
                   >
                     <Play className="size-5" />
-                    ENTER WORLD
+                    ENTER THE OFFICE
                   </Button>
                   <p className="text-center font-mono text-[0.62rem] tracking-wide text-white/45 sm:text-right">
-                    WASD walk · Space jump · E use · real doors
+                    WASD walk · E sit down at a computer · C chat
                   </p>
                 </div>
               </div>
@@ -185,32 +188,6 @@ export function WorkspaceGame() {
               <Stat icon={<ScrollText className="size-3.5" />} label="On the board" value={openBounties} />
               <Stat icon={<Trophy className="size-3.5" />} label="Open missions" value={state.data?.totalOpen ?? 0} />
               <Stat icon={<Users className="size-3.5" />} label="In the world" value={state.data?.online ?? 0} />
-            </div>
-          </Card>
-
-          {/* ---- Quick doors ---- */}
-          <Card className="gap-3">
-            <div className="flex items-center justify-between px-4">
-              <h2 className="font-heading text-sm font-semibold">Fast travel</h2>
-              <p className="text-xs text-muted-foreground">every building, without the walk</p>
-            </div>
-            <div className="grid grid-cols-2 gap-2 px-4 sm:grid-cols-3">
-              {ROOM_LAUNCHERS.filter((r) => !("adminOnly" in r && r.adminOnly) || isAdmin).map(
-                (r) => (
-                  <button
-                    key={r.key}
-                    onClick={() => setRoomOpen(r.key)}
-                    className={cn(
-                      "rounded-lg border border-border p-2.5 text-left transition-colors hover:border-foreground/30",
-                      r.key === "lair" &&
-                        "border-destructive/40 bg-destructive/5 hover:border-destructive",
-                    )}
-                  >
-                    <p className="text-xs font-semibold">{r.label}</p>
-                    <p className="text-[0.65rem] text-muted-foreground">{r.desc}</p>
-                  </button>
-                ),
-              )}
             </div>
           </Card>
 
@@ -308,7 +285,7 @@ export function WorkspaceGame() {
 
           <Card className="gap-0 py-0">
             <div className="border-b border-border px-4 py-3">
-              <h2 className="font-heading text-sm font-semibold">Districts</h2>
+              <h2 className="font-heading text-sm font-semibold">Rooms</h2>
             </div>
             <ul className="divide-y divide-border">
               {rooms.map((r) => (
@@ -328,7 +305,7 @@ export function WorkspaceGame() {
               ))}
               {rooms.length === 0 ? (
                 <li className="px-4 py-6 text-center text-sm text-muted-foreground">
-                  The world is still being terraformed.
+                  No rooms on the floor yet.
                 </li>
               ) : null}
             </ul>
@@ -357,6 +334,7 @@ export function WorkspaceGame() {
           {roomOpen === "timetable" ? <TimetablePanel /> : null}
           {roomOpen === "docs" ? <DocsPanel /> : null}
           {roomOpen === "lair" ? <LairPanel /> : null}
+          {roomOpen === "chat" ? <ChatPanel className="h-[62vh]" /> : null}
         </DialogContent>
       </Dialog>
 

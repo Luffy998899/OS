@@ -24,6 +24,7 @@ import {
   type TLEditorSnapshot,
   type TLShapePartial,
 } from "tldraw";
+import { getAssetUrlsByImport } from "@tldraw/assets/imports";
 import "tldraw/tldraw.css";
 import { toast } from "sonner";
 import { ListTodo } from "lucide-react";
@@ -31,6 +32,12 @@ import { trpc } from "@/lib/trpc/client";
 import { useCurrentUser } from "@/components/app/user-context";
 import { hasPermission, PERMISSIONS } from "@/lib/auth/permissions";
 import { getTemplate, type TemplateShape } from "@/lib/whiteboard-templates";
+
+// Ship tldraw's fonts, icons and translations from our own bundle. By default
+// it pulls them from cdn.tldraw.com — and when that is blocked or offline the
+// text font never arrives, so typing into a shape produces an invisible label:
+// the "I type and it disappears" bug. The shape was always in the store.
+const ASSET_URLS = getAssetUrlsByImport();
 
 type ParsedContent =
   | { kind: "snapshot"; snapshot: TLEditorSnapshot }
@@ -253,7 +260,7 @@ export default function WhiteboardCanvas({
 
   return (
     <div className="relative h-[74vh] min-h-[520px] w-full overflow-hidden rounded-xl border border-border">
-      <Tldraw onMount={handleMount} />
+      <Tldraw onMount={handleMount} assetUrls={ASSET_URLS} />
       {canMakeTask && hasSelection && canEdit ? (
         <button
           onClick={makeTaskFromSelection}

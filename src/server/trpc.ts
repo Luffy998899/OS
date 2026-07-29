@@ -48,3 +48,15 @@ export function permissionProcedure(key: PermissionKey) {
     return next({ ctx });
   });
 }
+
+/**
+ * Stricter than permissionProcedure: the caller must actually hold the Admin
+ * role. Managers carry workspace:admin too, so a permission check alone is not
+ * enough where "admins only" is meant literally — the Upside Down, for one.
+ */
+export const adminRoleProcedure = protectedProcedure.use(({ ctx, next }) => {
+  if (ctx.user.roleName !== "Admin") {
+    throw new TRPCError({ code: "FORBIDDEN", message: "Admins only." });
+  }
+  return next({ ctx });
+});

@@ -65,6 +65,7 @@ model User {
   managedClients Client[]           @relation("ClientManager")
   journals       DailyJournal[]
   createdInvoices Invoice[]         @relation("InvoiceCreator")
+  chatMessages   ChatMessage[]
 }
 
 // ---------------------------------------------------------------------------
@@ -676,4 +677,61 @@ model InvoiceItem {
   rate        Float   @default(0)
   amount      Float   @default(0)
   position    Int     @default(0)
+}
+
+// ---------------------------------------------------------------------------
+// Team chat — spaces, channels and messages
+// ---------------------------------------------------------------------------
+
+// A space the team talks in: the agency itself, the client-facing side, etc.
+// Channels hang off it the way Slack/Discord splits a workspace into rooms.
+model ChatServer {
+  id          String        @id @default(cuid())
+  key         String        @unique // auxa-hq | clients
+  name        String
+  description String?
+  sortOrder   Int           @default(0)
+  channels    ChatChannel[]
+  createdAt   DateTime      @default(now())
+}
+
+model ChatChannel {
+  id        String        @id @default(cuid())
+  serverId  String
+  server    ChatServer    @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  key       String // general | announcements | dev ...
+  name      String
+  topic     String?
+  kind      String        @default("text") // text | voice
+  sortOrder Int           @default(0)
+  messages  ChatMessage[]
+  reads     ChatRead[]
+  createdAt DateTime      @default(now())
+
+  @@unique([serverId, key])
+}
+
+model ChatMessage {
+  id        String      @id @default(cuid())
+  channelId String
+  channel   ChatChannel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  body      String
+  createdAt DateTime    @default(now())
+
+  @@index([channelId, createdAt])
+}
+
+// How far someone has read a channel — the difference between this and the
+// channel's newest message is the unread badge.
+model ChatRead {
+  id         String      @id @default(cuid())
+  channelId  String
+  channel    ChatChannel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  userId     String
+  lastReadAt DateTime
+
+  @@unique([channelId, userId])
+  @@index([userId])
 }

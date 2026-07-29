@@ -1,8 +1,17 @@
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
-import { router, protectedProcedure, permissionProcedure } from "../trpc";
+import { router, protectedProcedure, permissionProcedure, type Context } from "../trpc";
 import { PERMISSIONS } from "@/lib/auth/permissions";
 import { dateKey } from "@/lib/timetable";
+import {
+  assessFollowUp,
+  compareFollowUps,
+  daysSince,
+  deriveLastTouch,
+  LEAD_STATUSES,
+  type FollowUp,
+  type LastTouch,
+} from "@/lib/outreach";
 
 // The outreach room. Managers push sector lists into the pending pool; each
 // agent gets one sector a day, the day-plan orders it for efficiency, and a hot
@@ -40,6 +49,137 @@ export function planOrder<T extends { phone?: string | null; niche?: string | nu
     if (an !== bn) return an.localeCompare(bn);
     return a.name.localeCompare(b.name);
   });
+}
+
+type Db = Context["db"];
+
+export type CrmLead = {
+  id: string;
+  name: string;
+  sector: string;
+  niche: string | null;
+  phone: string | null;
+  notes: string | null;
+  status: string;
+  createdAt: Date;
+  owner: { id: string; name: string; avatarUrl: string | null } | null;
+  lastTouch: LastTouch & { days: number };
+  otp: { pending: boolean; expired: boolean; lastSentAt: Date | null };
+  client: {
+    id: string;
+    companyName: string;
+    status: string;
+    temperature: string;
+  } | null;
+};
+
+/**
+ * One pass over the pipeline: targets, who owns them, the OTP trail, and the
+ * CRM account they became. `lastTouch` is derived here (see lib/outreach) since
+ * the target row has no timestamp of its own.
+ */
+async function loadLeads(
+  db: Db,
+  where: { status?: string; sector?: string },
+): Promise<CrmLead[]> {
+  const targets = await db.outreachTarget.findMany({
+    where,
+    orderBy: [{ createdAt: "desc" }, { order: "asc" }],
+  });
+  if (targets.length === 0) return [];
+
+  const ids = targets.map((t) => t.id);
+  const ownerIds = [...new Set(targets.flatMap((t) => (t.assignedToId ? [t.assignedToId] : [])))];
+  const phones = [...new Set(targets.flatMap((t) => (t.phone ? [t.phone] : [])))];
+
+  const [owners, otps] = await Promise.all([
+    ownerIds.length
+      ? db.user.findMany({
+          where: { id: { in: ownerIds } },
+          select: { id: true, name: true, avatarUrl: true },
+        })
+      : Promise.resolve([]),
+    db.leadOtp.findMany({
+      where: { targetId: { in: ids } },
+      orderBy: { createdAt: "desc" },
+    }),
+  ]);
+
+  // A converted lead links to its client through the verified OTP; older rows
+  // that converted before the handshake existed are matched on the number.
+  const linkedClientIds = [...new Set(otps.flatMap((o) => (o.clientId ? [o.clientId] : [])))];
+  const clients = await db.client.findMany({
+    where: {
+      OR: [
+        ...(linkedClientIds.length ? [{ id: { in: linkedClientIds } }] : []),
+        ...(phones.length ? [{ phone: { in: phones } }] : []),
+      ],
+    },
+    select: { id: true, companyName: true, status: true, temperature: true, phone: true },
+  });
+
+  const ownerById = new Map(owners.map((u) => [u.id, u]));
+  const clientById = new Map(clients.map((c) => [c.id, c]));
+  const clientByPhone = new Map(
+    clients.flatMap((c) => (c.phone ? [[c.phone, c] as const] : [])),
+  );
+  const otpsByTarget = new Map<string, typeof otps>();
+  for (const o of otps) {
+    if (!o.targetId) continue;
+    const list = otpsByTarget.get(o.targetId);
+    if (list) list.push(o);
+    else otpsByTarget.set(o.targetId, [o]);
+  }
+
+  const now = new Date();
+  return targets.map((t) => {
+    const mine = otpsByTarget.get(t.id) ?? [];
+    const latest = mine[0] ?? null;
+    const unverified = mine.filter((o) => !o.verified);
+    const linked = mine.find((o) => o.clientId)?.clientId ?? null;
+    const client =
+      (linked ? clientById.get(linked) : null) ??
+      (t.phone ? (clientByPhone.get(t.phone) ?? null) : null);
+    const touch = deriveLastTouch({
+      status: t.status,
+      assignedDate: t.assignedDate,
+      createdAt: t.createdAt,
+      latestOtpAt: latest?.createdAt ?? null,
+    });
+    return {
+      id: t.id,
+      name: t.name,
+      sector: t.sector,
+      niche: t.niche,
+      phone: t.phone,
+      notes: t.notes,
+      status: t.status,
+      createdAt: t.createdAt,
+      owner: t.assignedToId ? (ownerById.get(t.assignedToId) ?? null) : null,
+      lastTouch: { ...touch, days: daysSince(touch.at, now) },
+      otp: {
+        pending: unverified.some((o) => o.expiresAt.getTime() > now.getTime()),
+        expired: unverified.some((o) => o.expiresAt.getTime() <= now.getTime()),
+        lastSentAt: latest?.createdAt ?? null,
+      },
+      client: client
+        ? {
+            id: client.id,
+            companyName: client.companyName,
+            status: client.status,
+            temperature: client.temperature,
+          }
+        : null,
+    };
+  });
+}
+
+/** Free-text match across the fields an agent would actually search by. */
+function matchesQuery(lead: CrmLead, q: string): boolean {
+  const needle = q.trim().toLowerCase();
+  if (!needle) return true;
+  return [lead.name, lead.sector, lead.niche, lead.phone, lead.notes, lead.owner?.name]
+    .some((v) => v?.toLowerCase().includes(needle));
 }
 
 export const outreachRoomRouter = router({
@@ -146,6 +286,131 @@ export const outreachRoomRouter = router({
     );
     return { ok: true, count: ordered.length };
   }),
+
+  // ---- the CRM view over the whole pipeline -----------------------------
+
+  /** Every lead with its status, sector, owner, last touch and linked account. */
+  crm: protectedProcedure
+    .input(
+      z
+        .object({
+          status: z.enum(LEAD_STATUSES).optional(),
+          sector: z.string().max(80).optional(),
+          q: z.string().max(120).optional(),
+        })
+        .optional(),
+    )
+    .query(async ({ ctx, input }) => {
+      const all = await loadLeads(ctx.db, {});
+      const scoped = all.filter(
+        (l) =>
+          (!input?.status || l.status === input.status) &&
+          (!input?.sector || l.sector === input.sector) &&
+          matchesQuery(l, input?.q ?? ""),
+      );
+      // Counts and sectors come off the unfiltered set so the chips keep their
+      // totals while a filter is on.
+      const counts: Record<string, number> = Object.fromEntries(
+        LEAD_STATUSES.map((s) => [s, 0]),
+      );
+      for (const l of all) counts[l.status] = (counts[l.status] ?? 0) + 1;
+      return {
+        leads: scoped,
+        total: all.length,
+        counts,
+        sectors: [...new Set(all.map((l) => l.sector))].sort((a, b) => a.localeCompare(b)),
+      };
+    }),
+
+  /**
+   * The follow-up queue: anything mid-OTP, marked hot, or gone quiet — each
+   * with why it surfaced and the next move, most urgent first.
+   */
+  hotLeads: protectedProcedure
+    .input(
+      z
+        .object({
+          staleAfterDays: z.number().int().min(1).max(90).optional(),
+          mineOnly: z.boolean().optional(),
+        })
+        .optional(),
+    )
+    .query(async ({ ctx, input }) => {
+      const all = await loadLeads(ctx.db, {});
+      const pool = input?.mineOnly
+        ? all.filter((l) => l.owner?.id === ctx.user.id)
+        : all;
+
+      const rows = pool
+        .flatMap((lead) => {
+          const followUp = assessFollowUp(
+            {
+              status: lead.status,
+              otpPending: lead.otp.pending,
+              otpExpired: lead.otp.expired,
+              daysSinceTouch: lead.lastTouch.days,
+              touchSource: lead.lastTouch.source,
+              hasPhone: !!lead.phone,
+              assigned: !!lead.owner,
+              ownerName: lead.owner?.name ?? null,
+            },
+            input?.staleAfterDays,
+          );
+          return followUp ? [{ ...lead, ...followUp }] : [];
+        })
+        .sort((a, b) =>
+          compareFollowUps(
+            { urgency: a.urgency, daysSinceTouch: a.lastTouch.days, name: a.name },
+            { urgency: b.urgency, daysSinceTouch: b.lastTouch.days, name: b.name },
+          ),
+        );
+
+      const byTier = (tier: FollowUp["tier"]) => rows.filter((r) => r.tier === tier).length;
+      return {
+        leads: rows,
+        now: byTier("now"),
+        today: byTier("today"),
+        soon: byTier("soon"),
+      };
+    }),
+
+  /**
+   * Record a follow-up. The target row has no touch timestamp, so the run day
+   * is stamped forward (that is what `lastTouch` derives from) and the note is
+   * appended to the lead's existing notes — no new columns.
+   */
+  touch: protectedProcedure
+    .input(
+      z.object({
+        id: z.string(),
+        note: z.string().max(300).optional(),
+        status: z.enum(LEAD_STATUSES).optional(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const target = await ctx.db.outreachTarget.findUnique({ where: { id: input.id } });
+      if (!target) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "That lead is gone." });
+      }
+      const today = dateKey();
+      const note = input.note?.trim();
+      const entry = note ? `[${today}] ${note}` : null;
+      const status =
+        input.status ?? (target.status === "pending" ? "contacted" : target.status);
+
+      const updated = await ctx.db.outreachTarget.update({
+        where: { id: target.id },
+        data: {
+          status,
+          assignedDate: today,
+          assignedToId: target.assignedToId ?? ctx.user.id,
+          ...(entry
+            ? { notes: (target.notes ? `${target.notes}\n${entry}` : entry).slice(-2000) }
+            : {}),
+        },
+      });
+      return { ok: true, id: updated.id, status: updated.status, touchedOn: today };
+    }),
 
   setStatus: protectedProcedure
     .input(

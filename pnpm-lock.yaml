@@ -20,6 +20,9 @@ importers:
       '@tanstack/react-query':
         specifier: ^5.101.4
         version: 5.101.4(react@19.2.4)
+      '@tldraw/assets':
+        specifier: 5.2.5
+        version: 5.2.5
       '@trpc/client':
         specifier: ^11.18.0
         version: 11.18.0(@trpc/server@11.18.0(typescript@5.9.3))(typescript@5.9.3)
@@ -1998,6 +2001,10 @@ packages:
 
   '@tiptap/starter-kit@3.28.0':
     resolution: {integrity: sha512-pqvFpValV+ONtlu3l4s73ROm/tEjoGMmt6uHmSJaLbqTcMHkdWuR3flJ/5brr4IDHe1foxmNicMbRxlje7yBYw==}
+
+  '@tldraw/assets@5.2.5':
+    resolution: {integrity: sha512-dnwCWb9x/ZVUqRcKGEtgyvzwuaK4ZMcHl5WUA0u99Updr7F39dUDCorqjq7Lye3NrFyj0ztxSCy289s6hUm1gg==}
+    engines: {node: '>=22.12.0'}
 
   '@tldraw/driver@5.2.5':
     resolution: {integrity: sha512-smu4NnqTdIM59/hHTvuXxqJWQ5aLpFUR59ibS//o30P9pgMAoN4v/7NhYx9g+V7RAeOzIpDqREouz3hZdoEt9Q==}
@@ -6005,6 +6012,10 @@ snapshots:
       '@tiptap/extension-underline': 3.28.0(@tiptap/core@3.28.0(@tiptap/pm@3.28.0))
       '@tiptap/extensions': 3.28.0(@tiptap/core@3.28.0(@tiptap/pm@3.28.0))(@tiptap/pm@3.28.0)
       '@tiptap/pm': 3.28.0
+
+  '@tldraw/assets@5.2.5':
+    dependencies:
+      '@tldraw/utils': 5.2.5
 
   '@tldraw/driver@5.2.5(@floating-ui/dom@1.8.0)(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)':
     dependencies:

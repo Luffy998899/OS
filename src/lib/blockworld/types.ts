@@ -20,6 +20,7 @@ export type PanelKind =
   | "bounties"
   | "skills"
   | "client"
+  | "missions"
   | "rift";
 
 /**
@@ -72,6 +73,30 @@ export type TextSign = {
   bg?: string;
 };
 
+/**
+ * A person standing or sitting in the office. Staff make the place look
+ * inhabited; `client` NPCs are the ones you can walk up to and talk to, which
+ * is how a client area becomes a route into that client's work.
+ */
+export type Npc = {
+  id: string;
+  name: string;
+  /** Shown under the name: "Video Editor", "Zen Salon — Client".  */
+  role: string;
+  kind: "staff" | "client";
+  /** Feet position, block coords (x/z are centres, y is the standing floor). */
+  x: number;
+  y: number;
+  z: number;
+  /** Heading: 0 faces -z, positive turns toward +x. */
+  yaw: number;
+  seated?: boolean;
+  /** Colour seed for the outfit, so each person looks different. */
+  hue: number;
+  /** Present on client NPCs: the POI id that opens their work. */
+  poiId?: string;
+};
+
 export type World = {
   sx: number;
   sy: number;
@@ -84,6 +109,7 @@ export type World = {
   pois: Poi[];
   regions: Region[];
   signs: TextSign[];
+  npcs: Npc[];
   /** The Upside Down volume (also flagged in regions with lair: true). */
   lair: { min: Vec3; max: Vec3 };
 };
