@@ -1,9 +1,8 @@
 "use client";
 
-// The workspace lobby — your crewmate, your craft levels, the bounty board, and
-// the door into the floor itself. The floor is a full-window first-person view
-// (see ./first-person-floor), so this page is the briefing you read before you
-// walk in, not a scaled-down copy of the game.
+// The Blockworld main menu. This page is a game menu first: your character,
+// the ENTER WORLD button, and quick doors into every building's panel for
+// when you need the tool without the walk.
 
 import { useEffect, useMemo, useState } from "react";
 import {
@@ -17,7 +16,6 @@ import {
   Users,
 } from "lucide-react";
 import { toast } from "sonner";
-import { PageHeader } from "@/components/app/page-header";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -37,10 +35,10 @@ import { levelInfo } from "@/lib/xp";
 import { hasPermission, PERMISSIONS } from "@/lib/auth/permissions";
 import { cn } from "@/lib/utils";
 import { useRouter } from "next/navigation";
-import { FirstPersonFloor } from "./first-person-floor";
+import { BlockWorld } from "./blockworld/block-world";
+import { BlockyAvatar } from "./blockworld/blocky-avatar";
 import { BountyBoardPanel } from "./bounty-board";
 import { SkillTreePanel } from "./skill-tree";
-import { CrewmateAvatar } from "./crewmate-avatar";
 import { VideoBayPanel } from "./rooms/video-bay-panel";
 import { DevCityPanel } from "./rooms/dev-city-panel";
 import { ConferencePanel } from "./rooms/conference-panel";
@@ -55,18 +53,18 @@ import { LairPanel } from "./rooms/lair-panel";
 
 const STATUSES = ["online", "busy", "away"] as const;
 
-// Every campus room, reachable from the lobby without walking the floor.
+// Every building, reachable without the walk.
 const ROOM_LAUNCHERS = [
   { key: "video", label: "Video Editing Bay", desc: "Queue, timers & scripts" },
-  { key: "city", label: "Developer City", desc: "Towers, floors & audits" },
-  { key: "conference", label: "Conference Hall", desc: "Meetings & disclosures" },
-  { key: "tasks", label: "Task Room", desc: "Your wall & squad work" },
+  { key: "city", label: "Dev City", desc: "The mall of named floors" },
+  { key: "conference", label: "Conference Hall", desc: "Meetings & announcements" },
+  { key: "tasks", label: "Task Hall", desc: "Your wall & squad work" },
   { key: "approvals", label: "Managing Heads", desc: "Leave & sign-offs" },
-  { key: "outreach", label: "Outreach Room", desc: "Sectors, day plan, OTP" },
-  { key: "creative", label: "Creative Studio", desc: "Client houses & boards" },
-  { key: "shoot", label: "Shoot Room", desc: "This week's call sheet" },
-  { key: "timetable", label: "Timetable", desc: "The bell schedule" },
-  { key: "docs", label: "Writing Desk", desc: "Scripts, notes & boards" },
+  { key: "outreach", label: "Outreach Office", desc: "Sectors, day plan, OTP" },
+  { key: "creative", label: "Creative Studio", desc: "Two doors, all boards" },
+  { key: "shoot", label: "Shoot Studio", desc: "This week's call sheet" },
+  { key: "timetable", label: "Clock Tower", desc: "The bell schedule" },
+  { key: "docs", label: "Writing Desk", desc: "Scripts that actually save" },
   { key: "lair", label: "The Upside Down", desc: "Vecna's overwatch", adminOnly: true },
 ] as const;
 type LauncherKey = (typeof ROOM_LAUNCHERS)[number]["key"];
@@ -89,7 +87,7 @@ export function WorkspaceGame() {
   const [myStatus, setMyStatus] = useState(state.data?.me?.status ?? "online");
   const [characterId, setCharacterId] = useState<string | null>(null);
 
-  // Claim a crewmate up front so the card below shows who you actually are.
+  // Claim a character up front so the menu shows who you'll be in there.
   useEffect(() => {
     enter.mutate(undefined, {
       onSuccess: (res) => setCharacterId(res.characterId ?? null),
@@ -111,7 +109,7 @@ export function WorkspaceGame() {
 
   if (playing) {
     return (
-      <FirstPersonFloor
+      <BlockWorld
         onExit={() => {
           setPlaying(false);
           utils.workspace.state.invalidate();
@@ -123,103 +121,78 @@ export function WorkspaceGame() {
 
   return (
     <>
-      <PageHeader
-        eyebrow="Virtual office"
-        title="Gamified Workspace"
-        description="Walk the floor in first person, claim missions off the bounty board, and level the craft you want to be known for."
-      >
-        {canManage ? (
-          <Button variant="outline" onClick={() => setAddOpen(true)}>
-            <Plus className="size-4" />
-            Add client area
-          </Button>
-        ) : null}
-        <div className="flex items-center gap-1 rounded-md border border-border p-0.5">
-          {STATUSES.map((s) => (
-            <button
-              key={s}
-              onClick={() => {
-                setMyStatus(s);
-                setStatus.mutate({ status: s });
-              }}
-              className={cn(
-                "flex items-center gap-1.5 rounded px-2.5 py-1 text-xs font-medium capitalize transition-colors",
-                myStatus === s
-                  ? "bg-foreground text-background"
-                  : "text-muted-foreground hover:text-foreground",
-              )}
-            >
-              {s}
-            </button>
-          ))}
-        </div>
-      </PageHeader>
-
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
         <div className="space-y-6 lg:col-span-2">
-          {/* ---- Enter the floor ---- */}
-          <Card className="gap-0 overflow-hidden p-0">
-            <div className="relative flex flex-col gap-5 bg-gradient-to-br from-foreground/[0.06] to-transparent p-6 sm:flex-row sm:items-center sm:justify-between">
-              <div className="flex items-center gap-4">
-                <CrewmateAvatar character={character} size={84} status={myStatus} />
-                <div className="min-w-0">
-                  <p className="font-mono text-[0.65rem] tracking-widest text-muted-foreground uppercase">
-                    Your crewmate
-                  </p>
-                  <h2 className="font-display text-xl font-semibold">{character.name}</h2>
-                  <p className="mt-0.5 text-sm text-muted-foreground">{character.trait}</p>
-                  <div className="mt-2 flex items-center gap-2">
-                    <span className="flex size-6 items-center justify-center rounded bg-foreground text-[0.65rem] font-bold text-background">
-                      {lvl.level}
-                    </span>
-                    <div className="h-1.5 w-28 overflow-hidden rounded-full bg-muted">
-                      <div
-                        className="h-full rounded-full bg-foreground transition-all"
-                        style={{ width: `${lvl.progress * 100}%` }}
-                      />
+          {/* ---- Main menu hero ---- */}
+          <Card className="gap-0 overflow-hidden border-0 p-0">
+            <div className="relative bg-[#10141c] px-6 pt-8 pb-7 text-[#eef2f8] sm:px-8">
+              {/* faint block grid backdrop */}
+              <div
+                className="pointer-events-none absolute inset-0 opacity-[0.07]"
+                style={{
+                  backgroundImage:
+                    "linear-gradient(#fff 1px, transparent 1px), linear-gradient(90deg, #fff 1px, transparent 1px)",
+                  backgroundSize: "28px 28px",
+                }}
+              />
+              <div className="relative flex flex-col gap-6 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex items-center gap-5">
+                  <BlockyAvatar character={character} size={92} status={myStatus} />
+                  <div>
+                    <p className="font-mono text-[0.62rem] tracking-[0.35em] text-[#ffd166] uppercase">
+                      Auxa presents
+                    </p>
+                    <h1 className="font-display mt-1 text-3xl font-bold tracking-tight">
+                      BLOCKWORLD
+                    </h1>
+                    <p className="mt-1 text-sm text-white/60">
+                      The whole company, rebuilt block by block. You are{" "}
+                      <span className="font-semibold text-white/90">{character.name}</span> — lvl{" "}
+                      {lvl.level}.
+                    </p>
+                    <div className="mt-2 flex items-center gap-2">
+                      <div className="h-1.5 w-32 overflow-hidden rounded-full bg-white/15">
+                        <div
+                          className="h-full rounded-full bg-[#ffd166] transition-all"
+                          style={{ width: `${lvl.progress * 100}%` }}
+                        />
+                      </div>
+                      <span className="font-mono text-[0.62rem] text-white/50">
+                        {lvl.into}/{lvl.span} XP
+                      </span>
                     </div>
-                    <span className="font-mono text-[0.65rem] text-muted-foreground">
-                      {lvl.into}/{lvl.span} XP
-                    </span>
                   </div>
                 </div>
-              </div>
 
-              <div className="flex flex-col items-stretch gap-2 sm:items-end">
-                <Button size="lg" onClick={() => setPlaying(true)} disabled={rooms.length === 0}>
-                  <Play className="size-4" />
-                  Enter the floor
-                </Button>
-                <p className="text-center font-mono text-[0.65rem] tracking-wide text-muted-foreground sm:text-right">
-                  first person · full screen · WASD + mouse
-                </p>
+                <div className="flex flex-col items-stretch gap-2 sm:items-end">
+                  <Button
+                    size="lg"
+                    onClick={() => setPlaying(true)}
+                    disabled={rooms.length === 0}
+                    className="h-12 bg-[#ffd166] px-7 text-base font-bold text-[#10141c] hover:bg-[#ffdd8f]"
+                  >
+                    <Play className="size-5" />
+                    ENTER WORLD
+                  </Button>
+                  <p className="text-center font-mono text-[0.62rem] tracking-wide text-white/45 sm:text-right">
+                    WASD walk · Space jump · E use · real doors
+                  </p>
+                </div>
               </div>
             </div>
 
             <div className="grid grid-cols-3 divide-x divide-border border-t border-border">
-              <Stat
-                icon={<ScrollText className="size-3.5" />}
-                label="On the board"
-                value={openBounties}
-              />
-              <Stat
-                icon={<Trophy className="size-3.5" />}
-                label="Open missions"
-                value={state.data?.totalOpen ?? 0}
-              />
-              <Stat
-                icon={<Users className="size-3.5" />}
-                label="On the floor"
-                value={state.data?.online ?? 0}
-              />
+              <Stat icon={<ScrollText className="size-3.5" />} label="On the board" value={openBounties} />
+              <Stat icon={<Trophy className="size-3.5" />} label="Open missions" value={state.data?.totalOpen ?? 0} />
+              <Stat icon={<Users className="size-3.5" />} label="In the world" value={state.data?.online ?? 0} />
             </div>
           </Card>
 
-          {/* ---- Room launcher ---- */}
+          {/* ---- Quick doors ---- */}
           <Card className="gap-3">
             <div className="flex items-center justify-between px-4">
-              <h2 className="font-heading text-sm font-semibold">Rooms — straight in</h2>
-              <p className="text-xs text-muted-foreground">or walk there on the floor</p>
+              <h2 className="font-heading text-sm font-semibold">Fast travel</h2>
+              <p className="text-xs text-muted-foreground">every building, without the walk</p>
             </div>
             <div className="grid grid-cols-2 gap-2 px-4 sm:grid-cols-3">
               {ROOM_LAUNCHERS.filter((r) => !("adminOnly" in r && r.adminOnly) || isAdmin).map(
@@ -264,6 +237,40 @@ export function WorkspaceGame() {
         </div>
 
         <div className="space-y-6">
+          {/* ---- Status + admin ---- */}
+          <Card className="gap-3">
+            <div className="flex items-center justify-between px-4">
+              <h2 className="font-heading text-sm font-semibold">Presence</h2>
+              <div className="flex items-center gap-1 rounded-md border border-border p-0.5">
+                {STATUSES.map((s) => (
+                  <button
+                    key={s}
+                    onClick={() => {
+                      setMyStatus(s);
+                      setStatus.mutate({ status: s });
+                    }}
+                    className={cn(
+                      "rounded px-2 py-0.5 text-xs font-medium capitalize transition-colors",
+                      myStatus === s
+                        ? "bg-foreground text-background"
+                        : "text-muted-foreground hover:text-foreground",
+                    )}
+                  >
+                    {s}
+                  </button>
+                ))}
+              </div>
+            </div>
+            {canManage ? (
+              <div className="px-4">
+                <Button variant="outline" size="sm" onClick={() => setAddOpen(true)}>
+                  <Plus className="size-4" />
+                  Add client shop to the street
+                </Button>
+              </div>
+            ) : null}
+          </Card>
+
           {/* ---- Skill tree ---- */}
           <Card className="gap-3">
             <div className="flex items-center gap-2 px-4">
@@ -301,7 +308,7 @@ export function WorkspaceGame() {
 
           <Card className="gap-0 py-0">
             <div className="border-b border-border px-4 py-3">
-              <h2 className="font-heading text-sm font-semibold">Rooms</h2>
+              <h2 className="font-heading text-sm font-semibold">Districts</h2>
             </div>
             <ul className="divide-y divide-border">
               {rooms.map((r) => (
@@ -315,15 +322,13 @@ export function WorkspaceGame() {
                     {r.bountyCount > 0 ? (
                       <Badge variant="destructive">{r.bountyCount} open</Badge>
                     ) : null}
-                    {r.missionCount > 0 ? (
-                      <Badge variant="secondary">{r.missionCount}</Badge>
-                    ) : null}
+                    {r.missionCount > 0 ? <Badge variant="secondary">{r.missionCount}</Badge> : null}
                   </span>
                 </li>
               ))}
               {rooms.length === 0 ? (
                 <li className="px-4 py-6 text-center text-sm text-muted-foreground">
-                  No rooms on the floor yet.
+                  The world is still being terraformed.
                 </li>
               ) : null}
             </ul>
@@ -343,7 +348,10 @@ export function WorkspaceGame() {
           {roomOpen === "approvals" ? <ApprovalsPanel /> : null}
           {roomOpen === "outreach" ? <OutreachPanel /> : null}
           {roomOpen === "creative" ? (
-            <CreativePanel initialDoor="clients" onOpenBoard={(docId) => router.push(`/documents/${docId}`)} />
+            <CreativePanel
+              initialDoor="clients"
+              onOpenBoard={(docId) => router.push(`/documents/${docId}`)}
+            />
           ) : null}
           {roomOpen === "shoot" ? <ShootPanel /> : null}
           {roomOpen === "timetable" ? <TimetablePanel /> : null}
@@ -357,15 +365,7 @@ export function WorkspaceGame() {
   );
 }
 
-function Stat({
-  icon,
-  label,
-  value,
-}: {
-  icon: React.ReactNode;
-  label: string;
-  value: number;
-}) {
+function Stat({ icon, label, value }: { icon: React.ReactNode; label: string; value: number }) {
   return (
     <div className="flex flex-col gap-0.5 px-4 py-3">
       <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
@@ -393,7 +393,7 @@ function AddAreaDialog({
       utils.workspace.unassignedClients.invalidate();
       onOpenChange(false);
       setClientId("");
-      toast.success("Client area added to the floor.");
+      toast.success("Client shop added to the street.");
     },
     onError: (e) => toast.error(e.message),
   });
@@ -402,15 +402,15 @@ function AddAreaDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Add a client area</DialogTitle>
+          <DialogTitle>Add a client shop</DialogTitle>
           <DialogDescription>
-            Give a client their own room on the floor. Their missions land there and the
-            team can walk over to work on them.
+            Give a client their own shop on the street. Their missions land there and the team can
+            walk over to work on them.
           </DialogDescription>
         </DialogHeader>
         {(clients.data?.length ?? 0) === 0 ? (
           <p className="py-6 text-center text-sm text-muted-foreground">
-            Every client already has an area — add a client first.
+            Every client already has a shop — add a client first.
           </p>
         ) : (
           <div className="space-y-2">
@@ -418,10 +418,7 @@ function AddAreaDialog({
               value={clientId}
               onValueChange={setClientId}
               placeholder="Select a client"
-              options={(clients.data ?? []).map((c) => ({
-                value: c.id,
-                label: c.companyName,
-              }))}
+              options={(clients.data ?? []).map((c) => ({ value: c.id, label: c.companyName }))}
             />
           </div>
         )}
@@ -430,12 +427,8 @@ function AddAreaDialog({
             Cancel
           </Button>
           <Button disabled={!clientId || add.isPending} onClick={() => add.mutate({ clientId })}>
-            {add.isPending ? (
-              <Loader2 className="size-4 animate-spin" />
-            ) : (
-              <Plus className="size-4" />
-            )}
-            Add area
+            {add.isPending ? <Loader2 className="size-4 animate-spin" /> : <Plus className="size-4" />}
+            Add shop
           </Button>
         </DialogFooter>
       </DialogContent>
