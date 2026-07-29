@@ -23,6 +23,7 @@ function makeWorld(sx = 16, sy = 8, sz = 16): World {
     pois: [],
     regions: [],
     signs: [],
+  npcs: [],
     lair: { min: { x: 0, y: 0, z: 0 }, max: { x: 0, y: 0, z: 0 } },
   };
 }

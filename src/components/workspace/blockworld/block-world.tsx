@@ -219,6 +219,28 @@ const MAP_FALLBACK: Record<string, string> = {
   vecna_flesh: "#5a1f26",
   obsidian: "#2a2036",
   lair_glow: "#e05a3a",
+  cpu: "#2f333a",
+  coffee: "#5c3a24",
+  papers: "#eceae4",
+  phone: "#22262b",
+  book_stack: "#6b4a7a",
+  printer: "#3a3f46",
+  cooler: "#cfd3d7",
+  art: "#8a6a45",
+  vent: "#c9ccd0",
+  exit_sign: "#12331f",
+  lamp: "#ffd98f",
+  sofa: "#4a5560",
+  rug_pattern: "#7d5a63",
+  plant_fern: "#4f9b46",
+  plant_tall: "#57a84d",
+  pot: "#b1653f",
+  pot_white: "#d9d5cd",
+  camera: "#26292e",
+  tripod: "#3c4148",
+  softbox: "#fff6e0",
+  clapboard: "#1c1f24",
+  mic: "#43484f",
 };
 
 function hexToRgb(hex: string): [number, number, number] {
@@ -632,6 +654,24 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
     spores.visible = false;
     scene.add(spores);
 
+    // The people. Staff are scenery that makes the floor feel worked-in;
+    // client NPCs stand at their booth so the interaction has a face.
+    const npcRigs: PlayerRig[] = [];
+    for (const person of world.npcs) {
+      const rig = createPlayerRig({
+        name: person.kind === "client" ? `${person.name} · client` : person.name,
+        hue: person.hue,
+        showName: true,
+      });
+      // Seated figures drop onto the chair; standing ones sit on the floor.
+      rig.group.position.set(person.x, person.y + (person.seated ? 0.42 : 0), person.z);
+      rig.setHeading(person.yaw);
+      rig.setSeated(!!person.seated);
+      rig.setStatus(person.kind === "client" ? "busy" : "online");
+      scene.add(rig.group);
+      npcRigs.push(rig);
+    }
+
     // POI highlight box.
     const hlGeo = new THREE.BoxGeometry(1, 1, 1);
     const hlEdges = new THREE.EdgesGeometry(hlGeo);
@@ -928,6 +968,10 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
         entry.rig.dispose();
       }
       E.rigs.clear();
+      for (const rig of npcRigs) {
+        scene.remove(rig.group);
+        rig.dispose();
+      }
       for (const m of meshes) {
         m.geometry.dispose();
       }

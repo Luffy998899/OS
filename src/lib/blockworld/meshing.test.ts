@@ -14,6 +14,7 @@ function makeWorld(sx = 5, sy = 5, sz = 5): World {
     pois: [],
     regions: [],
     signs: [],
+  npcs: [],
     lair: { min: { x: 0, y: 0, z: 0 }, max: { x: 0, y: 0, z: 0 } },
   };
 }

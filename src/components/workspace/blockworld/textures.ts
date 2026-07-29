@@ -687,6 +687,321 @@ const PAINTERS: Record<keyof typeof TILE, Painter> = {
     }
     fadeAlpha(c, 0.72);
   },
+
+  // ---- props & decoration -------------------------------------------------
+
+  /** Desktop tower: vented front, power LED, optical slot. */
+  CPU_TOWER: (c, r) => {
+    fill(c, "#2f333a");
+    speckle(c, r, ["#343941", "#292d33"], 0.22);
+    border(c, "#23262b", 1);
+    // vent grille
+    for (let y = 3; y < 8; y++) for (let x = 3; x < 8; x++) if ((x + y) % 2 === 0) px(c, x, y, "#1b1e22");
+    // optical drive slot
+    c.fillStyle = "#1b1e22";
+    c.fillRect(3, 10, 10, 1);
+    // power button + LED
+    px(c, 11, 4, "#7b828c");
+    px(c, 11, 6, "#4fd0ff");
+    px(c, 11, 12, "#3ad07a");
+  },
+
+  /** Bushy fern — leafy cutout with a transparent surround. */
+  PLANT_FERN: (c, r) => {
+    for (let i = 0; i < 46; i++) {
+      const x = 2 + Math.floor(r() * 12);
+      const y = 3 + Math.floor(r() * 12);
+      px(c, x, y, pick(r, ["#4f9b46", "#5eb054", "#3f8038", "#68c05c"]));
+      if (r() < 0.5) px(c, x, y - 1, pick(r, ["#5eb054", "#427f3a"]));
+    }
+    // a few fronds reaching up
+    for (const sx of [5, 8, 11]) for (let y = 1; y < 5; y++) px(c, sx, y, "#4f9b46");
+  },
+
+  /** Tall leafy stem plant. */
+  PLANT_TALL: (c, r) => {
+    for (let y = 1; y < TILE_PX; y++) {
+      px(c, 7, y, "#5a7a3e");
+      px(c, 8, y, "#4a6a34");
+    }
+    for (let i = 0; i < 34; i++) {
+      const y = 1 + Math.floor(r() * 13);
+      const spread = 1 + Math.floor(r() * 4);
+      const dir = r() < 0.5 ? -1 : 1;
+      for (let k = 1; k <= spread; k++) {
+        px(c, 7 + dir * k, y, pick(r, ["#57a84d", "#469a3e", "#63bb59"]));
+      }
+    }
+  },
+
+  POT_TERRACOTTA: (c, r) => {
+    fill(c, "#b1653f");
+    speckle(c, r, ["#bb6f47", "#a35b38", "#9a5433"], 0.28);
+    // rim
+    c.fillStyle = "#c47a52";
+    c.fillRect(0, 0, TILE_PX, 3);
+    c.fillStyle = "#8f4f31";
+    c.fillRect(0, 3, TILE_PX, 1);
+    // taper shading down the sides
+    for (let y = 4; y < TILE_PX; y++) { px(c, 0, y, "#8f4f31"); px(c, 15, y, "#8f4f31"); }
+  },
+
+  POT_WHITE: (c, r) => {
+    fill(c, "#d9d5cd");
+    speckle(c, r, ["#e2ded6", "#cec9c1"], 0.22);
+    c.fillStyle = "#eae7e1";
+    c.fillRect(0, 0, TILE_PX, 3);
+    c.fillStyle = "#bdb8b0";
+    c.fillRect(0, 3, TILE_PX, 1);
+    for (let y = 4; y < TILE_PX; y++) { px(c, 0, y, "#bdb8b0"); px(c, 15, y, "#bdb8b0"); }
+  },
+
+  /** Video camera body: lens barrel, hood, record tally. */
+  CAMERA: (c, r) => {
+    fill(c, "#26292e");
+    speckle(c, r, ["#2c3036", "#212429"], 0.2);
+    // lens
+    for (let y = 0; y < TILE_PX; y++) {
+      for (let x = 0; x < TILE_PX; x++) {
+        const d = Math.hypot(x - 6, y - 8);
+        if (d < 4.6) px(c, x, y, "#15181c");
+        if (d < 3.2) px(c, x, y, "#1d2733");
+        if (d < 1.8) px(c, x, y, "#2f4a63");
+        if (d < 0.9) px(c, x, y, "#6fa8d8");
+      }
+    }
+    // grip / body detail
+    c.fillStyle = "#3a3f46";
+    c.fillRect(11, 4, 4, 8);
+    px(c, 13, 2, "#e0483c"); // tally light
+    px(c, 12, 2, "#3b3f45");
+  },
+
+  /** Tripod legs on transparent background. */
+  TRIPOD: (c) => {
+    for (let y = 0; y < TILE_PX; y++) {
+      const spread = Math.floor(y * 0.42);
+      px(c, 7 - spread, y, "#3c4148");
+      px(c, 8 + spread, y, "#3c4148");
+      if (y < 6) { px(c, 7, y, "#4a5058"); px(c, 8, y, "#4a5058"); }
+    }
+    c.fillStyle = "#5a616a";
+    c.fillRect(5, 4, 6, 2);
+  },
+
+  /** Softbox / studio light — bright diffuser in a dark frame. */
+  SOFTBOX: (c, r) => {
+    fill(c, "#2a2d32");
+    c.fillStyle = "#fff6e0";
+    c.fillRect(2, 2, 12, 12);
+    for (let y = 3; y < 13; y++) {
+      for (let x = 3; x < 13; x++) {
+        if (r() < 0.25) px(c, x, y, "#fffdf6");
+      }
+    }
+    border(c, "#1e2126", 1);
+    // diffuser cross-bars
+    c.fillStyle = "#f0e4cc";
+    c.fillRect(7, 2, 1, 12);
+    c.fillRect(2, 7, 12, 1);
+  },
+
+  /** Clapperboard, seen from above. */
+  CLAPBOARD: (c) => {
+    fill(c, "#1c1f24");
+    // the striped clapper
+    for (let x = 0; x < TILE_PX; x++) {
+      const on = Math.floor(x / 2) % 2 === 0;
+      c.fillStyle = on ? "#eceae4" : "#22262b";
+      c.fillRect(x, 0, 1, 4);
+    }
+    // slate rows
+    c.fillStyle = "#3a3f46";
+    c.fillRect(2, 7, 12, 1);
+    c.fillRect(2, 10, 12, 1);
+    c.fillRect(2, 13, 8, 1);
+  },
+
+  /** Microphone on a slim stand. */
+  MIC: (c) => {
+    for (let y = 6; y < TILE_PX; y++) px(c, 7, y, "#43484f");
+    for (let y = 6; y < TILE_PX; y++) px(c, 8, y, "#33383e");
+    // head
+    for (let y = 1; y < 7; y++) {
+      for (let x = 5; x < 11; x++) {
+        const d = Math.hypot(x - 7.5, y - 3.6);
+        if (d < 3.1) px(c, x, y, d < 2.1 ? "#4d545c" : "#3a3f46");
+      }
+    }
+    px(c, 6, 3, "#6d757e");
+    px(c, 9, 4, "#292d32");
+  },
+
+  /** A mug of coffee seen from above. */
+  COFFEE: (c) => {
+    for (let y = 0; y < TILE_PX; y++) {
+      for (let x = 0; x < TILE_PX; x++) {
+        const d = dist(x, y);
+        if (d < 5.4) px(c, x, y, "#f2efe9");
+        if (d < 4.2) px(c, x, y, "#4a2c1c");
+        if (d < 3.0) px(c, x, y, "#5c3a24");
+      }
+    }
+    // handle
+    c.fillStyle = "#f2efe9";
+    c.fillRect(12, 7, 3, 2);
+  },
+
+  /** Loose paperwork on a desk. */
+  PAPERS: (c, r) => {
+    for (const [ox, oy, tone] of [
+      [1, 2, "#d9d6ce"],
+      [3, 4, "#eceae4"],
+      [2, 6, "#f6f4ef"],
+    ] as const) {
+      c.fillStyle = tone;
+      c.fillRect(ox, oy, 11, 8);
+    }
+    c.fillStyle = "#a9adb4";
+    for (let i = 0; i < 5; i++) {
+      c.fillRect(4, 8 + i, 6 + Math.floor(r() * 3), 1);
+    }
+  },
+
+  DESK_PHONE: (c) => {
+    fill(c, "#22262b");
+    c.fillStyle = "#2c3138";
+    c.fillRect(1, 4, 14, 10);
+    // handset
+    c.fillStyle = "#171a1e";
+    c.fillRect(2, 1, 12, 4);
+    // keypad
+    for (let ky = 0; ky < 3; ky++) {
+      for (let kx = 0; kx < 3; kx++) px(c, 5 + kx * 2, 7 + ky * 2, "#5a616a");
+    }
+    px(c, 12, 7, "#3ad07a");
+  },
+
+  PRINTER: (c, r) => {
+    fill(c, "#3a3f46");
+    speckle(c, r, ["#41464e", "#33383f"], 0.18);
+    // paper tray
+    c.fillStyle = "#eceae4";
+    c.fillRect(2, 3, 12, 3);
+    // output slot
+    c.fillStyle = "#1c1f24";
+    c.fillRect(2, 8, 12, 2);
+    // status lights
+    px(c, 3, 12, "#3ad07a");
+    px(c, 5, 12, "#e0a13a");
+  },
+
+  WATER_COOLER: (c, r) => {
+    fill(c, "#e8eaec");
+    speckle(c, r, ["#eff1f3", "#dfe2e5"], 0.18);
+    // bottle
+    c.fillStyle = "#8fc8e0";
+    c.fillRect(3, 0, 10, 7);
+    for (let i = 0; i < 8; i++) px(c, 3 + Math.floor(r() * 10), Math.floor(r() * 7), "#b5dced");
+    // body + taps
+    c.fillStyle = "#cfd3d7";
+    c.fillRect(2, 7, 12, 9);
+    px(c, 6, 10, "#3f7fa8");
+    px(c, 9, 10, "#b04a4a");
+    c.fillStyle = "#9aa0a6";
+    c.fillRect(4, 13, 8, 1);
+  },
+
+  /** Framed artwork for blank walls. */
+  ART_FRAME: (c, r) => {
+    fill(c, "#8a6a45");
+    border(c, "#6d5335", 1);
+    c.fillStyle = "#f2efe8";
+    c.fillRect(2, 2, 12, 12);
+    // abstract blocks of colour
+    const tones = ["#6f9ff0", "#e0a862", "#63c98a", "#d98a8a", "#a48fd8"];
+    for (let i = 0; i < 7; i++) {
+      c.fillStyle = pick(r, tones);
+      c.fillRect(3 + Math.floor(r() * 8), 3 + Math.floor(r() * 8), 2 + Math.floor(r() * 3), 2 + Math.floor(r() * 3));
+    }
+  },
+
+  BOOK_STACK: (c, r) => {
+    const tones = ["#8a4a3c", "#3f6b8a", "#5c7a45", "#8a7a3c", "#6b4a7a"];
+    let y = 15;
+    while (y > 2) {
+      const h = 2 + Math.floor(r() * 2);
+      const inset = Math.floor(r() * 2);
+      c.fillStyle = pick(r, tones);
+      c.fillRect(1 + inset, y - h, 14 - inset * 2, h);
+      c.fillStyle = "#efeadd";
+      c.fillRect(1 + inset, y - h, 14 - inset * 2, 1);
+      y -= h + 1;
+    }
+  },
+
+  SOFA: (c, r) => {
+    fill(c, "#4a5560");
+    speckle(c, r, ["#515d69", "#434e58"], 0.22);
+    // seat cushions
+    c.fillStyle = "#56626e";
+    c.fillRect(1, 6, 6, 9);
+    c.fillRect(9, 6, 6, 9);
+    // backrest
+    c.fillStyle = "#3e4852";
+    c.fillRect(0, 0, TILE_PX, 5);
+    px(c, 8, 9, "#3a444d");
+  },
+
+  /** Floor lamp — warm shade over a slim stand. */
+  LAMP: (c) => {
+    for (let y = 8; y < TILE_PX; y++) px(c, 7, y, "#4a5058");
+    for (let y = 8; y < TILE_PX; y++) px(c, 8, y, "#3c4148");
+    c.fillStyle = "#5a616a";
+    c.fillRect(5, 15, 6, 1);
+    // shade
+    for (let y = 1; y < 8; y++) {
+      const w = 3 + y;
+      c.fillStyle = y < 3 ? "#f7e6bd" : "#ffd98f";
+      c.fillRect(8 - Math.floor(w / 2), y, w, 1);
+    }
+  },
+
+  RUG_PATTERN: (c, r) => {
+    fill(c, "#7d5a63");
+    speckle(c, r, ["#87626c", "#73525b"], 0.2);
+    border(c, "#5f434b", 2);
+    // simple woven diamond
+    for (let i = 0; i < 6; i++) {
+      px(c, 7 + i, 7 + i, "#d8c3a8");
+      px(c, 8 - i, 7 + i, "#d8c3a8");
+      px(c, 7 + i, 8 - i, "#d8c3a8");
+      px(c, 8 - i, 8 - i, "#d8c3a8");
+    }
+  },
+
+  VENT: (c) => {
+    fill(c, "#c9ccd0");
+    border(c, "#a8acb1", 1);
+    c.fillStyle = "#8f9499";
+    for (let y = 3; y < 14; y += 2) c.fillRect(2, y, 12, 1);
+    px(c, 2, 2, "#7d8287");
+    px(c, 13, 2, "#7d8287");
+    px(c, 2, 13, "#7d8287");
+    px(c, 13, 13, "#7d8287");
+  },
+
+  EXIT_SIGN: (c) => {
+    fill(c, "#12331f");
+    border(c, "#0d2417", 1);
+    // "EXIT" block letters in a lit green
+    const on = "#5df08a";
+    const cols = [2, 5, 8, 11];
+    for (const x of cols) for (let y = 5; y < 11; y++) px(c, x, y, on);
+    for (const y of [5, 7, 10]) { px(c, 3, y, on); }
+    px(c, 6, 7, on); px(c, 7, 8, on); px(c, 6, 9, on);
+    px(c, 12, 5, on); px(c, 13, 5, on); px(c, 10, 5, on);
+  },
 };
 
 /** Paint the full 128x128 atlas: one 16px tile per TILE index. */

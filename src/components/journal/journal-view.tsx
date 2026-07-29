@@ -9,6 +9,7 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { trpc } from "@/lib/trpc/client";
+import { CheckinConversation } from "./checkin-conversation";
 
 const PROMPTS = [
   "What did you get done today?",
@@ -35,7 +36,7 @@ export function JournalView() {
       <PageHeader
         eyebrow="Reflect"
         title="Daily check-in"
-        description="Tell the AI manager about your day — completions, pending work, and blockers."
+        description="Talk it through with your AI manager — it asks about your day, then files the report for the admins."
       />
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
@@ -46,30 +47,7 @@ export function JournalView() {
               <h2 className="font-heading text-sm font-semibold">Today&rsquo;s check-in</h2>
             </div>
             <div className="px-5">
-              <Textarea
-                value={content}
-                onChange={(e) => setContent(e.target.value)}
-                rows={6}
-                placeholder={PROMPTS.join("\n")}
-              />
-              <div className="mt-2 flex items-center justify-between">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  disabled
-                  title="Voice check-in (Deepgram) — coming soon"
-                >
-                  <Mic className="size-4" />
-                  Voice (soon)
-                </Button>
-                <Button
-                  disabled={content.trim().length < 1 || create.isPending}
-                  onClick={() => create.mutate({ content })}
-                >
-                  {create.isPending ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
-                  Log check-in
-                </Button>
-              </div>
+              <CheckinConversation />
             </div>
           </Card>
         </div>

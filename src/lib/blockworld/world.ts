@@ -9,7 +9,7 @@
 // reached by the lifts in the Dev Wing lobby.
 
 import { B } from "./blocks";
-import type { PanelKind, Poi, Region, TextSign, Vec3, World } from "./types";
+import type { Npc, PanelKind, Poi, Region, TextSign, Vec3, World } from "./types";
 
 export type WorldInput = {
   rooms: { id: string; key: string; name: string; kind: string }[];
@@ -156,6 +156,42 @@ export function buildWorld(input: WorldInput): World {
   const pois: Poi[] = [];
   const regions: Region[] = [];
   const signs: TextSign[] = [];
+  const npcs: Npc[] = [];
+
+  /** Deterministic hue per person so nobody is dressed the same. */
+  const hueFor = (seed: string): number => {
+    let h = 0;
+    for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) % 360;
+    return h;
+  };
+
+  const npc = (
+    id: string,
+    name: string,
+    role: string,
+    kind: "staff" | "client",
+    x: number,
+    z: number,
+    yaw: number,
+    opts?: { seated?: boolean; y?: number; poiId?: string },
+  ): void => {
+    npcs.push({
+      id,
+      name,
+      role,
+      kind,
+      x: x + 0.5,
+      y: opts?.y ?? FLOOR,
+      z: z + 0.5,
+      yaw,
+      seated: opts?.seated,
+      hue: hueFor(id + name),
+      poiId: opts?.poiId,
+    });
+  };
+
+  // Compass yaws: the contract is yaw 0 = -z (north), positive toward +x.
+  const YAW = { n: 0, e: Math.PI / 2, s: Math.PI, w: -Math.PI / 2 };
 
   const roomId = (...keys: string[]): string | null =>
     input.rooms.find((r) => keys.includes(r.key))?.id ?? null;
@@ -915,6 +951,67 @@ export function buildWorld(input: WorldInput): World {
     fill(64, FLOOR + 1, BAND4_Z0 - 1, 67, FLOOR + 3, BAND4_Z0 - 1, B.whiteboard);
     plantPair(SHOOT_X1 - 1, BAND4_Z1 - 1);
     plantPair(SHOOT_X1 - 1, BAND4_Z0 + 1);
+
+    // The studio was one 59-block hall with a single rig in it. Split the east
+    // third into a glazed control room and a kit store so the space has rooms
+    // with jobs, and so the studio floor itself reads as a set rather than a
+    // warehouse.
+    const CTRL_X = 54; // partition between studio floor and control room
+    fill(CTRL_X, FLOOR, BAND4_Z0, CTRL_X, CEIL - 1, BAND4_Z1, B.drywall);
+    // Glazed observation strip looking onto the set, with a doorway.
+    fill(CTRL_X, FLOOR + 1, BAND4_Z0 + 2, CTRL_X, FLOOR + 3, BAND4_Z0 + 6, B.glass);
+    carve(CTRL_X, FLOOR, BAND4_Z0 + 9, CTRL_X, FLOOR + 2, BAND4_Z0 + 11);
+    sign("CONTROL ROOM", CTRL_X + 1.05, FLOOR + 3.4, BAND4_Z0 + 10, "e", 0.7);
+
+    // Control room: a desk wall of monitors that opens the call sheet.
+    space(CTRL_X + 1, BAND4_Z0, 62, BAND4_Z1, B.carpet_gray);
+    fill(CTRL_X + 2, FLOOR, BAND4_Z0 + 3, CTRL_X + 6, FLOOR, BAND4_Z0 + 3, B.desk_dark);
+    for (let x = CTRL_X + 2; x <= CTRL_X + 6; x++) set(x, FLOOR + 1, BAND4_Z0 + 3, B.monitor);
+    chair(CTRL_X + 3, BAND4_Z0 + 4);
+    chair(CTRL_X + 5, BAND4_Z0 + 4);
+    set(CTRL_X + 2, FLOOR, BAND4_Z0 + 5, B.cpu);
+    set(CTRL_X + 6, FLOOR, BAND4_Z0 + 5, B.cpu);
+    poi({
+      id: "shoot-control",
+      label: "Control desk",
+      sublabel: "monitor the shoot · indoor/outdoor filters",
+      panel: "shoot",
+      min: { x: CTRL_X + 2, y: FLOOR + 1, z: BAND4_Z0 + 3 },
+      max: { x: CTRL_X + 7, y: FLOOR + 2, z: BAND4_Z0 + 4 },
+    });
+
+    // Kit store: shelves of gear behind the control room.
+    fill(63, FLOOR, BAND4_Z0, 63, CEIL - 1, BAND4_Z1, B.drywall);
+    carve(63, FLOOR, BAND4_Z0 + 4, 63, FLOOR + 2, BAND4_Z0 + 6);
+    sign("KIT STORE", 63 + 1.05, FLOOR + 3.4, BAND4_Z0 + 5, "e", 0.65);
+    space(64, BAND4_Z0, SHOOT_X1, BAND4_Z1, B.concrete);
+    for (let z = BAND4_Z0 + 1; z <= BAND4_Z1 - 1; z += 2) {
+      fill(64, FLOOR, z, 64, FLOOR + 2, z, B.books);
+      set(SHOOT_X1 - 1, FLOOR, z, B.book_stack);
+    }
+    set(66, FLOOR, BAND4_Z0 + 3, B.tripod);
+    set(66, FLOOR + 1, BAND4_Z0 + 3, B.camera);
+    set(68, FLOOR, BAND4_Z0 + 7, B.tripod);
+    set(68, FLOOR + 1, BAND4_Z0 + 7, B.softbox);
+    set(66, FLOOR, BAND4_Z0 + 10, B.mic);
+    poi({
+      id: "shoot-kit",
+      label: "Kit shelf",
+      sublabel: "cameras, lights and what's booked out",
+      panel: "shoot",
+      min: { x: 64, y: FLOOR, z: BAND4_Z0 + 1 },
+      max: { x: 65, y: FLOOR + 3, z: BAND4_Z1 },
+    });
+
+    // Dress the set itself so the floor isn't bare concrete.
+    set(28, FLOOR, 128, B.clapboard);
+    set(40, FLOOR, 122, B.tripod);
+    set(40, FLOOR + 1, 122, B.softbox);
+    set(40, FLOOR, 131, B.tripod);
+    set(40, FLOOR + 1, 131, B.softbox);
+    set(45, FLOOR, 124, B.mic);
+    plantPair(WX0 + 6, BAND4_Z1 - 1);
+    plantPair(50, BAND4_Z0 + 1);
     region({
       key: "shoot",
       label: name,
@@ -1475,6 +1572,179 @@ export function buildWorld(input: WorldInput): World {
     });
   };
 
+  /**
+   * Staff and clients. The rooms read as abandoned without people in them —
+   * this is what turns a furnished set into a workplace.
+   */
+  const populate = (): void => {
+    // Reception
+    npc("npc-reception", "Priya Raghavan", "Front of House", "staff", 86, 127, YAW.s, {
+      seated: true,
+    });
+    npc("npc-lobby-visitor", "Dev Kapoor", "Waiting — 10:30", "staff", 80, 131, YAW.e);
+
+    // Video Editing Bay — editors at the suites, always cutting.
+    npc("npc-video-1", "Aarav Menon", "Senior Editor", "staff", 20, BAND2_Z0 + 3, YAW.n, {
+      seated: true,
+    });
+    npc("npc-video-2", "Ishita Rao", "Motion Designer", "staff", 26, BAND2_Z0 + 3, YAW.n, {
+      seated: true,
+    });
+    npc("npc-video-3", "Rohan Das", "Junior Editor", "staff", 32, BAND2_Z0 + 3, YAW.n, {
+      seated: true,
+    });
+
+    // Task Hall
+    npc("npc-task-1", "Neha Sharma", "Producer", "staff", EX0 + 6, BAND2_Z0 + 8, YAW.n, {
+      seated: true,
+    });
+    npc("npc-task-2", "Yusuf Khan", "Coordinator", "staff", EX0 + 12, BAND2_Z0 + 8, YAW.n, {
+      seated: true,
+    });
+
+    // Outreach — on the phones.
+    npc("npc-outreach-1", "Sana Iqbal", "Outreach Lead", "staff", EX0 + 5, BAND3_Z0 + 5, YAW.s, {
+      seated: true,
+    });
+    npc("npc-outreach-2", "Vikram Bose", "SDR", "staff", EX0 + 11, BAND3_Z0 + 5, YAW.s, {
+      seated: true,
+    });
+
+    // Creative Studio
+    npc("npc-creative-1", "Meera Pillai", "Art Director", "staff", WX0 + 8, BAND3_Z0 + 5, YAW.s, {
+      seated: true,
+    });
+    npc("npc-creative-2", "Kabir Anand", "Copywriter", "staff", WX0 + 20, BAND3_Z0 + 5, YAW.s, {
+      seated: true,
+    });
+
+    // Dev Wing
+    npc("npc-dev-1", "Ananya Gupta", "Tech Lead", "staff", EX0 + 22, BAND1_Z0 + 18, YAW.w, {
+      seated: true,
+    });
+
+    // Managing Heads
+    npc("npc-approvals", "Rajat Verma", "Operations Head", "staff", MH_X0 + 6, BAND4_Z0 + 4, YAW.s, {
+      seated: true,
+    });
+
+    // Conference — a couple of people already seated for the next meeting.
+    npc("npc-conf-1", "Tara Nair", "Strategy", "staff", 35, 28, YAW.e, { seated: true });
+    npc("npc-conf-2", "Imran Sheikh", "Finance", "staff", 37, 31, YAW.w, { seated: true });
+
+    // Shoot Studio — a camera op on the floor.
+    npc("npc-shoot", "Zoya Farooqui", "DOP", "staff", SHOOT_X1 - 14, BAND4_Z0 + 8, YAW.e);
+
+    // Pantry
+    npc("npc-pantry", "Arjun Sethi", "On a break", "staff", 90, PAN_Z0 + 3, YAW.s);
+
+    // Client NPCs stand behind their existing booth in the Task Hall, facing
+    // out. The booth's POI is already the interaction — the person just makes
+    // it obvious there is someone to deal with.
+    clients.slice(0, 4).forEach((room, i) => {
+      const z0 = 50 + i * 6;
+      npc(
+        `npc-client-${room.id}`,
+        room.name,
+        `${room.name} — Client`,
+        "client",
+        129,
+        z0 + 1,
+        YAW.w,
+        { poiId: `client-${room.id}` },
+      );
+    });
+  };
+
+  /**
+   * Props. Empty carpet is what made the rooms feel like showrooms; this puts
+   * the clutter of a working office on every surface.
+   */
+  const dressRooms = (): void => {
+    const deskProp = (x: number, z: number, id: number) => {
+      if (get(x, FLOOR, z) === B.desk) set(x, FLOOR + 1, z, id);
+    };
+    // Desk clutter across the floor: towers under desks, mugs and paper on top.
+    for (let x = IX0; x <= IX1; x++) {
+      for (let z = IZ0; z <= IZ1; z++) {
+        if (get(x, FLOOR, z) !== B.desk) continue;
+        const h = (x * 73856093) ^ (z * 19349663);
+        const k = (h >>> 3) % 10;
+        if (k === 0) deskProp(x, z, B.coffee);
+        else if (k === 1) deskProp(x, z, B.papers);
+        else if (k === 2) deskProp(x, z, B.phone);
+        else if (k === 3) deskProp(x, z, B.book_stack);
+        // A tower tucked beside the desk, where the floor is still clear.
+        if (k === 4 && get(x, FLOOR, z + 1) === 0) set(x, FLOOR, z + 1, B.cpu);
+      }
+    }
+
+    // Greenery + art in every room, against the walls and out of doorways.
+    const potted = (x: number, z: number, tall: boolean) => {
+      if (get(x, FLOOR, z) !== 0) return;
+      set(x, FLOOR, z, tall ? B.pot : B.pot_white);
+      set(x, FLOOR + 1, z, tall ? B.plant_tall : B.plant_fern);
+    };
+    const corners: [number, number][] = [
+      [WX0 + 1, BAND1_Z0 + 1], [WX1 - 1, BAND1_Z1 - 1], [WX0 + 1, BAND1_Z1 - 1],
+      [WX0 + 1, BAND2_Z0 + 1], [WX1 - 1, BAND2_Z1 - 1],
+      [WX0 + 1, BAND3_Z0 + 1], [WX1 - 1, BAND3_Z1 - 1],
+      [EX0 + 1, BAND1_Z0 + 1], [EX1 - 1, BAND1_Z1 - 1],
+      [EX0 + 1, BAND2_Z0 + 1], [EX1 - 1, BAND2_Z1 - 1],
+      [EX0 + 1, BAND3_Z0 + 1], [EX1 - 1, BAND3_Z1 - 1],
+      [MH_X0 + 1, BAND4_Z0 + 1], [SHOOT_X1 - 1, BAND4_Z0 + 1],
+      [LOB_X0 + 1, BAND4_Z1 - 2], [LOB_X1 - 1, BAND4_Z1 - 2],
+    ];
+    corners.forEach(([x, z], i) => potted(x, z, i % 2 === 0));
+
+    // Framed art and exit signage on the corridor walls. Only ever replace an
+    // existing solid block — dropping one into a door gap would wall a room off.
+    const onWall = (x: number, y: number, z: number, id: number) => {
+      if (get(x, y, z) !== 0) set(x, y, z, id);
+    };
+    for (const z of [26, 58, 96]) {
+      onWall(W_FRONT, FLOOR + 2, z, B.art);
+      onWall(E_FRONT, FLOOR + 2, z, B.art);
+    }
+    for (const z of [COR_Z0 + 1, COR_Z1 - 1]) {
+      onWall(COR_X0, FLOOR + 3, z, B.exit_sign);
+    }
+    // Air handling overhead so the ceiling isn't a flat grid.
+    for (let z = COR_Z0 + 6; z < COR_Z1; z += 16) {
+      onWall(COR_X0 + 3, CEIL, z, B.vent);
+      onWall(COR_X1 - 3, CEIL, z, B.vent);
+    }
+
+    // Breakout: sofas, a rug and a lamp in the pantry.
+    fill(LOB_X0 + 4, FLOOR, PAN_Z0 + 1, LOB_X0 + 8, FLOOR, PAN_Z0 + 1, B.sofa);
+    fill(LOB_X0 + 4, FLOOR, PAN_Z0 + 4, LOB_X0 + 8, FLOOR, PAN_Z0 + 4, B.sofa);
+    fill(LOB_X0 + 4, FLOOR, PAN_Z0 + 2, LOB_X0 + 8, FLOOR, PAN_Z0 + 3, B.rug_pattern);
+    set(LOB_X0 + 3, FLOOR, PAN_Z0 + 1, B.lamp);
+    set(LOB_X0 + 10, FLOOR, PAN_Z0 + 2, B.cooler);
+    set(LOB_X0 + 12, FLOOR, PAN_Z0 + 2, B.printer);
+
+    // Lobby waiting area.
+    fill(LOB_X0 + 2, FLOOR, BAND4_Z1 - 4, LOB_X0 + 5, FLOOR, BAND4_Z1 - 4, B.sofa);
+    fill(LOB_X0 + 2, FLOOR, BAND4_Z1 - 3, LOB_X0 + 5, FLOOR, BAND4_Z1 - 3, B.rug_pattern);
+    set(LOB_X0 + 1, FLOOR, BAND4_Z1 - 4, B.lamp);
+
+    // Shoot Studio: real camera kit instead of one lonely rig.
+    const sx0 = SHOOT_X1 - 20;
+    set(sx0, FLOOR, BAND4_Z0 + 6, B.tripod);
+    set(sx0, FLOOR + 1, BAND4_Z0 + 6, B.camera);
+    set(sx0 + 4, FLOOR, BAND4_Z0 + 3, B.tripod);
+    set(sx0 + 4, FLOOR + 1, BAND4_Z0 + 3, B.softbox);
+    set(sx0 + 4, FLOOR, BAND4_Z0 + 10, B.tripod);
+    set(sx0 + 4, FLOOR + 1, BAND4_Z0 + 10, B.softbox);
+    set(sx0 + 2, FLOOR, BAND4_Z0 + 8, B.mic);
+    set(sx0 - 2, FLOOR, BAND4_Z0 + 6, B.clapboard);
+
+    // Video bay: a second camera and reference monitors.
+    set(WX0 + 3, FLOOR, BAND2_Z1 - 3, B.tripod);
+    set(WX0 + 3, FLOOR + 1, BAND2_Z1 - 3, B.camera);
+    set(WX0 + 6, FLOOR, BAND2_Z1 - 3, B.book_stack);
+  };
+
   // --- assemble ------------------------------------------------------------
 
   buildShell();
@@ -1494,6 +1764,8 @@ export function buildWorld(input: WorldInput): World {
   buildUpsideDown();
   buildForecourt();
   dressCorridor();
+  populate();
+  dressRooms();
 
   return {
     sx: SX,
@@ -1505,6 +1777,7 @@ export function buildWorld(input: WorldInput): World {
     pois,
     regions,
     signs,
+    npcs,
     lair: {
       min: { x: LX0 + 2, y: LY0 + 1, z: LZ0 + 2 },
       max: { x: LX1 - 1, y: LY1, z: LZ1 - 1 },

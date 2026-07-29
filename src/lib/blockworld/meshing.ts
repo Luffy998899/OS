@@ -20,6 +20,10 @@ const CUTOUT_KEYS = new Set([
   "glass_frosted",
   "curtain_wall",
   "plant",
+  "plant_fern",
+  "plant_tall",
+  "tripod",
+  "mic",
   "water",
   "lair_vine",
 ]);

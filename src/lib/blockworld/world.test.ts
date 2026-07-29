@@ -531,3 +531,69 @@ describe("the place reads as an office", () => {
         expect(solidAt(x, y, 134), `entrance blocked at ${x},${y}`).toBe(false);
   });
 });
+
+describe("the office is populated", () => {
+  it("puts people in the rooms", () => {
+    expect(world.npcs.length).toBeGreaterThanOrEqual(15);
+    // The rooms that should visibly have someone working in them.
+    for (const id of [
+      "npc-reception",
+      "npc-video-1",
+      "npc-task-1",
+      "npc-outreach-1",
+      "npc-creative-1",
+      "npc-approvals",
+      "npc-dev-1",
+    ]) {
+      expect(world.npcs.find((n) => n.id === id), `${id} missing`).toBeTruthy();
+    }
+  });
+
+  it("gives every NPC a clear cell to stand in, on solid ground", () => {
+    for (const n of world.npcs) {
+      const x = Math.floor(n.x);
+      const y = Math.floor(n.y);
+      const z = Math.floor(n.z);
+      expect(solidAt(x, y, z), `${n.id} is inside a block`).toBe(false);
+      expect(solidAt(x, y + 1, z), `${n.id} has no headroom`).toBe(false);
+      expect(solidAt(x, y - 1, z), `${n.id} is floating`).toBe(true);
+    }
+  });
+
+  it("has unique NPC ids and a hue for each", () => {
+    const ids = world.npcs.map((n) => n.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    for (const n of world.npcs) {
+      expect(n.hue).toBeGreaterThanOrEqual(0);
+      expect(n.hue).toBeLessThan(360);
+      expect(n.name.length).toBeGreaterThan(1);
+    }
+  });
+
+  it("points every client NPC at a real client POI", () => {
+    const clientNpcs = world.npcs.filter((n) => n.kind === "client");
+    expect(clientNpcs.length).toBeGreaterThan(0);
+    for (const n of clientNpcs) {
+      expect(n.poiId, `${n.id} has no poi`).toBeTruthy();
+      const target = world.pois.find((p) => p.id === n.poiId);
+      expect(target, `${n.poiId} does not exist`).toBeTruthy();
+      expect(target?.panel).toBe("client");
+    }
+  });
+
+  it("dresses the floor with props, not just furniture", () => {
+    const count = (key: string) => {
+      const id = BLOCKS.findIndex((b) => b.key === key);
+      let n = 0;
+      for (let i = 0; i < world.blocks.length; i++) if (world.blocks[i] === id) n++;
+      return n;
+    };
+    // Greenery, desk clutter and machines all present in real numbers.
+    expect(count("plant_fern") + count("plant_tall"), "no greenery").toBeGreaterThan(8);
+    expect(count("pot") + count("pot_white"), "plants with no pots").toBeGreaterThan(8);
+    expect(count("cpu"), "no computers under the desks").toBeGreaterThan(5);
+    expect(count("coffee") + count("papers") + count("book_stack"), "bare desks").toBeGreaterThan(10);
+    expect(count("camera") + count("tripod") + count("softbox"), "no camera kit").toBeGreaterThan(4);
+    expect(count("sofa"), "nowhere to sit").toBeGreaterThan(4);
+  });
+});

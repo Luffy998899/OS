@@ -178,20 +178,29 @@ describe("paintAtlas", () => {
   });
 
   it("paints every tile in the block palette at its own atlas cell", () => {
-    expect(tileNames).toHaveLength(42);
+    // The props pass filled the atlas: all 64 cells of the 8x8 grid are used.
+    expect(tileNames).toHaveLength(64);
+    // Sparse cutouts (vines, foliage, thin stands) legitimately cover less.
+    const sparse = new Set<keyof typeof TILE>([
+      "LAIR_VINE",
+      "PLANT_FERN",
+      "PLANT_TALL",
+      "TRIPOD",
+      "MIC",
+      "COFFEE",
+      "LAMP",
+    ]);
     for (const name of tileNames) {
       const painted = cell(atlas, TILE[name]).filter((p) => p.a > 0).length;
-      // The vine is a sparse cutout — everything else covers most of its cell.
-      expect(painted, `${name} is blank`).toBeGreaterThan(name === "LAIR_VINE" ? 40 : 100);
+      expect(painted, `${name} is blank`).toBeGreaterThan(sparse.has(name) ? 40 : 100);
     }
   });
 
-  it("leaves the unused cells of the 8x8 grid empty", () => {
-    const used = new Set<number>(tileNames.map((n) => TILE[n]));
-    for (let t = 0; t < 64; t++) {
-      if (used.has(t)) continue;
-      expect(meanAlpha(cell(atlas, t)), `cell ${t} bled`).toBe(0);
-    }
+  it("uses every cell of the 8x8 grid exactly once", () => {
+    const used = tileNames.map((n) => TILE[n]);
+    expect(new Set(used).size).toBe(used.length);
+    expect(Math.max(...used)).toBe(63);
+    expect(Math.min(...used)).toBe(0);
   });
 
   it("is deterministic — two atlases are pixel-identical", () => {
@@ -208,6 +217,15 @@ describe("paintAtlas", () => {
       "PLANT",
       "WATER",
       "LAIR_VINE",
+      "PLANT_FERN",
+      "PLANT_TALL",
+      "TRIPOD",
+      "MIC",
+      "COFFEE",
+      "LAMP",
+      "CPU_TOWER",
+      "PAPERS",
+      "BOOK_STACK",
     ]);
     for (const name of tileNames) {
       if (seeThrough.has(name)) continue;
