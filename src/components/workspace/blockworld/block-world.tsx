@@ -47,6 +47,7 @@ import { ShootPanel } from "../rooms/shoot-panel";
 import { TimetablePanel } from "../rooms/timetable-panel";
 import { DocsPanel } from "../rooms/docs-panel";
 import { LairPanel } from "../rooms/lair-panel";
+import { ChatPanel } from "@/components/chat/chat-panel";
 
 // ---------------------------------------------------------------------------
 // Settings
@@ -106,7 +107,8 @@ type OverlayKind =
   | "timetable"
   | "docs"
   | "lair"
-  | "missions";
+  | "missions"
+  | "chat";
 
 type Overlay = { kind: OverlayKind; refId?: string; name?: string } | null;
 
@@ -115,7 +117,7 @@ const OVERLAY_TITLES: Record<OverlayKind, string> = {
   skills: "Skill Tree",
   roster: "Crew",
   help: "How to play",
-  map: "Campus Map",
+  map: "Floor Plan",
   settings: "View Settings",
   video: "Video Editing Bay",
   city: "Dev City",
@@ -129,6 +131,7 @@ const OVERLAY_TITLES: Record<OverlayKind, string> = {
   docs: "Writing Desk",
   lair: "The Upside Down — Vecna's Desk",
   missions: "Missions",
+  chat: "Chat",
 };
 
 // ---------------------------------------------------------------------------
@@ -165,39 +168,58 @@ function ringBell() {
 // ---------------------------------------------------------------------------
 
 const MAP_FALLBACK: Record<string, string> = {
-  grass: "#7aa15c",
-  dirt: "#8a6a48",
+  carpet_gray: "#8b8d91",
+  carpet_blue: "#6b7f9e",
+  carpet_green: "#6f9177",
+  carpet_red: "#a06a68",
+  concrete: "#9a9a97",
+  marble: "#e2ddd2",
+  paving: "#a8a49c",
+  wood_floor: "#b08a54",
+  drywall: "#e8e6e1",
+  drywall_accent: "#4a6d8c",
+  drywall_warm: "#d8c9b0",
+  trim: "#d5d2cc",
+  glass: "#cfe0e8",
+  glass_frosted: "#dbe6ea",
+  curtain_wall: "#8fb0c8",
+  facade: "#b9bcc0",
+  facade_blue: "#7f95c8",
+  facade_green: "#79b07c",
+  facade_warm: "#d0a878",
+  metal: "#9aa0a6",
+  elevator: "#b6bcc2",
   stone: "#8d8d8d",
-  cobble: "#7e7e7e",
-  planks: "#b08a54",
-  planks_dark: "#6d4f33",
-  log: "#6b4f2e",
-  leaves: "#4d8a3c",
-  glass: "#b8d4e0",
-  brick: "#9c5b4d",
-  sandstone: "#d8caa0",
-  path: "#a99c82",
-  water: "#4d7fc4",
   roof: "#4a5058",
-  glowstone: "#e8c86a",
-  scaffold: "#c9a86a",
-  slab_stone: "#909090",
-  slab_plank: "#b08a54",
-  slab_sandstone: "#d8caa0",
-  slab_dark: "#6d4f33",
+  ceiling: "#eceae5",
+  ceiling_light: "#fff6d8",
+  desk: "#b08a54",
+  desk_dark: "#6d4f33",
+  chair: "#4b4e54",
+  monitor: "#2a2f38",
+  table: "#a67c4e",
+  whiteboard: "#f0efe8",
+  corkboard: "#c2a072",
+  tv: "#20242e",
+  books: "#8a5a3a",
+  server_rack: "#2c3138",
+  pantry: "#c9c3b6",
+  felt: "#9a9691",
+  felt_orange: "#e0a13a",
+  felt_teal: "#4fae9c",
+  clock: "#f2f0ea",
+  sign: "#2f333a",
+  plant: "#5da944",
+  planter: "#a8785c",
+  rug: "#a03a34",
+  step: "#9a9a97",
+  step_marble: "#e2ddd2",
+  water: "#6f8fa8",
   lair_stone: "#241c26",
   lair_vine: "#7d1e30",
   vecna_flesh: "#5a1f26",
   obsidian: "#2a2036",
-  carpet_red: "#a03a34",
-  marble: "#e2ddd2",
-  whiteboard: "#f0efe8",
-  screen: "#20242e",
-  books: "#8a5a3a",
-  clock: "#d8caa0",
-  desk: "#7a5a38",
   lair_glow: "#e05a3a",
-  metal: "#9aa0a6",
 };
 
 function hexToRgb(hex: string): [number, number, number] {
@@ -667,16 +689,25 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
     let frames = 0;
     let fpsAt = last;
     let frameEma = 16;
+    // Fixed-timestep physics so movement speed never depends on framerate.
+    const FIXED_STEP = 1 / 60;
+    const MAX_STEPS = 20;
+    let physicsAcc = 0;
     const ray = new THREE.Ray();
     const box = new THREE.Box3();
     const camDir = new THREE.Vector3();
     const hitScratch = new THREE.Vector3();
 
     const loop = (now: number) => {
-      const dt = Math.min(0.05, Math.max(0.0005, (now - last) / 1000));
+      // Real elapsed time, capped only to stop a huge stall from exploding the
+      // catch-up loop. dt is NOT the physics step.
+      const dt = Math.min(0.25, Math.max(0.0005, (now - last) / 1000));
       last = now;
 
-      // Input → physics.
+      // Input → physics, on a FIXED timestep. Walking used to be clamped to a
+      // single 50ms step per frame, so a machine rendering at 5fps moved at a
+      // quarter speed — "sprint feels slow" was really "your GPU is slow".
+      // Accumulating real time and running whole fixed steps decouples the two.
       if (!overlayRef.current) {
         const k = E.keys;
         const input: MoveInput = {
@@ -687,7 +718,17 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
         };
         if (k.has("ArrowLeft")) E.yaw -= 2.2 * dt * E.settings.sensitivity;
         if (k.has("ArrowRight")) E.yaw += 2.2 * dt * E.settings.sensitivity;
-        stepPlayer(world, E.st, input, E.yaw, dt);
+
+        physicsAcc += dt;
+        let steps = 0;
+        while (physicsAcc >= FIXED_STEP && steps < MAX_STEPS) {
+          stepPlayer(world, E.st, input, E.yaw, FIXED_STEP);
+          physicsAcc -= FIXED_STEP;
+          steps++;
+        }
+        // Never let the backlog grow without bound on a very slow frame.
+        if (physicsAcc > FIXED_STEP * MAX_STEPS) physicsAcc = 0;
+
         const moving =
           Math.abs(E.st.vel.x) + Math.abs(E.st.vel.z) > 0.4 && E.st.onGround;
         if (input.forward !== 0 || input.strafe !== 0) E.moved = true;
@@ -931,6 +972,9 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
         case "KeyO":
           setOverlay({ kind: "settings" });
           return;
+        case "KeyC":
+          setOverlay({ kind: "chat" });
+          return;
         case "Tab":
           setOverlay({ kind: "roster" });
           return;
@@ -1072,6 +1116,7 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
         <div className="absolute bottom-4 left-1/2 flex -translate-x-1/2 items-center gap-1.5">
           {(
             [
+              ["C", "Chat", "chat"],
               ["B", "Bounties", "bounties"],
               ["T", "Skills", "skills"],
               ["M", "Map", "map"],
@@ -1159,8 +1204,12 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
               {overlay.kind === "timetable" ? <TimetablePanel /> : null}
               {overlay.kind === "docs" ? <DocsPanel /> : null}
               {overlay.kind === "lair" ? <LairPanel /> : null}
+              {overlay.kind === "chat" ? <ChatPanel className="h-[62vh]" /> : null}
               {overlay.kind === "map" && world ? (
-                <CampusMap world={world} me={{ x: E.st.pos.x, z: E.st.pos.z, yaw: E.yaw }} />
+                <CampusMap
+                  world={world}
+                  me={{ x: E.st.pos.x, y: E.st.pos.y, z: E.st.pos.z, yaw: E.yaw }}
+                />
               ) : null}
               {overlay.kind === "help" ? <HelpPanel /> : null}
               {overlay.kind === "settings" ? (
@@ -1183,9 +1232,10 @@ function CampusMap({
   me,
 }: {
   world: World;
-  me: { x: number; z: number; yaw: number };
+  me: { x: number; z: number; y: number; yaw: number };
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const level = Math.floor(me.y);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -1196,10 +1246,13 @@ function CampusMap({
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
+    // A floor plan of the storey you're standing on: scan down from just below
+    // this floor's ceiling, so the roof never hides the layout.
+    const top = Math.min(world.sy - 1, level + 4);
     for (let z = 0; z < world.sz; z++) {
       for (let x = 0; x < world.sx; x++) {
-        let color = "#6f9455";
-        for (let y = world.sy - 1; y >= 0; y--) {
+        let color = "#1b1e24";
+        for (let y = top; y >= Math.max(0, level - 2); y--) {
           const id = blockAt(world, x, y, z);
           if (id !== 0) {
             const def = BLOCKS[id];
@@ -1212,14 +1265,27 @@ function CampusMap({
       }
     }
 
-    // Region labels for major places.
+    // Name the rooms on THIS storey only. Nested spaces (a studio's two wings,
+    // the timetable alcove inside reception) share a centre, so nudge each
+    // colliding label clear of the one before it instead of overprinting.
     ctx.textAlign = "center";
+    ctx.font = "700 11px monospace";
+    const placed: { x: number; y: number }[] = [];
     for (const r of world.regions) {
-      if (r.label.includes("Floor") || r.lair) continue;
+      if (r.lair) continue;
+      if (level < r.min.y || level >= r.max.y) continue;
       const cx = ((r.min.x + r.max.x) / 2) * scale;
-      const cz = ((r.min.z + r.max.z) / 2) * scale;
-      ctx.font = "700 11px monospace";
-      ctx.fillStyle = "rgba(0,0,0,0.65)";
+      let cz = ((r.min.z + r.max.z) / 2) * scale;
+      const half = ctx.measureText(r.label).width / 2 + 6;
+      let guard = 0;
+      while (
+        guard++ < 8 &&
+        placed.some((p) => Math.abs(p.y - cz) < 13 && Math.abs(p.x - cx) < half + 40)
+      ) {
+        cz += 13;
+      }
+      placed.push({ x: cx, y: cz });
+      ctx.fillStyle = "rgba(0,0,0,0.7)";
       ctx.fillText(r.label.toUpperCase(), cx + 1, cz + 1);
       ctx.fillStyle = "#fefbf2";
       ctx.fillText(r.label.toUpperCase(), cx, cz);
@@ -1242,12 +1308,12 @@ function CampusMap({
     ctx.fill();
     ctx.stroke();
     ctx.restore();
-  }, [world, me]);
+  }, [world, me, level]);
 
   return (
     <div className="space-y-2">
       <p className="text-xs text-muted-foreground">
-        The campus from above. The Upside Down doesn&apos;t show on any map.
+        Floor plan of the storey you&apos;re on. The Upside Down is on no plan.
       </p>
       <div className="overflow-auto rounded-xl border border-border">
         <canvas ref={canvasRef} className="block w-full" style={{ imageRendering: "pixelated" }} />
@@ -1262,11 +1328,12 @@ function CampusMap({
 
 function HelpPanel() {
   const rows: [string, string][] = [
-    ["W A S D", "Walk · Shift sprints"],
-    ["Space", "Jump — one block high, slabs are stairs"],
-    ["Mouse", "Look (click the world to capture the mouse)"],
-    ["E / Click", "Use what you're aiming at: boards, desks, doors"],
-    ["B / T / M", "Bounties · Skill tree · Campus map"],
+    ["W A S D", "Walk the office · Shift to hurry"],
+    ["Space", "Step up · hop"],
+    ["Mouse", "Look (click the view to capture the mouse)"],
+    ["E / Click", "Sit down at a computer, use a board, call a lift"],
+    ["C", "Chat — servers and channels, like Slack"],
+    ["B / T / M", "Bounties · Skill tree · Floor plan"],
     ["Tab / H / O", "Crew · Help · View settings"],
     ["F", "Fullscreen"],
     ["Esc", "Close panel → release mouse → leave"],
@@ -1274,9 +1341,9 @@ function HelpPanel() {
   return (
     <div className="space-y-4">
       <p className="text-sm text-muted-foreground">
-        The campus is built from real blocks. Walk in through real doors: Dev City is a mall of
-        named floors — take the stairs. Write scripts at the writing desk (they save now — really).
-        Admins know what the obsidian ring in Managing Heads does.
+        This is the office. Walk the corridor, go through a door, sit at a computer — every
+        workstation opens the real tool it belongs to, and every room has its own board of open
+        work. The lifts in the Dev Wing run both project towers, a floor per project.
       </p>
       <div className="grid gap-1.5 sm:grid-cols-2">
         {rows.map(([key, label]) => (

@@ -5,6 +5,8 @@ import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
 import { NAV } from "@/lib/nav";
 import { hasPermission, type PermissionKey } from "@/lib/auth/permissions";
+import { trpc } from "@/lib/trpc/client";
+import { unreadLabel } from "@/lib/chat";
 
 export function NavContent({
   permissions,
@@ -14,6 +16,9 @@ export function NavContent({
   onNavigate?: () => void;
 }) {
   const pathname = usePathname();
+  const chatUnread = trpc.chat.unreadTotal.useQuery(undefined, {
+    refetchInterval: 30_000,
+  });
 
   return (
     <nav className="flex flex-col gap-5">
@@ -37,6 +42,9 @@ export function NavContent({
                 pathname === item.href ||
                 pathname.startsWith(item.href + "/");
               const Icon = item.icon;
+              // Only chat carries a live count today; the slot is generic.
+              const badge =
+                item.href === "/chat" ? unreadLabel(chatUnread.data ?? 0) : "";
               return (
                 <Link
                   key={item.href}
@@ -52,6 +60,18 @@ export function NavContent({
                 >
                   <Icon className="size-4 shrink-0" />
                   <span className="truncate">{item.title}</span>
+                  {badge ? (
+                    <span
+                      className={cn(
+                        "ml-auto flex min-w-4 items-center justify-center rounded-full px-1 text-[0.6rem] leading-4 font-semibold",
+                        active
+                          ? "bg-background text-foreground"
+                          : "bg-foreground text-background",
+                      )}
+                    >
+                      {badge}
+                    </span>
+                  ) : null}
                 </Link>
               );
             })}

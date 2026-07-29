@@ -28,6 +28,7 @@ import { outreachRoomRouter } from "./outreach-room";
 import { creativeRouter } from "./creative";
 import { shootRouter } from "./shoot";
 import { timetableRouter } from "./timetable";
+import { chatRouter } from "./chat";
 
 export const appRouter = router({
   health: publicProcedure.query(() => ({ ok: true, service: "auxa" })),
@@ -61,6 +62,7 @@ export const appRouter = router({
   creative: creativeRouter,
   shoot: shootRouter,
   timetable: timetableRouter,
+  chat: chatRouter,
 });
 
 export type AppRouter = typeof appRouter;

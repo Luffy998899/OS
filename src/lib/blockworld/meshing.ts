@@ -15,7 +15,14 @@ export type MeshArrays = {
 
 const UV_INSET = 0.001;
 const AO_LEVELS = [1.0, 0.85, 0.72, 0.6];
-const CUTOUT_KEYS = new Set(["glass", "leaves", "scaffold", "water", "lair_vine"]);
+const CUTOUT_KEYS = new Set([
+  "glass",
+  "glass_frosted",
+  "curtain_wall",
+  "plant",
+  "water",
+  "lair_vine",
+]);
 
 type Vec = readonly [number, number, number];
 

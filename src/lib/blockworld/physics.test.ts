@@ -63,7 +63,7 @@ describe("stepPlayer", () => {
 
   it("stops at a 1-high wall without tunneling, even at sprint with dt=0.05", () => {
     const w = floorWorld();
-    for (let x = 0; x < w.sx; x++) set(w, x, 1, 5, B.brick);
+    for (let x = 0; x < w.sx; x++) set(w, x, 1, 5, B.drywall);
     const st = player(8, 1, 8);
     for (let i = 0; i < 60; i++) {
       stepPlayer(w, st, inp({ forward: 1, sprint: true }), 0, DT);
@@ -77,7 +77,7 @@ describe("stepPlayer", () => {
   it("auto-steps onto a half slab while walking", () => {
     const w = floorWorld();
     for (let x = 0; x < w.sx; x++) {
-      for (let z = 0; z <= 5; z++) set(w, x, 1, z, B.slab_stone);
+      for (let z = 0; z <= 5; z++) set(w, x, 1, z, B.step);
     }
     const st = player(8, 1, 8);
     for (let i = 0; i < 40; i++) stepPlayer(w, st, inp({ forward: 1 }), 0, DT);
@@ -86,23 +86,23 @@ describe("stepPlayer", () => {
     expect(st.onGround).toBe(true);
   });
 
-  it("steps onto carpet (height 0.1)", () => {
+  it("steps onto a rug (height 0.06)", () => {
     const w = floorWorld();
     for (let x = 0; x < w.sx; x++) {
-      for (let z = 0; z <= 5; z++) set(w, x, 1, z, B.carpet_red);
+      for (let z = 0; z <= 5; z++) set(w, x, 1, z, B.rug);
     }
     const st = player(8, 1, 8);
     for (let i = 0; i < 40; i++) stepPlayer(w, st, inp({ forward: 1 }), 0, DT);
     expect(st.pos.z).toBeLessThan(5.5);
-    expect(st.pos.y).toBeCloseTo(1.1, 5);
+    expect(st.pos.y).toBeCloseTo(1.06, 5);
     expect(st.onGround).toBe(true);
   });
 
   it("cannot walk or step up a 2-high wall", () => {
     const w = floorWorld();
     for (let x = 0; x < w.sx; x++) {
-      set(w, x, 1, 5, B.brick);
-      set(w, x, 2, 5, B.brick);
+      set(w, x, 1, 5, B.drywall);
+      set(w, x, 2, 5, B.drywall);
     }
     const st = player(8, 1, 8);
     for (let i = 0; i < 80; i++) {
@@ -160,7 +160,7 @@ describe("stepPlayer", () => {
 describe("groundHeightAt", () => {
   it("returns the slab top on a slab column and ground level elsewhere", () => {
     const w = floorWorld();
-    set(w, 4, 0, 4, B.slab_stone); // slab replaces the floor block
+    set(w, 4, 0, 4, B.step); // slab replaces the floor block
     expect(groundHeightAt(w, 4.5, 4.5)).toBeCloseTo(0.5, 5);
     expect(groundHeightAt(w, 8.5, 8.5)).toBeCloseTo(1, 5);
   });

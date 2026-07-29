@@ -20,6 +20,7 @@ export type PanelKind =
   | "bounties"
   | "skills"
   | "client"
+  | "missions"
   | "rift";
 
 /**

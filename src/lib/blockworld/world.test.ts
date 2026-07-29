@@ -1,25 +1,26 @@
-// Validation of the voxel campus against the build spec's 8 invariants,
-// plus region/POI coverage checks. The world is built once from a realistic
-// fixture: the 9 canonical rooms, 2 client rooms and 4 projects.
+// AUXA HQ validated against the office spec's 10 invariants. The two that
+// matter most are 4 and 5: a flood fill over STANDABLE cells has to walk from
+// the spawn pad into every room (proving the doorways really connect), and it
+// must never find its way into the Upside Down.
 
 import { describe, expect, it } from "vitest";
-import { BLOCKS, isSolid, solidHeight } from "./blocks";
+import { BLOCKS, isSolid } from "./blocks";
 import { blockAt } from "./types";
-import type { World } from "./types";
+import type { PanelKind, Poi, Region, World } from "./types";
 import { buildWorld } from "./world";
 import type { WorldInput } from "./world";
 
 const input: WorldInput = {
   rooms: [
-    { id: "rm-dev", key: "developer", name: "Developer Room", kind: "team" },
-    { id: "rm-video", key: "video-editing", name: "Video Editing", kind: "team" },
-    { id: "rm-board", key: "common-board", name: "Common Board", kind: "team" },
-    { id: "rm-creative", key: "creative", name: "Creative", kind: "team" },
-    { id: "rm-tasks", key: "tasks", name: "Tasks", kind: "team" },
+    { id: "rm-dev", key: "developer", name: "Dev Wing", kind: "team" },
+    { id: "rm-video", key: "video-editing", name: "Video Editing Bay", kind: "team" },
+    { id: "rm-board", key: "common-board", name: "Conference Hall", kind: "team" },
+    { id: "rm-creative", key: "creative", name: "Creative Studio", kind: "team" },
+    { id: "rm-tasks", key: "tasks", name: "Task Hall", kind: "team" },
     { id: "rm-heads", key: "managing-heads", name: "Managing Heads", kind: "team" },
     { id: "rm-time", key: "timetable", name: "Timetable", kind: "team" },
-    { id: "rm-outreach", key: "outreach", name: "Outreach", kind: "team" },
-    { id: "rm-shoot", key: "shoot", name: "Shoot", kind: "team" },
+    { id: "rm-outreach", key: "outreach", name: "Outreach Office", kind: "team" },
+    { id: "rm-shoot", key: "shoot", name: "Shoot Studio", kind: "team" },
     { id: "rm-acme", key: "acme-corp", name: "Acme Corp", kind: "client" },
     { id: "rm-globex", key: "globex", name: "Globex", kind: "client" },
   ],
@@ -33,14 +34,131 @@ const input: WorldInput = {
 
 const world: World = buildWorld(input);
 
+/** Regions that are rooms you walk into — used by invariants 9 and 10. */
+const ROOM_KEYS = [
+  "conference",
+  "video",
+  "creative",
+  "creative-internal",
+  "creative-clients",
+  "shoot",
+  "dev-wing",
+  "tasks",
+  "outreach",
+  "managing-heads",
+  "lobby",
+  "pantry",
+  "timetable",
+];
+
+const TOOL_PANELS: PanelKind[] = [
+  "video",
+  "city",
+  "conference",
+  "tasks",
+  "approvals",
+  "outreach",
+  "creative",
+  "shoot",
+  "timetable",
+  "docs",
+  "bounties",
+  "missions",
+  "client",
+];
+
 const solidAt = (x: number, y: number, z: number): boolean =>
   isSolid(blockAt(world, x, y, z));
 
-/** A player can stand ON the block at y: it is solid with 2 clear above. */
-const standableOn = (x: number, y: number, z: number): boolean =>
-  solidAt(x, y, z) && !solidAt(x, y + 1, z) && !solidAt(x, y + 2, z);
+/** (x, y, z) is a FEET cell: solid floor beneath, two clear blocks of body. */
+const standable = (x: number, y: number, z: number): boolean =>
+  solidAt(x, y - 1, z) && !solidAt(x, y, z) && !solidAt(x, y + 1, z);
 
-describe("invariant 1: spawn", () => {
+const regionOf = (key: string): Region => {
+  const r = world.regions.find((x) => x.key === key);
+  if (!r) throw new Error(`no region ${key}`);
+  return r;
+};
+
+const inRegion = (r: Region, x: number, y: number, z: number): boolean =>
+  x >= r.min.x &&
+  x < r.max.x &&
+  y >= r.min.y &&
+  y < r.max.y &&
+  z >= r.min.z &&
+  z < r.max.z;
+
+const isTowerFloor = (r: Region): boolean => r.key.startsWith("floor-");
+const isLift = (p: Poi): boolean => p.id.startsWith("lift-");
+
+// ---------------------------------------------------------------------------
+// The walk: flood fill over standable cells, stepping up or down one block.
+// ---------------------------------------------------------------------------
+
+const { sx, sy, sz } = world;
+const cellIdx = (x: number, y: number, z: number): number =>
+  (y * sz + z) * sx + x;
+
+const walkable = ((): Uint8Array => {
+  const seen = new Uint8Array(sx * sy * sz);
+  const start = {
+    x: Math.floor(world.spawn.x),
+    y: world.spawn.y,
+    z: Math.floor(world.spawn.z),
+  };
+  if (!standable(start.x, start.y, start.z)) return seen;
+  const queue: number[] = [cellIdx(start.x, start.y, start.z)];
+  seen[queue[0]] = 1;
+  for (let head = 0; head < queue.length; head++) {
+    const i = queue[head];
+    const x = i % sx;
+    const z = Math.floor(i / sx) % sz;
+    const y = Math.floor(i / (sx * sz));
+    for (const [dx, dz] of [
+      [1, 0],
+      [-1, 0],
+      [0, 1],
+      [0, -1],
+    ] as const) {
+      for (const dy of [0, -1, 1]) {
+        const nx = x + dx;
+        const ny = y + dy;
+        const nz = z + dz;
+        if (nx < 0 || nz < 0 || ny < 1 || nx >= sx || nz >= sz || ny >= sy - 1)
+          continue;
+        const ni = cellIdx(nx, ny, nz);
+        if (seen[ni] || !standable(nx, ny, nz)) continue;
+        seen[ni] = 1;
+        queue.push(ni);
+      }
+    }
+  }
+  return seen;
+})();
+
+const reachedCount = walkable.reduce<number>((n, v) => n + v, 0);
+
+const reachesRegion = (r: Region): boolean => {
+  for (let y = r.min.y; y < Math.min(r.max.y, sy - 1); y++)
+    for (let z = r.min.z; z < r.max.z; z++)
+      for (let x = r.min.x; x < r.max.x; x++)
+        if (walkable[cellIdx(x, y, z)]) return true;
+  return false;
+};
+
+// ---------------------------------------------------------------------------
+
+describe("invariant 1: the block buffer", () => {
+  it("is sx*sy*sz long with only valid block ids", () => {
+    expect(world.blocks.length).toBe(world.sx * world.sy * world.sz);
+    let maxId = 0;
+    for (let i = 0; i < world.blocks.length; i++)
+      if (world.blocks[i] > maxId) maxId = world.blocks[i];
+    expect(maxId).toBeLessThan(BLOCKS.length);
+  });
+});
+
+describe("invariant 2: spawn", () => {
   it("stands on solid ground with 2 air blocks above", () => {
     const x = Math.floor(world.spawn.x);
     const y = world.spawn.y;
@@ -49,10 +167,28 @@ describe("invariant 1: spawn", () => {
     expect(solidAt(x, y, z)).toBe(false);
     expect(solidAt(x, y + 1, z)).toBe(false);
   });
+
+  it("is inside the reception lobby, facing up the corridor", () => {
+    const lobby = regionOf("lobby");
+    expect(
+      inRegion(
+        lobby,
+        Math.floor(world.spawn.x),
+        world.spawn.y,
+        Math.floor(world.spawn.z),
+      ),
+    ).toBe(true);
+    expect(world.spawnYaw).toBe(0);
+  });
 });
 
-describe("invariant 2: POI reachability", () => {
-  it("every POI AABB is within world bounds", () => {
+describe("invariant 3: POIs", () => {
+  it("has unique ids", () => {
+    const ids = world.pois.map((p) => p.id);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it("keeps every AABB inside world bounds", () => {
     for (const p of world.pois) {
       expect(p.min.x, p.id).toBeGreaterThanOrEqual(0);
       expect(p.min.y, p.id).toBeGreaterThanOrEqual(0);
@@ -66,131 +202,66 @@ describe("invariant 2: POI reachability", () => {
     }
   });
 
-  it("every POI has an adjacent column a player can stand in", () => {
+  it("gives every non-lift POI a standable cell to be used from", () => {
     for (const p of world.pois) {
-      let reachable = false;
-      outer: for (let x = p.min.x - 1; x <= p.max.x; x++) {
-        for (let z = p.min.z - 1; z <= p.max.z; z++) {
-          for (let y = p.min.y - 3; y <= p.max.y; y++) {
-            if (standableOn(x, y, z)) {
-              reachable = true;
+      if (isLift(p)) continue;
+      let ok = false;
+      outer: for (let x = p.min.x - 1; x <= p.max.x; x++)
+        for (let z = p.min.z - 1; z <= p.max.z; z++)
+          for (let y = Math.max(1, p.min.y - 2); y <= p.max.y + 1; y++)
+            if (standable(x, y, z)) {
+              ok = true;
               break outer;
             }
-          }
-        }
-      }
-      expect(reachable, `POI ${p.id} has no standable adjacent column`).toBe(true);
+      expect(ok, `POI ${p.id} has nowhere to stand`).toBe(true);
     }
   });
 });
 
-describe("invariant 3: building entrances", () => {
-  // Two floor-level columns per doorway; each must be clear 3 high.
-  const entrances: { name: string; cols: [number, number][] }[] = [
-    { name: "dev-city", cols: [[62, 43], [62, 44]] },
-    { name: "tools-bungalow", cols: [[45, 66], [46, 66]] },
-    { name: "video-bay", cols: [[166, 58], [167, 58]] },
-    { name: "conference-hall", cols: [[190, 95], [190, 96]] },
-    { name: "task-hall", cols: [[70, 99], [70, 100]] },
-    { name: "managing-heads", cols: [[110, 130], [111, 130]] },
-    { name: "outreach-office", cols: [[52, 130], [53, 130]] },
-    { name: "creative-internal-door", cols: [[156, 124], [157, 124]] },
-    { name: "creative-clients-door", cols: [[172, 124], [173, 124]] },
-    { name: "shoot-studio", cols: [[110, 162], [111, 162]] },
-    { name: "clock-tower", cols: [[153, 99], [154, 99]] },
-    { name: "shop-acme", cols: [[176, 104], [177, 104]] },
-    { name: "shop-globex", cols: [[188, 104], [189, 104]] },
-  ];
+describe("invariant 4: everything is walkable from spawn", () => {
+  it("floods a large connected floor area", () => {
+    expect(reachedCount).toBeGreaterThan(5000);
+  });
 
-  it.each(entrances)("$name has a 2-wide x 3-high opening", ({ cols }) => {
-    for (const [x, z] of cols)
-      for (let y = 9; y <= 11; y++)
-        expect(solidAt(x, y, z), `blocked at ${x},${y},${z}`).toBe(false);
+  it.each(
+    world.regions
+      .filter((r) => !r.lair && !isTowerFloor(r))
+      .map((r) => ({ key: r.key, label: r.label })),
+  )("walks into $key ($label)", ({ key }) => {
+    expect(reachesRegion(regionOf(key)), `${key} is not reachable on foot`).toBe(
+      true,
+    );
   });
 });
 
-describe("invariant 4: dev city staircase", () => {
-  // Walk the tower like a player: BFS over standing positions where each
-  // step to a 4-neighbour column rises at most 0.55 (drops are free) and
-  // leaves 2 blocks of clearance. Must climb from the ground floor (y9)
-  // to the top floor plate (surface y34) — no flying, no big steps.
-  it("is walkable from y9 to the top floor plate with rises <= 0.55", () => {
-    const X0 = 30;
-    const X1 = 62;
-    const Z0 = 28;
-    const Z1 = 60;
-
-    const platforms = (x: number, z: number): number[] => {
-      const tops: number[] = [];
-      for (let y = 7; y < 42; y++)
-        if (standableOn(x, y, z))
-          tops.push(y + solidHeight(blockAt(world, x, y, z)));
-      return tops;
-    };
-
-    const key = (x: number, z: number, top: number): string =>
-      `${x},${z},${Math.round(top * 10)}`;
-    const seen = new Set<string>();
-    const queue: { x: number; z: number; top: number }[] = [];
-
-    // Start just inside the entrance arch, feet at y9.
-    for (const top of platforms(61, 44)) {
-      if (top <= 9.5) {
-        queue.push({ x: 61, z: 44, top });
-        seen.add(key(61, 44, top));
-      }
-    }
-    expect(queue.length).toBeGreaterThan(0);
-
-    let reachedTop = false;
-    while (queue.length > 0 && !reachedTop) {
-      const cur = queue.shift()!;
-      if (Math.abs(cur.top - 34) < 0.01) {
-        reachedTop = true;
-        break;
-      }
-      for (const [dx, dz] of [
-        [1, 0],
-        [-1, 0],
-        [0, 1],
-        [0, -1],
-      ] as const) {
-        const nx = cur.x + dx;
-        const nz = cur.z + dz;
-        if (nx < X0 || nx > X1 || nz < Z0 || nz > Z1) continue;
-        for (const top of platforms(nx, nz)) {
-          if (top - cur.top > 0.55) continue; // too tall to step up
-          if (cur.top - top > 4) continue; // don't leap down floors
-          const k = key(nx, nz, top);
-          if (seen.has(k)) continue;
-          seen.add(k);
-          queue.push({ x: nx, z: nz, top });
-        }
-      }
-    }
-    expect(reachedTop, "no walkable path to the top floor plate").toBe(true);
+describe("invariant 5: the Upside Down is sealed", () => {
+  it("is never reached by the walk from spawn", () => {
+    const l = world.lair;
+    for (let y = l.min.y; y < l.max.y; y++)
+      for (let z = l.min.z; z < l.max.z; z++)
+        for (let x = l.min.x; x < l.max.x; x++)
+          if (walkable[cellIdx(x, y, z)])
+            throw new Error(`walked into the lair at ${x},${y},${z}`);
   });
-});
 
-describe("invariant 5: the lair is sealed", () => {
-  it("flood fill from spawn never reaches the Upside Down", () => {
-    const { sx, sy, sz, blocks, lair } = world;
+  it("shares no air with the surface at all", () => {
+    // Stronger than the walk: 6-connected air flood from the spawn column.
     const solidTable = new Uint8Array(BLOCKS.length);
     BLOCKS.forEach((b, i) => {
       solidTable[i] = b.solid ? 1 : 0;
     });
-    const visited = new Uint8Array(blocks.length);
-    const queue = new Int32Array(blocks.length);
+    const seen = new Uint8Array(world.blocks.length);
+    const queue = new Int32Array(world.blocks.length);
     let head = 0;
     let tail = 0;
-    const idxOf = (x: number, y: number, z: number): number =>
-      (y * sz + z) * sx + x;
-
-    const start = idxOf(Math.floor(world.spawn.x), 9, Math.floor(world.spawn.z));
-    expect(solidTable[blocks[start]]).toBe(0);
-    visited[start] = 1;
+    const start = cellIdx(
+      Math.floor(world.spawn.x),
+      world.spawn.y,
+      Math.floor(world.spawn.z),
+    );
+    expect(solidTable[world.blocks[start]]).toBe(0);
+    seen[start] = 1;
     queue[tail++] = start;
-
     while (head < tail) {
       const i = queue[head++];
       const x = i % sx;
@@ -209,165 +280,254 @@ describe("invariant 5: the lair is sealed", () => {
         const nz = z + dz;
         if (nx < 0 || ny < 0 || nz < 0 || nx >= sx || ny >= sy || nz >= sz)
           continue;
-        const ni = idxOf(nx, ny, nz);
-        if (visited[ni] || solidTable[blocks[ni]]) continue;
-        visited[ni] = 1;
+        const ni = cellIdx(nx, ny, nz);
+        if (seen[ni] || solidTable[world.blocks[ni]]) continue;
+        seen[ni] = 1;
         queue[tail++] = ni;
       }
     }
-
-    for (let y = lair.min.y; y < lair.max.y; y++)
-      for (let z = lair.min.z; z < lair.max.z; z++)
-        for (let x = lair.min.x; x < lair.max.x; x++)
-          if (visited[idxOf(x, y, z)] === 1)
+    const l = world.lair;
+    for (let y = l.min.y; y < l.max.y; y++)
+      for (let z = l.min.z; z < l.max.z; z++)
+        for (let x = l.min.x; x < l.max.x; x++)
+          if (seen[cellIdx(x, y, z)])
             throw new Error(`surface air leaks into the lair at ${x},${y},${z}`);
   });
-});
 
-describe("invariant 6: rift teleports", () => {
-  it("both rifts land on solid ground with 2 air above", () => {
-    const rifts = world.pois.filter((p) => p.panel === "rift");
-    expect(rifts.length).toBe(2);
-    for (const r of rifts) {
-      expect(r.teleportTo, r.id).toBeDefined();
-      const t = r.teleportTo!;
-      const x = Math.floor(t.x);
-      const z = Math.floor(t.z);
-      expect(solidAt(x, t.y - 1, z), `${r.id} lands on air`).toBe(true);
-      expect(solidAt(x, t.y, z), `${r.id} feet blocked`).toBe(false);
-      expect(solidAt(x, t.y + 1, z), `${r.id} head blocked`).toBe(false);
-    }
-  });
-
-  it("the entry rift is admin-only, the return rift is not", () => {
+  it("is a lair-flagged region containing Vecna's desk and the way back", () => {
+    const lair = world.regions.find((r) => r.lair);
+    expect(lair?.label).toBe("The Upside Down");
+    const ids = world.pois.map((p) => p.id);
+    expect(ids).toContain("vecna-desk");
+    expect(ids).toContain("rift-out");
     expect(world.pois.find((p) => p.id === "rift-in")?.adminOnly).toBe(true);
     expect(world.pois.find((p) => p.id === "rift-out")?.adminOnly).toBeFalsy();
   });
 });
 
-describe("invariant 7: regions", () => {
-  it("all region volumes are inside world bounds", () => {
-    for (const r of world.regions) {
-      expect(r.min.x, r.key).toBeGreaterThanOrEqual(0);
-      expect(r.min.y, r.key).toBeGreaterThanOrEqual(0);
-      expect(r.min.z, r.key).toBeGreaterThanOrEqual(0);
-      expect(r.max.x, r.key).toBeLessThanOrEqual(world.sx);
-      expect(r.max.y, r.key).toBeLessThanOrEqual(world.sy);
-      expect(r.max.z, r.key).toBeLessThanOrEqual(world.sz);
-      expect(r.min.x, r.key).toBeLessThan(r.max.x);
-      expect(r.min.y, r.key).toBeLessThan(r.max.y);
-      expect(r.min.z, r.key).toBeLessThan(r.max.z);
-    }
+describe("invariant 6: teleports", () => {
+  const teleports = world.pois.filter((p) => p.panel === "rift");
+
+  it("has a lift POI for every tower floor plus both lobby calls", () => {
+    // 2 towers x 10 floors x (up + down) + 2 lobby lifts + 2 rift ends.
+    expect(teleports.length).toBe(2 * 10 * 2 + 2 + 2);
   });
 
-  it("every room maps to exactly one region with its roomId", () => {
-    for (const room of input.rooms) {
-      const matches = world.regions.filter((r) => r.roomId === room.id);
-      expect(matches.length, `room ${room.key}`).toBe(1);
-    }
-  });
+  it.each(teleports.map((p) => ({ id: p.id, poi: p })))(
+    "$id lands on solid ground with 2 air above",
+    ({ poi }) => {
+      expect(poi.teleportTo, poi.id).toBeDefined();
+      const t = poi.teleportTo!;
+      const x = Math.floor(t.x);
+      const z = Math.floor(t.z);
+      expect(solidAt(x, t.y - 1, z), `${poi.id} lands on air`).toBe(true);
+      expect(solidAt(x, t.y, z), `${poi.id} feet blocked`).toBe(false);
+      expect(solidAt(x, t.y + 1, z), `${poi.id} head blocked`).toBe(false);
+    },
+  );
 });
 
-describe("invariant 8: block buffer", () => {
-  it("has sx*sy*sz blocks, all with valid ids", () => {
-    const { sx, sy, sz, blocks } = world;
-    expect(blocks.length).toBe(sx * sy * sz);
-    let maxId = 0;
-    for (let i = 0; i < blocks.length; i++)
-      if (blocks[i] > maxId) maxId = blocks[i];
-    expect(maxId).toBeLessThan(BLOCKS.length);
-  });
-});
-
-describe("regions & POIs coverage", () => {
-  it("every named building region exists by label", () => {
-    const labels = new Set(world.regions.map((r) => r.label));
-    for (const label of [
-      "Fountain Plaza",
-      "Dev City",
-      "Tools Bungalow",
-      "Video Editing Bay",
-      "Conference Hall",
-      "Task Hall",
-      "Managing Heads",
-      "The Upside Down",
-      "Outreach Office",
-      "Creative Studio",
-      "Shoot Studio",
-      "Clock Tower",
-      "Acme Corp",
-      "Globex",
-    ])
-      expect(labels.has(label), `missing region ${label}`).toBe(true);
-  });
-
-  it("dev city has one floor region per dev project, 5 storeys total", () => {
-    const floors = world.regions.filter((r) =>
-      r.label.startsWith("Dev City — Floor"),
-    );
-    expect(floors.length).toBe(5);
-    for (const p of input.projects.filter((p) => p.buildingKey !== "tools")) {
-      const label = `Dev City — Floor ${p.floor} · ${p.name}`;
-      expect(
-        floors.some((r) => r.label === label),
-        `missing ${label}`,
-      ).toBe(true);
+describe("invariant 7: the two towers", () => {
+  for (const tower of ["pipeline", "complete"]) {
+    for (let n = 1; n <= 10; n++) {
+      it(`${tower} floor ${n} has a region, a project POI and both lifts`, () => {
+        const r = world.regions.find((x) => x.key === `floor-${tower}-${n}`);
+        expect(r, `missing region for ${tower} floor ${n}`).toBeDefined();
+        expect(r!.label).toContain(`Floor ${n} · `);
+        const ids = world.pois.map((p) => p.id);
+        expect(ids).toContain(`city-${tower}-${n}`);
+        expect(ids).toContain(`lift-${tower}-${n}`);
+        expect(ids).toContain(`lift-down-${tower}-${n}`);
+      });
     }
+  }
+
+  it("fills pipeline floors with projects in floor order, rest available", () => {
+    const labelOf = (n: number): string =>
+      world.regions.find((r) => r.key === `floor-pipeline-${n}`)!.label;
+    expect(labelOf(1)).toBe("Pipeline Tower — Floor 1 · Project Alpha");
+    expect(labelOf(2)).toBe("Pipeline Tower — Floor 2 · Project Beta");
+    expect(labelOf(3)).toBe("Pipeline Tower — Floor 3 · Project Gamma");
+    expect(labelOf(4)).toBe("Pipeline Tower — Floor 4 · Available");
     expect(
-      floors.filter((r) => r.label.endsWith("Under construction")).length,
-    ).toBe(2);
+      world.regions.find((r) => r.key === "floor-complete-1")!.label,
+    ).toBe("Completed Tower — Floor 1 · Toolsmith");
+    expect(world.pois.find((p) => p.id === "city-pipeline-2")?.refId).toBe(
+      "pr-beta",
+    );
+    expect(world.pois.find((p) => p.id === "city-complete-1")?.refId).toBe(
+      "pr-tools",
+    );
+    expect(world.pois.find((p) => p.id === "city-pipeline-9")?.refId).toBeUndefined();
+  });
+});
+
+describe("invariant 8: the computers", () => {
+  const workstations = world.pois.filter((p) => p.id.includes("-pc"));
+
+  it("places at least 14 usable workstations", () => {
+    expect(workstations.length).toBeGreaterThanOrEqual(14);
   });
 
-  it("the lair region is flagged and matches world.lair", () => {
-    const lair = world.regions.find((r) => r.key === "lair");
-    expect(lair?.lair).toBe(true);
-    expect(lair!.min.x).toBeLessThanOrEqual(world.lair.min.x);
-    expect(lair!.max.x).toBeGreaterThanOrEqual(world.lair.max.x);
+  it("wires each one to a real tool panel and says what it opens", () => {
+    for (const w of workstations) {
+      expect(TOOL_PANELS, `${w.id} panel ${w.panel}`).toContain(w.panel);
+      expect(w.sublabel, w.id).toContain("sit down and work");
+    }
   });
 
-  it("all spec POI ids are present and unique", () => {
-    const ids = world.pois.map((p) => p.id);
-    expect(new Set(ids).size).toBe(ids.length);
+  it("includes every workstation the spec names", () => {
+    const ids = workstations.map((w) => w.id);
     for (const id of [
-      "bounty-board",
-      "skill-stand",
-      "city-floor-1",
-      "city-floor-2",
-      "city-floor-3",
-      "tools-library",
-      "writing-desk",
-      "video-suites",
-      "script-terminal",
-      "lectern",
-      "announce-board",
-      "task-wall",
-      "approvals-desk",
-      "rift-in",
-      "rift-out",
-      "vecna-desk",
-      "outreach-desks",
-      "creative-internal",
-      "creative-clients",
-      "camera-rig",
-      "timetable-board",
-      "client-rm-acme",
-      "client-rm-globex",
+      "reception-pc",
+      "video-pc-1",
+      "video-pc-2",
+      "video-pc-3",
+      "script-pc",
+      "task-pc-1",
+      "task-pc-2",
+      "outreach-pc-1",
+      "outreach-pc-2",
+      "creative-pc-internal",
+      "creative-pc-clients",
+      "approvals-pc",
+      "dev-pc",
+      "shoot-pc",
     ])
-      expect(ids, `missing POI ${id}`).toContain(id);
+      expect(ids, `missing workstation ${id}`).toContain(id);
+    expect(
+      world.pois.find((p) => p.id === "creative-pc-clients")?.refId,
+    ).toBe("clients");
+    expect(world.pois.find((p) => p.id === "dev-pc")?.refId).toBe("tools");
+  });
+});
+
+describe("invariant 9: no empty rooms", () => {
+  it.each(ROOM_KEYS.map((key) => ({ key })))(
+    "$key contains at least one tool or mission POI",
+    ({ key }) => {
+      const r = regionOf(key);
+      const hit = world.pois.some(
+        (p) =>
+          TOOL_PANELS.includes(p.panel) &&
+          // Wall-mounted boards sit in the wall, one block outside the room.
+          p.max.x > r.min.x - 1 &&
+          p.min.x < r.max.x + 1 &&
+          p.max.z > r.min.z - 1 &&
+          p.min.z < r.max.z + 1 &&
+          p.max.y > r.min.y &&
+          p.min.y < r.max.y,
+      );
+      expect(hit, `${r.label} has nothing to do in it`).toBe(true);
+    },
+  );
+
+  it("gives every named room a mission board wired to its DB room", () => {
+    for (const [id, roomKey] of [
+      ["board-conference", "common-board"],
+      ["board-video", "video-editing"],
+      ["board-creative", "creative"],
+      ["board-shoot", "shoot"],
+      ["board-dev-wing", "developer"],
+      ["board-tasks", "tasks"],
+      ["board-outreach", "outreach"],
+      ["board-managing-heads", "managing-heads"],
+    ] as const) {
+      const board = world.pois.find((p) => p.id === id);
+      expect(board, `missing ${id}`).toBeDefined();
+      expect(board!.panel).toBe("missions");
+      expect(board!.refId).toBe(
+        input.rooms.find((r) => r.key === roomKey)!.id,
+      );
+    }
   });
 
-  it("under-construction floors get no city POI", () => {
-    const ids = world.pois.map((p) => p.id);
-    expect(ids).not.toContain("city-floor-4");
-    expect(ids).not.toContain("city-floor-5");
+  it("maps every input room to exactly one region", () => {
+    for (const r of input.rooms) {
+      const matches = world.regions.filter((x) => x.roomId === r.id);
+      expect(matches.length, `room ${r.key}`).toBe(1);
+    }
   });
 
-  it("city floor POIs reference their project", () => {
-    for (const [id, refId] of [
-      ["city-floor-1", "pr-alpha"],
-      ["city-floor-2", "pr-beta"],
-      ["city-floor-3", "pr-gamma"],
-    ] as const)
-      expect(world.pois.find((p) => p.id === id)?.refId).toBe(refId);
+  it("gives each client a booth POI", () => {
+    for (const c of input.rooms.filter((r) => r.kind === "client")) {
+      const p = world.pois.find((x) => x.id === `client-${c.id}`);
+      expect(p, `missing booth for ${c.name}`).toBeDefined();
+      expect(p!.panel).toBe("client");
+      expect(p!.refId).toBe(c.id);
+    }
+  });
+});
+
+describe("invariant 10: the interiors are lit", () => {
+  it.each(ROOM_KEYS.map((key) => ({ key })))(
+    "$key has recessed ceiling lights",
+    ({ key }) => {
+      const r = regionOf(key);
+      let lights = 0;
+      for (let y = r.min.y; y < r.max.y; y++)
+        for (let z = r.min.z; z < r.max.z; z++)
+          for (let x = r.min.x; x < r.max.x; x++)
+            if (blockAt(world, x, y, z) === BLOCKS.findIndex((b) => b.key === "ceiling_light"))
+              lights++;
+      expect(lights, `${r.label} is dark`).toBeGreaterThan(0);
+    },
+  );
+});
+
+describe("the place reads as an office", () => {
+  it("has no grass, dirt or cobblestone in the palette", () => {
+    const keys = new Set(BLOCKS.map((b) => b.key));
+    for (const banned of ["grass", "dirt", "cobble", "leaves", "log", "sand"])
+      expect(keys.has(banned), `${banned} is back`).toBe(false);
+  });
+
+  it("names every room on a sign the corridor can read", () => {
+    const texts = world.signs.map((s) => s.text);
+    for (const text of [
+      "AUXA HQ",
+      "CONFERENCE HALL",
+      "VIDEO EDITING BAY",
+      "CREATIVE — INTERNAL",
+      "CREATIVE — CLIENTS",
+      "SHOOT STUDIO",
+      "DEV WING",
+      "TASK HALL",
+      "OUTREACH OFFICE",
+      "MANAGING HEADS",
+      "PANTRY",
+      "B1 — RESTRICTED",
+    ])
+      expect(texts, `missing sign ${text}`).toContain(text);
+  });
+
+  it("keeps every doorway 3 wide and 3 high", () => {
+    const doors: { name: string; x?: number; z?: number; from: number }[] = [
+      { name: "conference", x: 83, from: 28 },
+      { name: "video", x: 83, from: 60 },
+      { name: "creative-internal", x: 83, from: 87 },
+      { name: "creative-clients", x: 83, from: 103 },
+      { name: "dev-wing", x: 97, from: 26 },
+      { name: "tasks", x: 97, from: 60 },
+      { name: "outreach", x: 97, from: 94 },
+      { name: "shoot", x: 73, from: 124 },
+      { name: "managing-heads", x: 107, from: 129 },
+      { name: "pantry", z: 13, from: 88 },
+    ];
+    for (const d of doors)
+      for (let i = 0; i < 3; i++)
+        for (let y = 1; y <= 3; y++) {
+          const x = d.x ?? d.from + i;
+          const z = d.z ?? d.from + i;
+          expect(solidAt(x, y, z), `${d.name} blocked at ${x},${y},${z}`).toBe(
+            false,
+          );
+        }
+  });
+
+  it("opens the entrance 6 wide and 4 high", () => {
+    for (let x = 86; x <= 92; x++)
+      for (let y = 1; y <= 4; y++)
+        expect(solidAt(x, y, 134), `entrance blocked at ${x},${y}`).toBe(false);
   });
 });
