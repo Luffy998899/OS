@@ -31,6 +31,8 @@ export const CHAT_SEED: ChatSeedServer[] = [
       { key: "creative", name: "creative", topic: "Design, campaigns, brand and references." },
       { key: "outreach", name: "outreach", topic: "Calls, follow-ups and pipeline movement." },
       { key: "random", name: "random", topic: "Off-topic. Keep it kind." },
+      { key: "lounge", name: "lounge", topic: "Drop-in voice room.", kind: "voice" },
+      { key: "standup", name: "standup", topic: "Daily standup call.", kind: "voice" },
     ],
   },
   {
@@ -97,6 +99,67 @@ export function crossesDay(a: Date | string, b: Date | string): boolean {
     da.getMonth() !== db.getMonth() ||
     da.getDate() !== db.getDate()
   );
+}
+
+// ---------------------------------------------------------------------------
+// Channel + server management
+// ---------------------------------------------------------------------------
+
+/** Channel kinds a space can hold. */
+export const CHANNEL_KINDS = ["text", "voice"] as const;
+export type ChannelKind = (typeof CHANNEL_KINDS)[number];
+
+/**
+ * Discord-style channel slug: lowercase, spaces to hyphens, punctuation
+ * dropped. "Design Review!" → "design-review".
+ */
+export function slugifyChannel(name: string): string {
+  return name
+    .trim()
+    .toLowerCase()
+    .replace(/['’]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 32);
+}
+
+/** A space's slug — same rules, but it identifies the server. */
+export function slugifyServer(name: string): string {
+  return slugifyChannel(name) || "space";
+}
+
+/** Reserved keys the seed owns; user channels must never collide with them. */
+export function isReservedServerKey(key: string): boolean {
+  return key === DM_SERVER_KEY || CHAT_SEED.some((s) => s.key === key);
+}
+
+/** Make `base` unique against `taken` by suffixing -2, -3, … */
+export function uniqueKey(base: string, taken: Iterable<string>): string {
+  const used = new Set(taken);
+  if (!used.has(base)) return base;
+  for (let n = 2; n < 500; n++) {
+    const candidate = `${base}-${n}`;
+    if (!used.has(candidate)) return candidate;
+  }
+  return `${base}-${Date.now()}`;
+}
+
+// ---------------------------------------------------------------------------
+// Voice
+// ---------------------------------------------------------------------------
+
+/** A voice row older than this has stopped heartbeating — treat it as gone. */
+export const VOICE_STALE_MS = 15_000;
+
+/** How often a connected client refreshes its voice presence row. */
+export const VOICE_HEARTBEAT_MS = 4_000;
+
+/**
+ * In a full mesh both sides would offer at once and glare. The peer whose id
+ * sorts first is the caller; the other waits for the offer.
+ */
+export function isVoiceInitiator(myId: string, peerId: string): boolean {
+  return myId < peerId;
 }
 
 /** Consecutive messages from one person inside this window read as one block. */

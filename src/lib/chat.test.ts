@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   CHAT_SEED,
+  DM_SERVER_KEY,
   GROUP_WINDOW_MS,
   crossesDay,
   dayLabel,
@@ -10,7 +11,12 @@ import {
   groupMessages,
   isDmKey,
   isDmMember,
+  isReservedServerKey,
+  isVoiceInitiator,
   serverInitials,
+  slugifyChannel,
+  slugifyServer,
+  uniqueKey,
   unreadLabel,
 } from "./chat";
 
@@ -31,7 +37,7 @@ describe("CHAT_SEED", () => {
 
   it("keeps the HQ channels the spec asked for", () => {
     const hq = CHAT_SEED.find((s) => s.key === "auxa-hq");
-    expect(hq?.channels.map((c) => c.key)).toEqual([
+    expect(hq?.channels.filter((c) => (c.kind ?? "text") === "text").map((c) => c.key)).toEqual([
       "general",
       "announcements",
       "dev",
@@ -39,6 +45,14 @@ describe("CHAT_SEED", () => {
       "creative",
       "outreach",
       "random",
+    ]);
+  });
+
+  it("ships voice rooms to talk in", () => {
+    const hq = CHAT_SEED.find((s) => s.key === "auxa-hq");
+    expect(hq?.channels.filter((c) => c.kind === "voice").map((c) => c.key)).toEqual([
+      "lounge",
+      "standup",
     ]);
   });
 });
@@ -139,6 +153,65 @@ describe("day dividers", () => {
   it("knows when two stamps cross midnight", () => {
     expect(crossesDay(new Date("2026-07-30T23:59:00"), new Date("2026-07-31T00:01:00"))).toBe(true);
     expect(crossesDay(new Date("2026-07-31T08:00:00"), new Date("2026-07-31T22:00:00"))).toBe(false);
+  });
+});
+
+describe("channel slugs", () => {
+  it("lowercases and hyphenates like Discord", () => {
+    expect(slugifyChannel("Design Review")).toBe("design-review");
+    expect(slugifyChannel("  Q3   Planning!! ")).toBe("q3-planning");
+    expect(slugifyChannel("it's-fine")).toBe("its-fine");
+  });
+
+  it("never leaves leading or trailing hyphens", () => {
+    expect(slugifyChannel("--hi--")).toBe("hi");
+    expect(slugifyChannel("!!!")).toBe("");
+  });
+
+  it("caps the length", () => {
+    expect(slugifyChannel("a".repeat(80)).length).toBe(32);
+  });
+
+  it("falls back to a usable server slug", () => {
+    expect(slugifyServer("!!!")).toBe("space");
+    expect(slugifyServer("Design Team")).toBe("design-team");
+  });
+});
+
+describe("uniqueKey", () => {
+  it("passes through when free", () => {
+    expect(uniqueKey("general", ["random"])).toBe("general");
+  });
+
+  it("suffixes until it finds a gap", () => {
+    expect(uniqueKey("general", ["general"])).toBe("general-2");
+    expect(uniqueKey("general", ["general", "general-2", "general-3"])).toBe("general-4");
+  });
+});
+
+describe("reserved server keys", () => {
+  it("protects the seed and the DM space", () => {
+    expect(isReservedServerKey("auxa-hq")).toBe(true);
+    expect(isReservedServerKey("clients")).toBe(true);
+    expect(isReservedServerKey(DM_SERVER_KEY)).toBe(true);
+    expect(isReservedServerKey("design-team")).toBe(false);
+  });
+});
+
+describe("voice mesh", () => {
+  it("picks exactly one initiator per pair", () => {
+    expect(isVoiceInitiator("alice", "bob")).toBe(true);
+    expect(isVoiceInitiator("bob", "alice")).toBe(false);
+  });
+
+  it("never lets both sides offer", () => {
+    for (const [a, b] of [
+      ["u1", "u2"],
+      ["zeta", "alpha"],
+      ["cms1", "cms2"],
+    ]) {
+      expect(isVoiceInitiator(a, b)).not.toBe(isVoiceInitiator(b, a));
+    }
   });
 });
 

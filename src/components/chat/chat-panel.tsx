@@ -1,26 +1,38 @@
 "use client";
 
 // Team chat, laid out the way Discord reads: the space rail (with a Direct
-// Messages home on top), the channel or conversation list, the transcript with
-// date dividers and hover timestamps, and a toggleable member sidebar. Mounts
-// full-height inside a page or inside the workspace overlay, so both share one
-// implementation.
+// Messages home on top and a "+" to make a space), the channel list with text
+// and voice channels, the transcript with date dividers and hover timestamps,
+// a toggleable member sidebar, and a voice dock while you're connected.
+// Mounts full-height inside a page or inside the workspace overlay, so both
+// share one implementation.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AtSign,
   Hash,
+  Headphones,
+  HeadphoneOff,
   Loader2,
   MessageSquare,
+  Mic,
+  MicOff,
+  PhoneOff,
+  Plus,
   SendHorizontal,
+  Settings,
   Users,
+  Volume2,
 } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { trpc } from "@/lib/trpc/client";
+import { useCurrentUser } from "@/components/app/user-context";
 import { crossesDay, dayLabel, groupMessages, serverInitials, unreadLabel } from "@/lib/chat";
 import { initials } from "@/lib/format";
 import { cn } from "@/lib/utils";
+import { CreateChannelDialog, CreateServerDialog, ServerSettingsDialog } from "./chat-dialogs";
+import { useVoice } from "./use-voice";
 
 function timeOf(at: Date | string): string {
   return new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
@@ -56,14 +68,22 @@ export function ChatPanel({
   autoFocus?: boolean;
 }) {
   const utils = trpc.useUtils();
-  const list = trpc.chat.list.useQuery(undefined, { refetchInterval: 15_000 });
+  const currentUser = useCurrentUser();
+  // Voice rosters ride along on this query, so it polls fast enough that a
+  // channel someone just joined looks occupied to everyone else too.
+  const list = trpc.chat.list.useQuery(undefined, { refetchInterval: 8_000 });
   const members = trpc.chat.members.useQuery(undefined, { refetchInterval: 20_000 });
   const [pane, setPane] = useState<Pane | null>(null);
   const [channelId, setChannelId] = useState<string | null>(null);
   const [membersOpen, setMembersOpen] = useState(false);
   const [draft, setDraft] = useState("");
+  const [newChannelOpen, setNewChannelOpen] = useState(false);
+  const [newServerOpen, setNewServerOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
-  const servers = list.data?.servers ?? [];
+  const voice = useVoice(currentUser.id);
+
+  const servers = useMemo(() => list.data?.servers ?? [], [list.data?.servers]);
   const dms = useMemo(() => list.data?.dms ?? [], [list.data?.dms]);
   const dmUnread = list.data?.dmUnread ?? 0;
 
@@ -73,9 +93,13 @@ export function ChatPanel({
     activePane?.type === "server"
       ? (servers.find((s) => s.id === activePane.serverId) ?? servers[0] ?? null)
       : null;
+  const textChannels = activeServer?.channels.filter((c) => c.kind !== "voice") ?? [];
+  const voiceChannels = activeServer?.channels.filter((c) => c.kind === "voice") ?? [];
+  // Only text channels host a transcript; clicking a voice channel connects
+  // instead of navigating, so it never becomes the active conversation.
   const activeChannel =
     activePane?.type === "server"
-      ? (activeServer?.channels.find((c) => c.id === channelId) ?? activeServer?.channels[0] ?? null)
+      ? (textChannels.find((c) => c.id === channelId) ?? textChannels[0] ?? null)
       : null;
   const activeDm =
     activePane?.type === "dm" ? (dms.find((d) => d.id === channelId) ?? null) : null;
@@ -184,6 +208,11 @@ export function ChatPanel({
         ? `Message #${activeChannel.name}`
         : "Pick a channel to start";
 
+  // The voice channel you're sitting in, wherever it lives.
+  const connectedChannel = voice.channelId
+    ? servers.flatMap((s) => s.channels).find((c) => c.id === voice.channelId)
+    : null;
+
   return (
     <div
       className={cn(
@@ -192,7 +221,7 @@ export function ChatPanel({
       )}
     >
       {/* Space rail */}
-      <div className="flex w-14 shrink-0 flex-col items-center gap-2 border-r border-border bg-muted/40 py-3">
+      <div className="flex w-14 shrink-0 flex-col items-center gap-2 overflow-y-auto border-r border-border bg-muted/40 py-3">
         {/* DM home, the way Discord pins it on top */}
         <button
           onClick={() => {
@@ -202,7 +231,7 @@ export function ChatPanel({
           }}
           title="Direct messages"
           className={cn(
-            "relative flex size-10 items-center justify-center rounded-xl transition-all",
+            "relative flex size-10 shrink-0 items-center justify-center rounded-xl transition-all",
             activePane?.type === "dm"
               ? "rounded-lg bg-foreground text-background"
               : "bg-background text-muted-foreground hover:rounded-lg hover:bg-muted hover:text-foreground",
@@ -223,11 +252,12 @@ export function ChatPanel({
               key={s.id}
               onClick={() => {
                 setPane({ type: "server", serverId: s.id });
-                setChannelId(s.channels[0]?.id ?? null);
+                setChannelId(s.channels.find((c) => c.kind !== "voice")?.id ?? null);
+                focusInput();
               }}
               title={`${s.name}${s.description ? ` — ${s.description}` : ""}`}
               className={cn(
-                "relative flex size-10 items-center justify-center rounded-xl text-xs font-semibold transition-all",
+                "relative flex size-10 shrink-0 items-center justify-center rounded-xl text-xs font-semibold transition-all",
                 active
                   ? "rounded-lg bg-foreground text-background"
                   : "bg-background text-muted-foreground hover:rounded-lg hover:bg-muted hover:text-foreground",
@@ -242,12 +272,20 @@ export function ChatPanel({
             </button>
           );
         })}
+        <button
+          onClick={() => setNewServerOpen(true)}
+          title="Create a space"
+          aria-label="Create a space"
+          className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-background text-muted-foreground transition-all hover:rounded-lg hover:bg-muted hover:text-emerald-600"
+        >
+          <Plus className="size-4.5" />
+        </button>
       </div>
 
       {/* Channel / conversation list */}
       <div className="flex w-52 shrink-0 flex-col border-r border-border bg-muted/20">
-        <div className="flex h-12 shrink-0 items-center border-b border-border px-3">
-          <div className="min-w-0">
+        <div className="flex h-12 shrink-0 items-center gap-1 border-b border-border px-3">
+          <div className="min-w-0 flex-1">
             <p className="truncate text-sm font-semibold">
               {activePane?.type === "dm" ? "Direct Messages" : (activeServer?.name ?? "Chat")}
             </p>
@@ -261,6 +299,16 @@ export function ChatPanel({
               </p>
             ) : null}
           </div>
+          {activePane?.type === "server" && activeServer ? (
+            <button
+              onClick={() => setSettingsOpen(true)}
+              title="Space settings"
+              aria-label="Space settings"
+              className="shrink-0 rounded p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            >
+              <Settings className="size-3.5" />
+            </button>
+          ) : null}
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto p-2">
           {activePane?.type === "dm" ? (
@@ -309,10 +357,20 @@ export function ChatPanel({
             </>
           ) : (
             <>
-              <p className="px-2 pb-1 font-mono text-[0.65rem] font-medium tracking-widest text-muted-foreground uppercase">
-                Channels
-              </p>
-              {activeServer?.channels.map((c) => {
+              <div className="flex items-center justify-between px-2 pb-1">
+                <p className="font-mono text-[0.65rem] font-medium tracking-widest text-muted-foreground uppercase">
+                  Text channels
+                </p>
+                <button
+                  onClick={() => setNewChannelOpen(true)}
+                  title="Create channel"
+                  aria-label="Create channel"
+                  className="text-muted-foreground transition-colors hover:text-foreground"
+                >
+                  <Plus className="size-3.5" />
+                </button>
+              </div>
+              {textChannels.map((c) => {
                 const active = c.id === activeChannel?.id;
                 const unread = c.unreadCount > 0 && !active;
                 return (
@@ -341,6 +399,61 @@ export function ChatPanel({
                   </button>
                 );
               })}
+
+              {voiceChannels.length > 0 ? (
+                <p className="px-2 pt-3 pb-1 font-mono text-[0.65rem] font-medium tracking-widest text-muted-foreground uppercase">
+                  Voice channels
+                </p>
+              ) : null}
+              {voiceChannels.map((c) => {
+                const here = voice.channelId === c.id;
+                return (
+                  <div key={c.id}>
+                    <button
+                      onClick={() => (here ? voice.leave() : voice.join(c.id))}
+                      className={cn(
+                        "flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-sm transition-colors",
+                        here
+                          ? "bg-emerald-500/15 font-medium text-emerald-700 dark:text-emerald-400"
+                          : "text-muted-foreground hover:bg-muted hover:text-foreground",
+                      )}
+                    >
+                      <Volume2 className="size-3.5 shrink-0 opacity-70" />
+                      <span className="min-w-0 flex-1 truncate">{c.name}</span>
+                      {c.voice.length > 0 ? (
+                        <span className="shrink-0 font-mono text-[0.6rem] opacity-70">
+                          {c.voice.length}
+                        </span>
+                      ) : null}
+                    </button>
+                    {/* Who's in the room, listed under it the way Discord does */}
+                    {c.voice.map((v) => (
+                      <div
+                        key={v.id}
+                        className="flex items-center gap-1.5 py-0.5 pl-7 text-xs text-muted-foreground"
+                      >
+                        <span className="relative shrink-0">
+                          <Avatar className="size-4">
+                            {v.avatarUrl ? <AvatarImage src={v.avatarUrl} alt="" /> : null}
+                            <AvatarFallback className="text-[0.5rem]">
+                              {initials(v.name)}
+                            </AvatarFallback>
+                          </Avatar>
+                          {voice.speaking.has(v.id) ? (
+                            <span className="absolute -inset-0.5 rounded-full ring-2 ring-emerald-500" />
+                          ) : null}
+                        </span>
+                        <span className="min-w-0 flex-1 truncate">{v.name}</span>
+                        {v.deafened ? (
+                          <HeadphoneOff className="size-3 shrink-0 text-destructive" />
+                        ) : v.muted ? (
+                          <MicOff className="size-3 shrink-0 text-destructive" />
+                        ) : null}
+                      </div>
+                    ))}
+                  </div>
+                );
+              })}
             </>
           )}
           {list.isLoading || (activePane?.type === "dm" && members.isLoading) ? (
@@ -349,6 +462,69 @@ export function ChatPanel({
             </div>
           ) : null}
         </div>
+
+        {/* Voice dock — the strip Discord parks above your avatar */}
+        {voice.channelId || voice.connecting || voice.error ? (
+          <div className="shrink-0 border-t border-border bg-muted/40 p-2">
+            {voice.error ? (
+              <p className="px-1 pb-1 text-[0.7rem] text-destructive">{voice.error}</p>
+            ) : null}
+            <div className="flex items-center gap-1.5">
+              <div className="min-w-0 flex-1">
+                <p className="flex items-center gap-1 truncate text-[0.7rem] font-semibold text-emerald-600 dark:text-emerald-400">
+                  {voice.connecting ? (
+                    <>
+                      <Loader2 className="size-3 animate-spin" /> Connecting…
+                    </>
+                  ) : (
+                    <>
+                      <Volume2 className="size-3" /> Voice connected
+                    </>
+                  )}
+                </p>
+                {connectedChannel ? (
+                  <p className="truncate text-[0.65rem] text-muted-foreground">
+                    {connectedChannel.name}
+                  </p>
+                ) : null}
+              </div>
+              <button
+                onClick={voice.toggleMute}
+                title={voice.muted ? "Unmute" : "Mute"}
+                aria-label={voice.muted ? "Unmute" : "Mute"}
+                className={cn(
+                  "rounded p-1.5 transition-colors hover:bg-muted",
+                  voice.muted ? "text-destructive" : "text-muted-foreground",
+                )}
+              >
+                {voice.muted ? <MicOff className="size-3.5" /> : <Mic className="size-3.5" />}
+              </button>
+              <button
+                onClick={voice.toggleDeafen}
+                title={voice.deafened ? "Undeafen" : "Deafen"}
+                aria-label={voice.deafened ? "Undeafen" : "Deafen"}
+                className={cn(
+                  "rounded p-1.5 transition-colors hover:bg-muted",
+                  voice.deafened ? "text-destructive" : "text-muted-foreground",
+                )}
+              >
+                {voice.deafened ? (
+                  <HeadphoneOff className="size-3.5" />
+                ) : (
+                  <Headphones className="size-3.5" />
+                )}
+              </button>
+              <button
+                onClick={voice.leave}
+                title="Disconnect"
+                aria-label="Disconnect from voice"
+                className="rounded p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-destructive"
+              >
+                <PhoneOff className="size-3.5" />
+              </button>
+            </div>
+          </div>
+        ) : null}
       </div>
 
       {/* Conversation */}
@@ -557,6 +733,31 @@ export function ChatPanel({
           ) : null}
         </div>
       </div>
+
+      <CreateChannelDialog
+        open={newChannelOpen}
+        onOpenChange={setNewChannelOpen}
+        serverId={activeServer?.id ?? null}
+        serverName={activeServer?.name ?? "this space"}
+        onCreated={(id) => {
+          setChannelId(id);
+          focusInput();
+        }}
+      />
+      <CreateServerDialog
+        open={newServerOpen}
+        onOpenChange={setNewServerOpen}
+        onCreated={(id) => {
+          setPane({ type: "server", serverId: id });
+          setChannelId(null);
+        }}
+      />
+      <ServerSettingsDialog
+        open={settingsOpen}
+        onOpenChange={setSettingsOpen}
+        server={activeServer}
+        canDelete={!!activeServer && !["auxa-hq", "clients"].includes(activeServer.key)}
+      />
     </div>
   );
 }

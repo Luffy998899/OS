@@ -2,12 +2,18 @@ import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 import { router, protectedProcedure } from "../trpc";
 import {
+  CHANNEL_KINDS,
   CHAT_SEED,
   DM_SERVER_KEY,
+  VOICE_STALE_MS,
   dmKeyFor,
   dmPeerId,
   isDmKey,
   isDmMember,
+  isReservedServerKey,
+  slugifyChannel,
+  slugifyServer,
+  uniqueKey,
 } from "@/lib/chat";
 
 // In-app chat. Spaces ("servers") split the floor into HQ and the client side;
@@ -70,6 +76,20 @@ async function requireChannel(db: typeof import("@/lib/db").db, channelId: strin
 function assertCanAccess(channelKey: string, userId: string): void {
   if (isDmKey(channelKey) && !isDmMember(channelKey, userId)) {
     throw new TRPCError({ code: "FORBIDDEN", message: "That conversation isn't yours." });
+  }
+}
+
+/** A DM channel can't be renamed, re-kinded or deleted like a room channel. */
+function assertManageable(channelKey: string): void {
+  if (isDmKey(channelKey)) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "DMs can't be edited." });
+  }
+}
+
+/** The hidden DM space is not a real space — it has no settings. */
+function assertServerManageable(serverKey: string): void {
+  if (serverKey === DM_SERVER_KEY) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "Direct Messages isn't a space." });
   }
 }
 
@@ -136,6 +156,31 @@ export const chatRouter = router({
     const unreadOf = new Map(unread.map((u) => [u.channelId, u._count._all]));
     const lastOf = new Map(newest.map((n) => [n.channelId, n._max.createdAt]));
 
+    // Who is sitting in each voice channel right now, so the channel list can
+    // show the faces underneath it the way Discord does.
+    const voiceRows = await ctx.db.chatVoicePresence.findMany({
+      where: {
+        channelId: { in: channelIds },
+        updatedAt: { gt: new Date(Date.now() - VOICE_STALE_MS) },
+      },
+      include: { user: { select: { id: true, name: true, avatarUrl: true } } },
+    });
+    const voiceOf = new Map<string, typeof voiceRows>();
+    for (const row of voiceRows) {
+      const list = voiceOf.get(row.channelId) ?? [];
+      list.push(row);
+      voiceOf.set(row.channelId, list);
+    }
+    const voiceMembers = (channelId: string) =>
+      (voiceOf.get(channelId) ?? []).map((v) => ({
+        id: v.user.id,
+        name: v.user.name,
+        avatarUrl: v.user.avatarUrl,
+        muted: v.muted,
+        deafened: v.deafened,
+        isMe: v.userId === ctx.user.id,
+      }));
+
     // Resolve the person on the other side of each DM.
     const peerIds = myDmChannels
       .map((c) => dmPeerId(c.key, ctx.user.id))
@@ -165,6 +210,7 @@ export const chatRouter = router({
           kind: c.kind,
           unreadCount: unreadOf.get(c.id) ?? 0,
           lastMessageAt: lastOf.get(c.id) ?? null,
+          voice: voiceMembers(c.id),
         })),
         unreadCount: s.channels.reduce((sum, c) => sum + (unreadOf.get(c.id) ?? 0), 0),
       })),
@@ -311,6 +357,281 @@ export const chatRouter = router({
         update: { lastReadAt: now },
       });
       return { ok: true };
+    }),
+
+  // -------------------------------------------------------------------------
+  // Space + channel management
+  // -------------------------------------------------------------------------
+
+  /** Create a space. Its key is derived from the name and kept unique. */
+  createServer: protectedProcedure
+    .input(
+      z.object({
+        name: z.string().min(1).max(48),
+        description: z.string().max(160).optional(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const taken = (await ctx.db.chatServer.findMany({ select: { key: true } })).map((s) => s.key);
+      const key = uniqueKey(slugifyServer(input.name), taken);
+      const last = await ctx.db.chatServer.findFirst({ orderBy: { sortOrder: "desc" } });
+      const server = await ctx.db.chatServer.create({
+        data: {
+          key,
+          name: input.name.trim(),
+          description: input.description?.trim() || null,
+          sortOrder: (last?.sortOrder ?? 0) + 1,
+        },
+      });
+      // A space with no channels is a dead end — every new one opens with a
+      // #general the way Discord does.
+      await ctx.db.chatChannel.create({
+        data: { serverId: server.id, key: "general", name: "general", kind: "text" },
+      });
+      return { serverId: server.id };
+    }),
+
+  /** Rename a space or change its description. */
+  updateServer: protectedProcedure
+    .input(
+      z.object({
+        serverId: z.string(),
+        name: z.string().min(1).max(48).optional(),
+        description: z.string().max(160).nullable().optional(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const server = await ctx.db.chatServer.findUnique({ where: { id: input.serverId } });
+      if (!server) throw new TRPCError({ code: "NOT_FOUND", message: "That space is gone." });
+      assertServerManageable(server.key);
+      await ctx.db.chatServer.update({
+        where: { id: input.serverId },
+        data: {
+          ...(input.name !== undefined ? { name: input.name.trim() } : {}),
+          ...(input.description !== undefined
+            ? { description: input.description?.trim() || null }
+            : {}),
+        },
+      });
+      return { ok: true };
+    }),
+
+  /** Delete a space and everything in it. Seeded spaces stay put. */
+  deleteServer: protectedProcedure
+    .input(z.object({ serverId: z.string() }))
+    .mutation(async ({ ctx, input }) => {
+      const server = await ctx.db.chatServer.findUnique({ where: { id: input.serverId } });
+      if (!server) throw new TRPCError({ code: "NOT_FOUND", message: "That space is gone." });
+      assertServerManageable(server.key);
+      if (isReservedServerKey(server.key)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "The built-in spaces can't be deleted.",
+        });
+      }
+      await ctx.db.chatServer.delete({ where: { id: input.serverId } });
+      return { ok: true };
+    }),
+
+  /** Add a text or voice channel to a space. */
+  createChannel: protectedProcedure
+    .input(
+      z.object({
+        serverId: z.string(),
+        name: z.string().min(1).max(32),
+        kind: z.enum(CHANNEL_KINDS).default("text"),
+        topic: z.string().max(160).optional(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const server = await ctx.db.chatServer.findUnique({
+        where: { id: input.serverId },
+        include: { channels: { select: { key: true, sortOrder: true } } },
+      });
+      if (!server) throw new TRPCError({ code: "NOT_FOUND", message: "That space is gone." });
+      assertServerManageable(server.key);
+      const name = slugifyChannel(input.name);
+      if (!name) throw new TRPCError({ code: "BAD_REQUEST", message: "Give the channel a name." });
+      const key = uniqueKey(
+        name,
+        server.channels.map((c) => c.key),
+      );
+      const channel = await ctx.db.chatChannel.create({
+        data: {
+          serverId: server.id,
+          key,
+          name,
+          kind: input.kind,
+          topic: input.topic?.trim() || null,
+          sortOrder: Math.max(0, ...server.channels.map((c) => c.sortOrder)) + 1,
+        },
+      });
+      return { channelId: channel.id };
+    }),
+
+  /** Rename a channel or reword its topic. */
+  updateChannel: protectedProcedure
+    .input(
+      z.object({
+        channelId: z.string(),
+        name: z.string().min(1).max(32).optional(),
+        topic: z.string().max(160).nullable().optional(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const channel = await requireChannel(ctx.db, input.channelId);
+      assertManageable(channel.key);
+      const name = input.name !== undefined ? slugifyChannel(input.name) : undefined;
+      if (input.name !== undefined && !name) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Give the channel a name." });
+      }
+      await ctx.db.chatChannel.update({
+        where: { id: input.channelId },
+        data: {
+          ...(name ? { name } : {}),
+          ...(input.topic !== undefined ? { topic: input.topic?.trim() || null } : {}),
+        },
+      });
+      return { ok: true };
+    }),
+
+  /** Delete a channel and its transcript. A space keeps at least one channel. */
+  deleteChannel: protectedProcedure
+    .input(z.object({ channelId: z.string() }))
+    .mutation(async ({ ctx, input }) => {
+      const channel = await requireChannel(ctx.db, input.channelId);
+      assertManageable(channel.key);
+      const siblings = await ctx.db.chatChannel.count({ where: { serverId: channel.serverId } });
+      if (siblings <= 1) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "A space needs at least one channel.",
+        });
+      }
+      await ctx.db.chatChannel.delete({ where: { id: input.channelId } });
+      return { ok: true };
+    }),
+
+  // -------------------------------------------------------------------------
+  // Voice: presence + WebRTC signalling
+  // -------------------------------------------------------------------------
+
+  /**
+   * Join a voice channel, or refresh the row while connected. The same call is
+   * the heartbeat: `updatedAt` moving is what proves the tab is still open.
+   */
+  voiceJoin: protectedProcedure
+    .input(
+      z.object({
+        channelId: z.string(),
+        muted: z.boolean().optional(),
+        deafened: z.boolean().optional(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const channel = await requireChannel(ctx.db, input.channelId);
+      if (channel.kind !== "voice") {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "That isn't a voice channel." });
+      }
+      // One voice seat per person: joining a second channel leaves the first.
+      await ctx.db.chatVoicePresence.deleteMany({
+        where: { userId: ctx.user.id, channelId: { not: input.channelId } },
+      });
+      const patch = {
+        ...(input.muted !== undefined ? { muted: input.muted } : {}),
+        ...(input.deafened !== undefined ? { deafened: input.deafened } : {}),
+      };
+      await ctx.db.chatVoicePresence.upsert({
+        where: { channelId_userId: { channelId: input.channelId, userId: ctx.user.id } },
+        create: {
+          channelId: input.channelId,
+          userId: ctx.user.id,
+          muted: input.muted ?? false,
+          deafened: input.deafened ?? false,
+        },
+        // Touch updatedAt even when nothing else changed — this is the beat.
+        update: { ...patch, joinedAt: undefined },
+      });
+      // Prisma skips the @updatedAt bump when the update is a no-op, so force
+      // a write the heartbeat can rely on.
+      await ctx.db.chatVoicePresence.update({
+        where: { channelId_userId: { channelId: input.channelId, userId: ctx.user.id } },
+        data: { ...patch, updatedAt: new Date() },
+      });
+      return { ok: true };
+    }),
+
+  voiceLeave: protectedProcedure.mutation(async ({ ctx }) => {
+    await ctx.db.chatVoicePresence.deleteMany({ where: { userId: ctx.user.id } });
+    await ctx.db.chatVoiceSignal.deleteMany({
+      where: { OR: [{ fromUserId: ctx.user.id }, { toUserId: ctx.user.id }] },
+    });
+    return { ok: true };
+  }),
+
+  /** Everyone currently connected to one voice channel. */
+  voiceState: protectedProcedure
+    .input(z.object({ channelId: z.string() }))
+    .query(async ({ ctx, input }) => {
+      const rows = await ctx.db.chatVoicePresence.findMany({
+        where: {
+          channelId: input.channelId,
+          updatedAt: { gt: new Date(Date.now() - VOICE_STALE_MS) },
+        },
+        include: { user: { select: { id: true, name: true, avatarUrl: true } } },
+        orderBy: { joinedAt: "asc" },
+      });
+      return rows.map((r) => ({
+        id: r.user.id,
+        name: r.user.name,
+        avatarUrl: r.user.avatarUrl,
+        muted: r.muted,
+        deafened: r.deafened,
+        isMe: r.userId === ctx.user.id,
+      }));
+    }),
+
+  /** Post one WebRTC offer/answer/candidate into a peer's mailbox. */
+  voiceSignal: protectedProcedure
+    .input(
+      z.object({
+        channelId: z.string(),
+        toUserId: z.string(),
+        kind: z.enum(["offer", "answer", "ice"]),
+        payload: z.string().max(20_000),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      await ctx.db.chatVoiceSignal.create({
+        data: {
+          channelId: input.channelId,
+          fromUserId: ctx.user.id,
+          toUserId: input.toUserId,
+          kind: input.kind,
+          payload: input.payload,
+        },
+      });
+      return { ok: true };
+    }),
+
+  /** Drain my signalling mailbox — reading a signal consumes it. */
+  voicePoll: protectedProcedure
+    .input(z.object({ channelId: z.string() }))
+    .mutation(async ({ ctx, input }) => {
+      const rows = await ctx.db.chatVoiceSignal.findMany({
+        where: { channelId: input.channelId, toUserId: ctx.user.id },
+        orderBy: { createdAt: "asc" },
+        take: 60,
+      });
+      if (rows.length > 0) {
+        await ctx.db.chatVoiceSignal.deleteMany({ where: { id: { in: rows.map((r) => r.id) } } });
+      }
+      return rows.map((r) => ({
+        id: r.id,
+        fromUserId: r.fromUserId,
+        kind: r.kind as "offer" | "answer" | "ice",
+        payload: r.payload,
+      }));
     }),
 
   /** One number for the sidebar badge — cheap enough to poll app-wide. */
