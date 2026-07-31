@@ -2,7 +2,14 @@ import { describe, it, expect } from "vitest";
 import {
   CHAT_SEED,
   GROUP_WINDOW_MS,
+  crossesDay,
+  dayLabel,
+  dmKeyFor,
+  dmMemberIds,
+  dmPeerId,
   groupMessages,
+  isDmKey,
+  isDmMember,
   serverInitials,
   unreadLabel,
 } from "./chat";
@@ -86,6 +93,52 @@ describe("unreadLabel", () => {
     expect(unreadLabel(9)).toBe("9");
     expect(unreadLabel(10)).toBe("9+");
     expect(unreadLabel(400, 99)).toBe("99+");
+  });
+});
+
+describe("direct-message keys", () => {
+  it("is order-independent", () => {
+    expect(dmKeyFor("bob", "alice")).toBe("dm:alice:bob");
+    expect(dmKeyFor("alice", "bob")).toBe("dm:alice:bob");
+  });
+
+  it("detects dm keys", () => {
+    expect(isDmKey("dm:a:b")).toBe(true);
+    expect(isDmKey("general")).toBe(false);
+  });
+
+  it("extracts both members", () => {
+    expect(dmMemberIds("dm:a:b")).toEqual(["a", "b"]);
+    expect(dmMemberIds("general")).toEqual([]);
+  });
+
+  it("guards membership", () => {
+    expect(isDmMember("dm:a:b", "a")).toBe(true);
+    expect(isDmMember("dm:a:b", "c")).toBe(false);
+  });
+
+  it("finds the other person, and nobody for outsiders", () => {
+    expect(dmPeerId("dm:a:b", "a")).toBe("b");
+    expect(dmPeerId("dm:a:b", "b")).toBe("a");
+    expect(dmPeerId("dm:a:b", "c")).toBeNull();
+  });
+});
+
+describe("day dividers", () => {
+  const now = new Date("2026-07-31T15:00:00");
+
+  it("labels today and yesterday", () => {
+    expect(dayLabel(new Date("2026-07-31T01:00:00"), now)).toBe("Today");
+    expect(dayLabel(new Date("2026-07-30T23:59:00"), now)).toBe("Yesterday");
+  });
+
+  it("spells out older dates", () => {
+    expect(dayLabel(new Date("2026-07-01T10:00:00"), now)).toMatch(/July|7/);
+  });
+
+  it("knows when two stamps cross midnight", () => {
+    expect(crossesDay(new Date("2026-07-30T23:59:00"), new Date("2026-07-31T00:01:00"))).toBe(true);
+    expect(crossesDay(new Date("2026-07-31T08:00:00"), new Date("2026-07-31T22:00:00"))).toBe(false);
   });
 });
 
