@@ -78,16 +78,38 @@ everyone.)
 
 ## Quickstart
 
-One‑command setup + start (creates `.env` with a fresh secret, installs, migrates,
-seeds on first run, builds, and serves):
+One‑command setup + start. The first run (no `.env` yet) launches an interactive
+setup wizard: it asks for your public domain (optional), obtains a Let's Encrypt
+certificate with certbot automatically (nginx reverse proxy, HTTP‑01
+verification), generates the required secrets, and walks through the env vars —
+optional integrations can be skipped and configured later in `.env`. Then it
+installs, migrates, seeds on first run, builds, and serves:
 
 ```bash
 ./deploy.sh              # production build + start on http://localhost:3000
 ./deploy.sh dev          # development server
 ./deploy.sh --smoke      # setup + build + health checks + unit tests, then exit
 ./deploy.sh --reset      # drop, re-migrate and re-seed the database
-# flags: --seed  --no-install  --no-build  --port 3001
+./deploy.sh --setup      # re-run the setup wizard (backs up existing .env)
+./deploy.sh --domain crm.example.com --email you@example.com   # non-interactive TLS
+# flags: --seed  --no-install  --no-build  --no-tls  --port 3001
 ```
+
+### Windows
+
+Run the PowerShell counterpart (or double‑click `deploy.bat`):
+
+```powershell
+.\deploy.ps1             # setup wizard on first run, then build + start
+.\deploy.ps1 -Dev        # development server
+.\deploy.ps1 -Setup      # re-run the setup wizard
+.\deploy.ps1 -Reset      # drop, re-migrate and re-seed the database
+# flags: -Seed  -NoInstall  -NoBuild  -Port 3001
+```
+
+Automatic certbot TLS is Linux‑only; to expose a Windows machine publicly, put
+it behind a tunnel or reverse proxy that terminates HTTPS (Cloudflare Tunnel,
+ngrok, IIS/win‑acme) and set `APP_URL` to the public address.
 
 Or run the steps manually:
 
@@ -101,16 +123,17 @@ pnpm dev                    # http://localhost:3000
 
 ### GitHub Codespaces / proxies / tunnels
 
-Next.js blocks Server Actions (like sign‑in) when the request's `Origin` doesn't
-match the forwarded host — you'll see *"x-forwarded-host … does not match origin …
-Aborting the action."* Auxa pre‑allows localhost plus common tunnels
-(`*.app.github.dev`, `*.gitpod.io`, `*.ngrok*`, `*.trycloudflare.com`) in
-`next.config.ts`. For any other proxied domain, add it via `ALLOWED_ORIGINS` in
-`.env` (comma‑separated) and rebuild:
-
-```bash
-ALLOWED_ORIGINS="your-space.app.github.dev" ./deploy.sh
-```
+Next.js normally blocks Server Actions (like sign‑in) when the request's
+`Origin` doesn't match the forwarded host — the *"x-forwarded-host … does not
+match origin … Aborting the action."* 500 that used to break sign‑in on Vercel
+and behind proxies. Auxa now accepts **every** origin: `src/proxy.ts` aligns
+`x-forwarded-host` with the request's own `Origin` before the check runs, so
+sign‑in works on any domain, tunnel, or proxy with zero configuration. (The
+session cookie is `httpOnly` + `SameSite=Lax`, so cross‑site POSTs don't carry
+credentials anyway.) `next.config.ts` additionally pre‑allows localhost, Vercel
+(`*.vercel.app` + the deployment's own URLs) and common tunnels as a second
+line of defense; `ALLOWED_ORIGINS` in `.env` (comma‑separated) still works for
+anything exotic.
 
 **Public URL for emails & webhooks.** In Codespaces the server listens on
 `localhost:3000` but is reached through a forwarded URL like
