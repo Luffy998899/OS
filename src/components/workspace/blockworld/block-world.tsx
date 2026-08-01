@@ -293,6 +293,28 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
   const overlayRef = useRef<Overlay>(null);
   overlayRef.current = overlay;
 
+  // Opening any overlay must free the mouse and hand the keyboard to the
+  // panel — nobody should have to press Escape before they can type.
+  const openOverlay = useCallback((o: NonNullable<Overlay>) => {
+    if (document.pointerLockElement) document.exitPointerLock();
+    setOverlay(o);
+  }, []);
+
+  // Once the panel has rendered, put the caret in its first typeable field so
+  // interacting with a computer or opening chat means you can type instantly.
+  const overlayContentRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!overlay) return;
+    const id = window.setTimeout(() => {
+      const el = overlayContentRef.current;
+      if (!el || el.contains(document.activeElement)) return;
+      el.querySelector<HTMLElement>(
+        "textarea, input:not([type=hidden]):not([disabled]), [contenteditable='true']",
+      )?.focus();
+    }, 80);
+    return () => window.clearTimeout(id);
+  }, [overlay]);
+
   // Build the world once per campus shape.
   const rooms = state.data?.rooms;
   const projects = state.data?.projects;
@@ -470,17 +492,17 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
       if (poi.panel === "creative") {
         const door = poi.refId === "internal" ? "internal" : "clients";
         if (door === "internal") openCreative.mutate({ key: "internal" });
-        setOverlay({ kind: "creative", refId: door, name: poi.label });
+        openOverlay({ kind: "creative", refId: door, name: poi.label });
         return;
       }
       if (poi.panel === "client") {
-        setOverlay({ kind: "missions", refId: poi.refId, name: poi.label });
+        openOverlay({ kind: "missions", refId: poi.refId, name: poi.label });
         return;
       }
       const kind = poi.panel as OverlayKind;
-      setOverlay({ kind, refId: poi.refId, name: poi.label });
+      openOverlay({ kind, refId: poi.refId, name: poi.label });
     },
-    [E, openCreative],
+    [E, openCreative, openOverlay],
   );
 
   // ---- the Three.js scene ----
@@ -1020,25 +1042,25 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
           openInteraction(E.aimed);
           return;
         case "KeyB":
-          setOverlay({ kind: "bounties" });
+          openOverlay({ kind: "bounties" });
           return;
         case "KeyT":
-          setOverlay({ kind: "skills" });
+          openOverlay({ kind: "skills" });
           return;
         case "KeyM":
-          setOverlay({ kind: "map" });
+          openOverlay({ kind: "map" });
           return;
         case "KeyO":
-          setOverlay({ kind: "settings" });
+          openOverlay({ kind: "settings" });
           return;
         case "KeyC":
-          setOverlay({ kind: "chat" });
+          openOverlay({ kind: "chat" });
           return;
         case "Tab":
-          setOverlay({ kind: "roster" });
+          openOverlay({ kind: "roster" });
           return;
         case "KeyH":
-          setOverlay({ kind: "help" });
+          openOverlay({ kind: "help" });
           return;
         case "KeyF":
           if (document.fullscreenElement) void document.exitFullscreen();
@@ -1058,7 +1080,7 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
       window.removeEventListener("keyup", up);
       window.removeEventListener("blur", blur);
     };
-  }, [E, onExit, openInteraction, container]);
+  }, [E, onExit, openInteraction, openOverlay, container]);
 
   const leave = useCallback(() => {
     if (E.spawned && world) {
@@ -1140,7 +1162,7 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
       {/* Meeting banner */}
       {meeting ? (
         <button
-          onClick={() => setOverlay({ kind: "conference" })}
+          onClick={() => openOverlay({ kind: "conference" })}
           className="absolute top-14 left-1/2 flex -translate-x-1/2 items-center gap-2 rounded-full bg-[#7d1e30]/90 px-4 py-1.5 text-xs font-semibold text-white backdrop-blur-sm"
         >
           📣 {meeting.title} — urgent meeting
@@ -1186,7 +1208,7 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
           ).map(([key, label, kind]) => (
             <button
               key={key}
-              onClick={() => setOverlay({ kind })}
+              onClick={() => openOverlay({ kind })}
               className="flex min-w-16 flex-col items-center rounded-lg border border-white/12 bg-black/55 px-2.5 py-1.5 backdrop-blur-sm transition-colors hover:bg-black/75"
             >
               <kbd className="font-mono text-[0.6rem] text-[#ffd166]">{key}</kbd>
@@ -1228,7 +1250,7 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
                 esc
               </button>
             </div>
-            <div className="min-h-0 flex-1 overflow-y-auto p-5">
+            <div ref={overlayContentRef} className="min-h-0 flex-1 overflow-y-auto p-5">
               {overlay.kind === "bounties" ? (
                 <BountyBoardPanel
                   onChanged={() => {
