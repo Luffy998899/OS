@@ -22,6 +22,7 @@ export type WorldInput = {
   projects: { id: string; name: string; floor: number; buildingKey: string }[];
 };
 
+
 const SX = 76;
 const SY = 76;
 const SZ = 72;
@@ -103,6 +104,37 @@ const LY0 = 62;
 const LY1 = 72;
 const LZ0 = 4;
 const LZ1 = 32;
+
+/** Dimensions of the editable world, for callers that need them up front. */
+export const WORLD_SIZE = { sx: SX, sy: SY, sz: SZ } as const;
+
+/**
+ * A blank canvas: a paved ground plane and nothing else. This is the world a
+ * fresh install starts from — the office generator below is a *template* you
+ * stamp in from build mode, not something generated behind your back.
+ * Everything above the slab is yours to place.
+ */
+export function buildEmptyWorld(): World {
+  const blocks = new Uint8Array(SX * SY * SZ);
+  // One solid storey-zero slab so nobody spawns into the void.
+  for (let z = 0; z < SZ; z++)
+    for (let x = 0; x < SX; x++) blocks[(SLAB * SZ + z) * SX + x] = B.paving;
+
+  return {
+    sx: SX,
+    sy: SY,
+    sz: SZ,
+    blocks,
+    spawn: { x: SX / 2, y: FLOOR, z: SZ / 2 },
+    spawnYaw: 0,
+    pois: [],
+    regions: [],
+    signs: [],
+    npcs: [],
+    // No lair until somebody builds one.
+    lair: { min: { x: -1, y: -1, z: -1 }, max: { x: -1, y: -1, z: -1 } },
+  };
+}
 
 type Facing = "n" | "s" | "e" | "w";
 const STEP: Record<Facing, [number, number]> = {

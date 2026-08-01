@@ -157,7 +157,8 @@ export const BLOCKS: BlockDef[] = [
     solid: true,
     opaque: false,
     height: 1,
-    tiles: { top: TILE.DESK_TOP, bottom: TILE.WOOD_DARK, side: TILE.WOOD_VENEER },
+    // Green leather writing top over mahogany pedestals, per the reference.
+    tiles: { top: TILE.DESK_TOP, bottom: TILE.WOOD_DARK, side: TILE.WOOD_DARK },
   },
   {
     key: "desk_dark",

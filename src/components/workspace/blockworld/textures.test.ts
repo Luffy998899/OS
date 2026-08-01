@@ -332,38 +332,44 @@ describe("paintAtlas", () => {
     expect(meanLum(body)).toBeGreaterThan(220);
   });
 
-  it("draws a monitor that reads as a screen", () => {
+  it("draws an all-in-one: aluminium frame, dark glass, a lit desktop", () => {
     const mon = cell(atlas, TILE.MONITOR_ON);
-    // The top bezel is the darkest edge of the whole tile.
-    expect(meanLum(rowAt(mon, 0))).toBeLessThan(30);
-    // The panel inside it is lit, so the screen reads as on rather than off.
-    const panel = mon.filter((_, i) => {
+    // The reference machine is framed in silver, not a black bezel.
+    const frame = meanLum(rowAt(mon, 0));
+    expect(frame, "the frame is not aluminium").toBeGreaterThan(150);
+    // The glass inside the frame is near-black by comparison.
+    const glass = mon.filter((_, i) => {
       const x = i % TILE_PX;
       const y = (i / TILE_PX) | 0;
       return (
-        x > TILE_PX * 0.2 && x < TILE_PX * 0.8 && y > TILE_PX * 0.2 && y < TILE_PX * 0.7
+        x > TILE_PX * 0.2 && x < TILE_PX * 0.8 && y > TILE_PX * 0.15 && y < TILE_PX * 0.6
       );
     });
-    expect(meanLum(panel)).toBeGreaterThan(meanLum(rowAt(mon, 0)) + 8);
+    expect(meanLum(glass), "the screen is not dark glass").toBeLessThan(frame - 80);
+    // The chin below the glass is frame-coloured too.
+    expect(meanLum(rowAt(mon, 0.86))).toBeGreaterThan(120);
+    // The dock is the only colour on the panel — proof it is switched on.
     const blue = mon.filter((p) => p.b > p.r + 40 && p.b > 120).length;
     const green = mon.filter((p) => p.g > p.r + 30 && p.g > p.b + 20).length;
     const amber = mon.filter((p) => p.r > 150 && p.g > 110 && p.b < 110).length;
-    expect(blue, "no blue window chrome").toBeGreaterThanOrEqual(scaled(4));
-    expect(green, "no green window chrome").toBeGreaterThanOrEqual(scaled(4));
-    expect(amber, "no amber window chrome").toBeGreaterThanOrEqual(scaled(4));
+    expect(blue, "no blue dock icon").toBeGreaterThanOrEqual(scaled(1));
+    expect(green, "no green dock icon").toBeGreaterThanOrEqual(scaled(1));
+    expect(amber, "no amber dock icon").toBeGreaterThanOrEqual(scaled(1));
   });
 
-  it("draws a readable analogue clock on the wall", () => {
+  it("draws a mantel clock: pale dial, dark hands, timber base", () => {
     const clock = cell(atlas, TILE.CLOCK);
-    const face = clock.filter((p) => lum(p) > 245).length;
-    const ring = clock.filter((p) => lum(p) > 95 && lum(p) < 140).length;
-    const hands = clock.filter((p) => lum(p) < 60).length;
-    expect(face, "no clock face").toBeGreaterThan(scaled(40));
-    expect(ring, "no bezel around the face").toBeGreaterThan(scaled(12));
-    expect(hands, "no hands").toBeGreaterThanOrEqual(scaled(9));
-    // Corners stay wall, not clock.
-    expect(lum(clock[0])).toBeGreaterThan(200);
-    expect(lum(clock[0])).toBeLessThan(245);
+    // The reference dial is cream rather than white, so it is "pale", not 245+.
+    const dial = clock.filter((p) => lum(p) > 200).length;
+    expect(dial, "no dial").toBeGreaterThan(scaled(40));
+    // Hands, hour marks and the base are all dark against it.
+    const dark = clock.filter((p) => lum(p) < 60).length;
+    expect(dark, "no hands or marks").toBeGreaterThanOrEqual(scaled(9));
+    // The clock stands on wood: the bottom of the tile is dark and warm.
+    const base = rowAt(clock, 0.9);
+    expect(meanLum(base), "the base is not timber").toBeLessThan(110);
+    const warm = base.filter((p) => p.r > p.b + 20).length;
+    expect(warm, "the base is not warm-toned").toBeGreaterThan(TILE_PX * 0.5);
   });
 
   it("lights the server rack with green and amber status LEDs", () => {

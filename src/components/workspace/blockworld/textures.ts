@@ -202,24 +202,31 @@ function crack(c: Ctx, r: Rand, color: string): void {
 // ---------------------------------------------------------------------------
 
 /**
- * Loop-pile carpet tile: a woven base, colour flecks, and a darker seam on the
- * top and left edges so a laid floor shows its grid.
+ * Woven mat tile, after the bamboo/rattan reference: fine slats running one
+ * way, a slight warp thread across them, and a dark bound edge framing the
+ * mat. Laid out over a floor these read as mat tiles rather than broadloom.
  */
 function carpet(c: Ctx, r: Rand, base: string, flecks: string[]): void {
-  vgrad(c, shade(base, 6), shade(base, -6));
-  // The weave: alternating pixel rows and columns, very low contrast.
+  vgrad(c, shade(base, 7), shade(base, -7));
+
+  // The slats: a fine repeating run with a darker gap between each pair.
   for (let y = 0; y < TILE_PX; y++) {
-    for (let x = 0; x < TILE_PX; x++) {
-      if ((x + y) % 2 === 0) continue;
-      px(c, x, y, 1, 1, `rgba(0,0,0,${(x % 4 === 0 ? 0.05 : 0.03).toFixed(2)})`);
-    }
+    const inGap = y % 3 === 0;
+    px(c, 0, y, TILE_PX, 1, inGap ? "rgba(0,0,0,0.16)" : "rgba(255,255,255,0.05)");
   }
-  speckle(c, r, flecks, 0.16);
-  grain(c, r, 10, 0.5);
-  // Seam: the cut edge of the tile, darker on two sides only.
-  const seam = shade(base, -30);
-  px(c, 0, 0, TILE_PX, U / 2 || 1, seam);
-  px(c, 0, 0, U / 2 || 1, TILE_PX, seam);
+  // Warp threads crossing the slats, so the weave reads in both directions.
+  for (let x = 0; x < TILE_PX; x += 4) {
+    px(c, x, 0, 1, TILE_PX, "rgba(0,0,0,0.07)");
+    px(c, x + 1, 0, 1, TILE_PX, "rgba(255,255,255,0.05)");
+  }
+  speckle(c, r, flecks, 0.1);
+  grain(c, r, 7, 0.4);
+
+  // The bound edge: a dark border all the way round, like the reference mat.
+  const band = shade(base, -74);
+  border(c, band, U);
+  px(c, U, U, TILE_PX - U * 2, 1, "rgba(0,0,0,0.22)");
+  px(c, 0, 0, TILE_PX, 1, shade(band, 14));
 }
 
 /** Flat painted plaster: soft vertical wash, roller texture, corner bevel. */
@@ -403,7 +410,25 @@ const PAINTERS: Record<keyof typeof TILE, Painter> = {
 
   // ---- timber + hard floors ----
   WOOD_VENEER: (c, r) => veneer(c, r, "#b98d55", "#8d6539", "#d3ab73"),
-  WOOD_DARK: (c, r) => veneer(c, r, "#6d4f33", "#4d3722", "#8a684a"),
+
+  WOOD_DARK: (c, r) => {
+    // The executive desk's pedestal from the reference: dark mahogany with a
+    // recessed drawer front and a brass pull. Doubles as the apron of a dark
+    // table, so the hardware stays understated.
+    veneer(c, r, "#5a3c29", "#3d281a", "#7a583e");
+    const m = 2 * U;
+    // Drawer front, set in from the carcass.
+    px(c, m, m, TILE_PX - m * 2, TILE_PX - m * 2, "rgba(0,0,0,0.16)");
+    px(c, m, m, TILE_PX - m * 2, 1, "rgba(255,255,255,0.12)");
+    px(c, m, TILE_PX - m - 1, TILE_PX - m * 2, 1, "rgba(0,0,0,0.34)");
+    px(c, m, m, 1, TILE_PX - m * 2, "rgba(255,255,255,0.08)");
+    px(c, TILE_PX - m - 1, m, 1, TILE_PX - m * 2, "rgba(0,0,0,0.3)");
+    // Brass pull across the middle of the drawer.
+    const hy = Math.floor(TILE_PX * 0.5);
+    px(c, Math.floor(TILE_PX * 0.34), hy, Math.floor(TILE_PX * 0.32), U, "#a8873f");
+    px(c, Math.floor(TILE_PX * 0.34), hy, Math.floor(TILE_PX * 0.32), 1, "#d8b866");
+    bevel(c, "#7a583e", "#2b1c12", 1);
+  },
 
   CONCRETE: (c, r) => {
     vgrad(c, "#a4a4a1", "#918f8c");
@@ -452,23 +477,85 @@ const PAINTERS: Record<keyof typeof TILE, Painter> = {
   },
 
   // ---- workstation ----
-  MONITOR_ON: (c, r) => screen(c, r, "#1d3f63", ["#5fa8e0", "#8fd0a8", "#e0b45f"]),
+  MONITOR_ON: (c, r) => {
+    // The all-in-one from the reference: a thin silver frame round a black
+    // glossy panel, a deeper silver chin, and a slim stand. The screen keeps a
+    // dim desktop and a row of dock icons so it reads as switched on.
+    fill(c, "#0a0b0d");
+    // Aluminium frame.
+    const frame = "#b9bdc2";
+    px(c, 0, 0, TILE_PX, U, frame);
+    px(c, 0, 0, U, TILE_PX, frame);
+    px(c, TILE_PX - U, 0, U, TILE_PX, frame);
+    px(c, 0, 0, TILE_PX, 1, "#e4e7ea");
+    px(c, TILE_PX - 1, 0, 1, TILE_PX, "#8f9499");
+    // The chin below the glass, deeper than the other three sides.
+    const chinTop = TILE_PX - U * 3;
+    for (let y = chinTop; y < TILE_PX - U; y++) {
+      px(c, 0, y, TILE_PX, 1, mix("#c6cacf", "#9ea3a8", (y - chinTop) / (U * 2)));
+    }
+    // Glass: near-black, with a soft reflection falling from the top-left.
+    const g0 = U;
+    const gw = TILE_PX - U * 2;
+    const gh = chinTop - U;
+    for (let y = 0; y < gh; y++) {
+      px(c, g0, U + y, gw, 1, mix("#1a2029", "#080a0d", y / gh));
+    }
+    // Dock icons along the bottom of the panel — the only colour on it.
+    const dockY = U + gh - U * 2;
+    const icons = ["#4a90e2", "#5fbf7a", "#e0a94a"];
+    icons.forEach((col, i) => {
+      px(c, g0 + U + i * U * 2, dockY, U, U, col);
+    });
+    // Menu bar and a window edge, very dim.
+    px(c, g0, U, gw, 1, "rgba(255,255,255,0.16)");
+    px(c, g0 + U, U + U * 2, gw - U * 3, 1, "rgba(255,255,255,0.10)");
+    // Glass reflection streak.
+    for (let i = 0; i < 6; i++) {
+      px(c, g0 + i, U, 1, Math.floor(gh * 0.45) - i * 2, "rgba(255,255,255,0.07)");
+    }
+    // Stand foot.
+    px(c, 0, TILE_PX - U, TILE_PX, U, "#0d0e10");
+    px(c, Math.floor(TILE_PX * 0.38), TILE_PX - U, Math.floor(TILE_PX * 0.24), U, "#a7acb1");
+    grain(c, r, 3, 0.15);
+  },
 
   MONITOR_BACK: (c, r) => {
-    vgrad(c, "#31363f", "#22262d");
-    grain(c, r, 6, 0.4);
-    // Vent slots and the stand column.
-    for (let y = 4; y < 11; y += 2) u(c, 4, y, 8, 1, "rgba(0,0,0,0.35)");
-    u(c, 7, 11, 2, 4, "#3a4049");
-    u(c, 5, 15, 6, 1, "#454b55");
-    bevel(c, "#474d57", "#14171b", 1);
+    // Brushed aluminium shell, matching the front's frame.
+    vgrad(c, "#c4c8cd", "#a2a7ac");
+    for (let y = 0; y < TILE_PX; y++) {
+      px(c, 0, y, TILE_PX, 1, r() < 0.5 ? "rgba(255,255,255,0.06)" : "rgba(0,0,0,0.05)");
+    }
+    grain(c, r, 5, 0.35);
+    // The stand boss and column.
+    u(c, 5, 5, 6, 6, "#9aa0a6");
+    u(c, 7, 11, 2, 4, "#8f9499");
+    u(c, 5, 15, 6, 1, "#7d8287");
+    bevel(c, "#e2e5e8", "#7c8186", 1);
   },
 
   DESK_TOP: (c, r) => {
-    veneer(c, r, "#b08a54", "#8a6539", "#c9a370");
-    // The edge banding of a desk, so the top reads as a slab.
-    px(c, 0, TILE_PX - U, TILE_PX, U, "#8c6b41");
-    px(c, 0, TILE_PX - U, TILE_PX, 1, "#c8a877");
+    // The executive desk from the reference, seen from above: a green leather
+    // writing inlay set into a mahogany surround with a gold tooling line.
+    veneer(c, r, "#6b4529", "#4a2e1a", "#8a5c38");
+    const m = 2 * U;
+    px(c, m, m, TILE_PX - m * 2, TILE_PX - m * 2, "#3f6b4f");
+    // Leather has a fine pebbled grain and darkens toward its edges.
+    for (let y = m; y < TILE_PX - m; y++) {
+      const t = Math.abs(y - TILE_PX / 2) / (TILE_PX / 2);
+      px(c, m, y, TILE_PX - m * 2, 1, mix("#477a58", "#2f5540", t));
+    }
+    for (let i = 0; i < 90; i++) {
+      const x = m + Math.floor(r() * (TILE_PX - m * 2));
+      const y = m + Math.floor(r() * (TILE_PX - m * 2));
+      px(c, x, y, 1, 1, r() < 0.5 ? "rgba(255,255,255,0.07)" : "rgba(0,0,0,0.10)");
+    }
+    // Gold tooling around the inlay.
+    px(c, m - 1, m - 1, TILE_PX - m * 2 + 2, 1, "#c9a24e");
+    px(c, m - 1, TILE_PX - m, TILE_PX - m * 2 + 2, 1, "#9a7a36");
+    px(c, m - 1, m - 1, 1, TILE_PX - m * 2 + 2, "#c9a24e");
+    px(c, TILE_PX - m, m - 1, 1, TILE_PX - m * 2 + 2, "#9a7a36");
+    bevel(c, "#9a6c42", "#33200f", 1);
   },
 
   CHAIR: (c, r) => {
@@ -570,23 +657,37 @@ const PAINTERS: Record<keyof typeof TILE, Painter> = {
   },
 
   BOOKS: (c, r) => {
-    fill(c, "#5a4636");
-    // A shelf of spines in different heights and colours.
-    const spines = ["#8a5a3a", "#4f6b8a", "#7a5a86", "#4a7a5a", "#a3703f", "#63566f"];
-    let x = 0;
-    while (x < TILE_PX) {
-      const w = U + Math.floor(r() * 2) * U;
-      const col = pick(r, spines);
-      const top = Math.floor(r() * 2) * U;
-      px(c, x, top, Math.min(w, TILE_PX - x), TILE_PX - top, col);
-      px(c, x, top, 1, TILE_PX - top, shade(col, 22));
-      px(c, x + w - 1, top, 1, TILE_PX - top, shade(col, -22));
-      // A band across the spine, the way book cloth is stamped.
-      px(c, x, top + Math.floor((TILE_PX - top) * 0.3), w, 1, shade(col, 30));
-      x += w;
+    // The glass-fronted cabinet from the reference: a dark mahogany carcass
+    // with a smoked glass door, a shelf rail across it and a slim handle.
+    const wood = "#4a2c1c";
+    vgrad(c, shade(wood, 10), shade(wood, -10));
+    // Grain on the visible frame.
+    for (let i = 0; i < 6; i++) {
+      const y = Math.floor(r() * TILE_PX);
+      px(c, 0, y, TILE_PX, 1, r() < 0.5 ? "rgba(0,0,0,0.16)" : "rgba(255,255,255,0.06)");
     }
-    px(c, 0, TILE_PX - U, TILE_PX, U, "#3d2f24");
-    grain(c, r, 6, 0.3);
+    // The glazed opening, recessed inside the frame.
+    const m = 2 * U;
+    for (let y = m; y < TILE_PX - m; y++) {
+      px(c, m, y, TILE_PX - m * 2, 1, mix("#1c1a19", "#2a2724", (y - m) / (TILE_PX - m * 2)));
+    }
+    // Shelf rail crossing the glass, with its lit top edge.
+    const shelf = Math.floor(TILE_PX * 0.52);
+    px(c, m, shelf, TILE_PX - m * 2, U, "#5a381f");
+    px(c, m, shelf, TILE_PX - m * 2, 1, "#8a5c38");
+    // What is behind the glass, dimly.
+    px(c, m + U, m + U, TILE_PX - m * 2 - U * 2, U, "rgba(150,130,110,0.18)");
+    px(c, m + U, shelf + U * 2, TILE_PX - m * 2 - U * 3, U, "rgba(150,130,110,0.14)");
+    // Reflection down the glass, and the handle.
+    for (let i = 0; i < 5; i++) {
+      px(c, m + i, m, 1, Math.floor((TILE_PX - m * 2) * 0.5) - i * 2, "rgba(255,255,255,0.07)");
+    }
+    px(c, TILE_PX - m - U, Math.floor(TILE_PX * 0.34), 1, U * 3, "#9a7a4e");
+    // Frame edges last, so the glass sits inside them.
+    px(c, 0, 0, TILE_PX, 1, shade(wood, 28));
+    px(c, 0, TILE_PX - 1, TILE_PX, 1, shade(wood, -22));
+    px(c, 0, 0, 1, TILE_PX, shade(wood, 20));
+    px(c, TILE_PX - 1, 0, 1, TILE_PX, shade(wood, -20));
   },
 
   BOOK_STACK: (c, r) => {
@@ -649,32 +750,48 @@ const PAINTERS: Record<keyof typeof TILE, Painter> = {
   },
 
   CLOCK: (c, r) => {
-    // Wall clock: white face, dark ring, hands at ten-past-ten.
-    fill(c, "#e9e7e1");
-    vgrad(c, "#f4f2ec", "#dedbd4");
+    // The mantel clock from the reference: a cream dial in a sandy case,
+    // standing on a dark timber plinth, hands at ten past ten.
+    const plinth = Math.floor(TILE_PX * 0.72);
+    vgrad(c, "#cdbfa4", "#b9a988");
     for (let y = 0; y < 16; y++)
       for (let x = 0; x < 16; x++) {
-        const d = dist(x, y);
-        // Wall, dark outer case, brushed bezel, then the white face — filled,
-        // not a ring, so the dial reads from across the room.
-        if (d > 7.4) dot(c, x, y, "#d5d2cb");
-        else if (d > 6.8) dot(c, x, y, "#2f333a");
-        else if (d > 6.0) dot(c, x, y, "#7c828a");
-        else dot(c, x, y, "#fbfaf7");
+        const d = dist(x, y - 1.2);
+        // Case, then the pale bezel, then the dial itself.
+        if (d > 6.6) continue;
+        if (d > 5.6) dot(c, x, y, "#a2937a");
+        else if (d > 5.0) dot(c, x, y, "#e6dfcd");
+        else dot(c, x, y, "#f3eddc");
       }
-    // Hour ticks at the quarters.
+    // Hour marks. The dial's centre sits at (7.5, 8.7), so these ring it at a
+    // constant radius rather than the tile centre — otherwise they scatter.
     for (const [x, y] of [
-      [7, 2],
-      [7, 13],
-      [2, 7],
-      [13, 7],
+      [7, 4],
+      [11, 8],
+      [3, 8],
     ] as const)
-      dot(c, x, y, "#2f333a");
-    // Hands.
-    u(c, 7, 5, 1, 3, "#22262b");
-    u(c, 8, 7, 3, 1, "#22262b");
-    u(c, 7, 7, 1, 1, "#c0392b");
-    grain(c, r, 4, 0.2);
+      dot(c, x, y, "#2a2622");
+    for (const [x, y] of [
+      [10, 5],
+      [4, 5],
+    ] as const)
+      dot(c, x, y, "#6a6157");
+    // Hands: hour to ten, minute to two, plus the centre boss.
+    dot(c, 6, 7, "#241f1b");
+    dot(c, 5, 6, "#241f1b");
+    dot(c, 8, 7, "#241f1b");
+    dot(c, 9, 6, "#241f1b");
+    dot(c, 7, 8, "#241f1b");
+    // The timber base the case stands on.
+    for (let y = plinth; y < TILE_PX; y++) {
+      px(c, 0, y, TILE_PX, 1, mix("#5a3a24", "#3a2416", (y - plinth) / (TILE_PX - plinth)));
+    }
+    px(c, 0, plinth, TILE_PX, 1, "#7a5334");
+    // Only the case and base get grain — speckling the dial makes it unreadable.
+    for (let y = plinth; y < TILE_PX; y++)
+      for (let x = 0; x < TILE_PX; x++)
+        if (r() < 0.3) px(c, x, y, 1, 1, r() < 0.5 ? "rgba(255,255,255,0.05)" : "rgba(0,0,0,0.07)");
+    px(c, 0, 0, TILE_PX, 1, "#ded1b6");
   },
 
   SIGN_STRIP: (c) => {
@@ -784,34 +901,64 @@ const PAINTERS: Record<keyof typeof TILE, Painter> = {
 
   // ---- studio kit ----
   CAMERA: (c, r) => {
-    vgrad(c, "#2c3036", "#1c1f24");
-    grain(c, r, 6, 0.4);
-    // Body, lens barrel and a record light.
-    u(c, 1, 4, 14, 8, "#22262b");
-    for (let ring = 0; ring < 4; ring++) {
-      const k = 4 + ring;
-      const sz = 16 - k * 2;
-      if (sz <= 0) break;
-      u(c, k, k, sz, sz, ring % 2 === 0 ? "#3a4048" : "#2a2f36");
+    // The blocky SLR from the reference: near-black body, a stepped lens
+    // barrel with a bright rim, a viewfinder hump and a shutter button.
+    vgrad(c, "#242628", "#141517");
+    grain(c, r, 5, 0.35);
+    // Body plate.
+    u(c, 0, 4, 16, 10, "#1b1c1e");
+    px(c, 0, 4 * U, TILE_PX, 1, "#3a3d41");
+    // Viewfinder hump across the top, offset like the reference.
+    u(c, 4, 1, 7, 3, "#202225");
+    px(c, 4 * U, U, 7 * U, 1, "#43474c");
+    // Shutter button and hot shoe, in the pale grey the model uses.
+    u(c, 12, 2, 2, 1, "#c9ccd0");
+    u(c, 2, 2, 2, 1, "#8b9096");
+    // Lens: concentric square rings stepping outward, brightest at the rim.
+    const rings = ["#101113", "#1d1f22", "#101113", "#2a2d31", "#0c0d0f"];
+    for (let i = 0; i < rings.length; i++) {
+      const k = 4 + i;
+      const size = 16 - k * 2;
+      if (size <= 1) break;
+      u(c, k, k, size, size, rings[i]);
     }
-    u(c, 7, 7, 2, 2, "#8fb8d8");
-    dot(c, 7, 7, "#dfeaf4");
-    dot(c, 13, 4, "#e0523f");
-    bevel(c, "#464c55", "#101317", 1);
+    // The white rim stripe that reads instantly as a lens.
+    u(c, 4, 4, 8, 1, "#e8eaec");
+    u(c, 4, 11, 8, 1, "#9aa0a6");
+    u(c, 4, 4, 1, 8, "#c9ccd0");
+    // Glass at the centre, with a highlight.
+    u(c, 7, 7, 2, 2, "#1a2330");
+    dot(c, 7, 7, "#5b7fa5");
+    bevel(c, "#3c4046", "#0a0b0c", 1);
   },
 
   TRIPOD: (c, r) => {
-    fill(c, "#2b3037");
-    vgrad(c, "#3c4148", "#272b31");
-    grain(c, r, 5, 0.3);
-    // Three legs splaying out from a centre column.
-    u(c, 7, 0, 2, 7, "#4a5058");
-    for (let i = 0; i < 8; i++) {
-      dot(c, 7 - Math.floor(i * 0.8), 7 + i, "#454b53");
-      dot(c, 8 + Math.floor(i * 0.8), 7 + i, "#454b53");
-      dot(c, 7, 7 + i, "#3a4046");
+    // Cut-out tile: black legs and a silver centre column against nothing, so
+    // the stand reads as a frame rather than a solid slab.
+    // Pan head and quick-release plate on top.
+    u(c, 5, 0, 6, 2, "#26292d");
+    u(c, 6, 0, 4, 1, "#4c525a");
+    // The telescoping column — the reference's one bright element.
+    u(c, 7, 2, 2, 4, "#b9bec4");
+    u(c, 7, 2, 1, 4, "#e2e6ea");
+    u(c, 6, 5, 4, 1, "#3a4046");
+    // A pan handle angling off to one side.
+    for (let i = 0; i < 4; i++) dot(c, 10 + i, 1 + i, "#2b2f34");
+    // Three legs splaying from the collar, the outer two thinning as they go.
+    for (let i = 0; i < 10; i++) {
+      const spread = Math.floor(i * 0.62);
+      dot(c, 7 - spread, 6 + i, "#1e2125");
+      dot(c, 8 + spread, 6 + i, "#1e2125");
+      if (i > 2) {
+        dot(c, 7 - spread, 6 + i, "#2a2e33");
+        dot(c, 8 + spread, 6 + i, "#2a2e33");
+      }
+      dot(c, 7, 6 + i, "#232629");
+      dot(c, 8, 6 + i, "#171a1d");
     }
-    bevel(c, "#525860", "#1a1d21", 1);
+    // Rubber feet.
+    for (const fx of [1, 7, 14]) u(c, fx, 15, 2, 1, "#0e1012");
+    grain(c, r, 4, 0.2);
   },
 
   SOFTBOX: (c, r) => {
@@ -844,14 +991,25 @@ const PAINTERS: Record<keyof typeof TILE, Painter> = {
   },
 
   MIC: (c, r) => {
-    vgrad(c, "#4f555d", "#33383e");
-    grain(c, r, 6, 0.4);
-    // Grille head over a slim body — a woven mesh, not a flat cap.
-    for (let y = 1; y < 8; y++)
-      for (let x = 5; x < 11; x++) dot(c, x, y, (x + y) % 2 === 0 ? "#767d86" : "#3d434a");
-    u(c, 7, 8, 2, 7, "#454b53");
-    u(c, 6, 15, 4, 1, "#2b3036");
-    bevel(c, "#5f666e", "#22262b", 1);
+    // The black boom rig from the reference: a barrel head pointing off to one
+    // side, carried on an arm, over a pale grip. Cut-out, so the arm reads.
+    // The barrel, stepped like the voxel model.
+    u(c, 0, 5, 7, 4, "#17191b");
+    u(c, 0, 6, 7, 2, "#212427");
+    u(c, 0, 5, 1, 4, "#3d4247");
+    // A silver band where the head meets the body.
+    u(c, 7, 5, 1, 4, "#c2c7cc");
+    // Body block.
+    u(c, 8, 4, 5, 6, "#1b1d20");
+    px(c, 8 * U, 4 * U, 5 * U, 1, "#40454a");
+    // The arm sweeping up and away.
+    for (let i = 0; i < 5; i++) dot(c, 12 + Math.floor(i * 0.6), 4 - i + 1, "#232629");
+    u(c, 13, 1, 3, 1, "#2b2f33");
+    // Pale vertical grip under the body — the one light element on the model.
+    u(c, 5, 9, 2, 7, "#d3d7db");
+    u(c, 5, 9, 1, 7, "#f0f2f4");
+    u(c, 4, 15, 4, 1, "#2b2f33");
+    grain(c, r, 4, 0.25);
   },
 
   // ---- desk clutter (kept in the palette; the floor no longer places it) ----
@@ -941,17 +1099,22 @@ const PAINTERS: Record<keyof typeof TILE, Painter> = {
   },
 
   SOFA: (c, r) => {
-    vgrad(c, "#5a6672", "#414c56");
-    // Upholstery: a seat cushion line and piped edges.
-    for (let i = 0; i < TILE_PX * 3; i++) {
-      const x = Math.floor(r() * TILE_PX);
-      const y = Math.floor(r() * TILE_PX);
-      px(c, x, y, 1, 1, r() < 0.5 ? "rgba(255,255,255,0.06)" : "rgba(0,0,0,0.06)");
+    // The bench from the reference: a pale stone-grey slab seat sitting on a
+    // dark timber base, with the shadow line where the two meet.
+    const split = Math.floor(TILE_PX * 0.56);
+    vgrad(c, "#e6e6e4", "#c9c9c6");
+    grain(c, r, 8, 0.6);
+    speckle(c, r, ["#d6d6d3", "#efefec", "#c2c2bf"], 0.22);
+    // The slab's front edge catches the light; under it the base is in shade.
+    px(c, 0, split - 1, TILE_PX, 1, "#f4f4f2");
+    px(c, 0, split, TILE_PX, TILE_PX - split, "#3b2f28");
+    for (let y = split; y < TILE_PX; y++) {
+      px(c, 0, y, TILE_PX, 1, mix("#4a3b31", "#2b221c", (y - split) / (TILE_PX - split)));
     }
-    px(c, 0, Math.floor(TILE_PX * 0.45), TILE_PX, 1, "#333c45");
-    px(c, 0, Math.floor(TILE_PX * 0.45) + 1, TILE_PX, 1, "#6b7783");
-    grain(c, r, 6, 0.4);
-    bevel(c, "#6e7a86", "#2f373f", 1);
+    px(c, 0, split, TILE_PX, 1, "rgba(0,0,0,0.5)");
+    grain(c, r, 6, 0.35);
+    px(c, 0, 0, TILE_PX, 1, "#ffffff");
+    px(c, TILE_PX - 1, 0, 1, split, "#b4b4b1");
   },
 
   LAMP: (c, r) => {
@@ -969,18 +1132,21 @@ const PAINTERS: Record<keyof typeof TILE, Painter> = {
   },
 
   RUG_PATTERN: (c, r) => {
-    vgrad(c, "#8a626b", "#75505a");
-    // A woven border and a simple repeating motif.
-    border(c, "#5f414a", U);
-    border(c, "#9c757e", 1);
-    for (let y = 4; y < 12; y += 3)
-      for (let x = 4; x < 12; x += 3) u(c, x, y, 2, 2, "#a3818a");
-    for (let i = 0; i < TILE_PX * 2; i++) {
-      const x = Math.floor(r() * TILE_PX);
-      const y = Math.floor(r() * TILE_PX);
-      px(c, x, y, 1, 1, "rgba(0,0,0,0.07)");
+    // The cream fine-woven mat: pale, tightly ribbed, almost no pattern. Its
+    // whole character is the density of the weave, so that is all it gets.
+    vgrad(c, "#eae4d1", "#ddd6c1");
+    for (let y = 0; y < TILE_PX; y++) {
+      px(c, 0, y, TILE_PX, 1, y % 2 === 0 ? "rgba(0,0,0,0.07)" : "rgba(255,255,255,0.10)");
     }
-    grain(c, r, 7, 0.5);
+    // A slow slub in the weave so the ribs are not perfectly mechanical.
+    for (let i = 0; i < 10; i++) {
+      const y = Math.floor(r() * TILE_PX);
+      px(c, 0, y, TILE_PX, 1, "rgba(160,150,125,0.16)");
+    }
+    for (let x = 0; x < TILE_PX; x += 6) px(c, x, 0, 1, TILE_PX, "rgba(0,0,0,0.045)");
+    grain(c, r, 5, 0.35);
+    px(c, 0, 0, TILE_PX, 1, "rgba(255,255,255,0.25)");
+    px(c, 0, TILE_PX - 1, TILE_PX, 1, "rgba(0,0,0,0.12)");
   },
 
   VENT: (c, r) => {
