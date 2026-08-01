@@ -16,8 +16,21 @@ export const WALK_SPEED = 6.2;
 export const SPRINT_SPEED = 12.5;
 export const STEP_UP = 0.55;
 
+export const FLY_SPEED = 11;
+export const FLY_SPRINT_SPEED = 26;
+export const FLY_VERTICAL_SPEED = 9;
+
 export type PlayerState = { pos: Vec3; vel: Vec3; onGround: boolean };
-export type MoveInput = { forward: number; strafe: number; jump: boolean; sprint: boolean };
+export type MoveInput = {
+  forward: number;
+  strafe: number;
+  jump: boolean;
+  sprint: boolean;
+  /** Creative flight: no gravity, jump/crouch become up/down. Still collides. */
+  fly?: boolean;
+  /** Descend while flying (crouch key). */
+  descend?: boolean;
+};
 
 const EPS = 0.001;
 const TERMINAL_FALL = -40;
@@ -184,18 +197,29 @@ export function stepPlayer(
     f /= len;
     s /= len;
   }
-  const speed = input.sprint ? SPRINT_SPEED : WALK_SPEED;
   const sin = Math.sin(yaw);
   const cos = Math.cos(yaw);
-  const control = st.onGround ? 1 : AIR_CONTROL;
-  const tx = (sin * f + cos * s) * speed * control;
-  const tz = (-cos * f + sin * s) * speed * control;
-  const blend = st.onGround ? 1 : AIR_BLEND;
-  st.vel.x += (tx - st.vel.x) * blend;
-  st.vel.z += (tz - st.vel.z) * blend;
 
-  if (input.jump && st.onGround) st.vel.y = JUMP_SPEED;
-  st.vel.y = Math.max(st.vel.y - GRAVITY * dt, TERMINAL_FALL);
+  if (input.fly) {
+    // Creative flight: full authority in all three axes, no gravity, but the
+    // world is still solid — you stop at a wall instead of passing through it.
+    const speed = input.sprint ? FLY_SPRINT_SPEED : FLY_SPEED;
+    st.vel.x = (sin * f + cos * s) * speed;
+    st.vel.z = (-cos * f + sin * s) * speed;
+    st.vel.y =
+      (input.jump ? FLY_VERTICAL_SPEED : 0) - (input.descend ? FLY_VERTICAL_SPEED : 0);
+  } else {
+    const speed = input.sprint ? SPRINT_SPEED : WALK_SPEED;
+    const control = st.onGround ? 1 : AIR_CONTROL;
+    const tx = (sin * f + cos * s) * speed * control;
+    const tz = (-cos * f + sin * s) * speed * control;
+    const blend = st.onGround ? 1 : AIR_BLEND;
+    st.vel.x += (tx - st.vel.x) * blend;
+    st.vel.z += (tz - st.vel.z) * blend;
+
+    if (input.jump && st.onGround) st.vel.y = JUMP_SPEED;
+    st.vel.y = Math.max(st.vel.y - GRAVITY * dt, TERMINAL_FALL);
+  }
 
   const maxMove =
     Math.max(Math.abs(st.vel.x), Math.abs(st.vel.y), Math.abs(st.vel.z)) * dt;

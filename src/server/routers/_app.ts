@@ -29,6 +29,7 @@ import { creativeRouter } from "./creative";
 import { shootRouter } from "./shoot";
 import { timetableRouter } from "./timetable";
 import { chatRouter } from "./chat";
+import { worldRouter } from "./world";
 
 export const appRouter = router({
   health: publicProcedure.query(() => ({ ok: true, service: "auxa" })),
@@ -46,6 +47,7 @@ export const appRouter = router({
   document: documentRouter,
   setting: settingRouter,
   workspace: workspaceRouter,
+  world: worldRouter,
   leaderboard: leaderboardRouter,
   service: serviceRouter,
   expense: expenseRouter,
