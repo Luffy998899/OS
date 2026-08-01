@@ -142,6 +142,14 @@ function cell(c: Ctx2D, tile: number): RGBA[] {
 
 const rowOf = (pixels: RGBA[], y: number): RGBA[] => pixels.slice(y * TILE_PX, (y + 1) * TILE_PX);
 
+/** A row named as a fraction of the tile, so these tests survive a resolution
+ *  change instead of pinning themselves to a pixel grid. */
+const rowAt = (pixels: RGBA[], frac: number): RGBA[] =>
+  rowOf(pixels, Math.min(TILE_PX - 1, Math.floor(TILE_PX * frac)));
+
+/** Every pixel of the tile scales with the resolution; so should any count. */
+const scaled = (countAt16px: number): number => countAt16px * (TILE_PX / 16) ** 2;
+
 const lum = (p: RGBA): number => 0.299 * p.r + 0.587 * p.g + 0.114 * p.b;
 
 const meanLum = (pixels: RGBA[]): number =>
@@ -170,10 +178,10 @@ beforeAll(() => {
 const tileNames = Object.keys(TILE) as (keyof typeof TILE)[];
 
 describe("paintAtlas", () => {
-  it("paints a 128x128 nearest-neighbour atlas", () => {
+  it("paints a nearest-neighbour atlas covering the whole 8x8 grid", () => {
     const canvas = paintAtlas();
-    expect(canvas.width).toBe(128);
-    expect(canvas.height).toBe(128);
+    expect(canvas.width).toBe(ATLAS_COLS * TILE_PX);
+    expect(canvas.height).toBe(ATLAS_COLS * TILE_PX);
     expect(ctxOf(canvas).imageSmoothingEnabled).toBe(false);
   });
 
@@ -250,7 +258,7 @@ describe("paintAtlas", () => {
     expect(clear).toBeLessThan(0.45);
     // What is left has to read as foliage.
     const leaf = pixels.filter((p) => p.a > 0 && p.g > p.r + 10 && p.g > p.b + 20);
-    expect(leaf.length).toBeGreaterThan(120);
+    expect(leaf.length).toBeGreaterThan(scaled(120));
   });
 
   it("keeps office materials muted — no saturated block-game palette", () => {
@@ -318,42 +326,50 @@ describe("paintAtlas", () => {
 
   it("runs a darker skirting along the bottom of the trim tile", () => {
     const trim = cell(atlas, TILE.DRYWALL_TRIM);
-    const body = [...rowOf(trim, 2), ...rowOf(trim, 6)];
-    const skirting = [...rowOf(trim, 13), ...rowOf(trim, 14), ...rowOf(trim, 15)];
+    const body = [...rowAt(trim, 0.15), ...rowAt(trim, 0.4)];
+    const skirting = [...rowAt(trim, 0.85), ...rowAt(trim, 0.92), ...rowAt(trim, 0.99)];
     expect(meanLum(skirting)).toBeLessThan(meanLum(body) - 20);
     expect(meanLum(body)).toBeGreaterThan(220);
   });
 
-  it("draws a monitor that reads as a screen", () => {
+  it("draws an all-in-one: aluminium frame, dark glass, a lit desktop", () => {
     const mon = cell(atlas, TILE.MONITOR_ON);
-    // Bezel.
-    expect(meanLum(rowOf(mon, 0))).toBeLessThan(30);
-    const screen = mon.filter((_, i) => {
+    // The reference machine is framed in silver, not a black bezel.
+    const frame = meanLum(rowAt(mon, 0));
+    expect(frame, "the frame is not aluminium").toBeGreaterThan(150);
+    // The glass inside the frame is near-black by comparison.
+    const glass = mon.filter((_, i) => {
       const x = i % TILE_PX;
       const y = (i / TILE_PX) | 0;
-      return x > 0 && x < 15 && y > 4 && y < 14;
+      return (
+        x > TILE_PX * 0.2 && x < TILE_PX * 0.8 && y > TILE_PX * 0.15 && y < TILE_PX * 0.6
+      );
     });
-    // Header strip sits lighter than the panel below it.
-    expect(meanLum(rowOf(mon, 2))).toBeGreaterThan(meanLum(screen) + 8);
+    expect(meanLum(glass), "the screen is not dark glass").toBeLessThan(frame - 80);
+    // The chin below the glass is frame-coloured too.
+    expect(meanLum(rowAt(mon, 0.86))).toBeGreaterThan(120);
+    // The dock is the only colour on the panel — proof it is switched on.
     const blue = mon.filter((p) => p.b > p.r + 40 && p.b > 120).length;
     const green = mon.filter((p) => p.g > p.r + 30 && p.g > p.b + 20).length;
     const amber = mon.filter((p) => p.r > 150 && p.g > 110 && p.b < 110).length;
-    expect(blue).toBeGreaterThanOrEqual(4);
-    expect(green).toBeGreaterThanOrEqual(4);
-    expect(amber).toBeGreaterThanOrEqual(4);
+    expect(blue, "no blue dock icon").toBeGreaterThanOrEqual(scaled(1));
+    expect(green, "no green dock icon").toBeGreaterThanOrEqual(scaled(1));
+    expect(amber, "no amber dock icon").toBeGreaterThanOrEqual(scaled(1));
   });
 
-  it("draws a readable analogue clock on the wall", () => {
+  it("draws a mantel clock: pale dial, dark hands, timber base", () => {
     const clock = cell(atlas, TILE.CLOCK);
-    const face = clock.filter((p) => lum(p) > 245).length;
-    const ring = clock.filter((p) => lum(p) > 95 && lum(p) < 140).length;
-    const hands = clock.filter((p) => lum(p) < 60).length;
-    expect(face).toBeGreaterThan(40);
-    expect(ring).toBeGreaterThan(12);
-    expect(hands).toBeGreaterThanOrEqual(9);
-    // Corners stay wall, not clock.
-    expect(lum(clock[0])).toBeGreaterThan(200);
-    expect(lum(clock[0])).toBeLessThan(245);
+    // The reference dial is cream rather than white, so it is "pale", not 245+.
+    const dial = clock.filter((p) => lum(p) > 200).length;
+    expect(dial, "no dial").toBeGreaterThan(scaled(40));
+    // Hands, hour marks and the base are all dark against it.
+    const dark = clock.filter((p) => lum(p) < 60).length;
+    expect(dark, "no hands or marks").toBeGreaterThanOrEqual(scaled(9));
+    // The clock stands on wood: the bottom of the tile is dark and warm.
+    const base = rowAt(clock, 0.9);
+    expect(meanLum(base), "the base is not timber").toBeLessThan(110);
+    const warm = base.filter((p) => p.r > p.b + 20).length;
+    expect(warm, "the base is not warm-toned").toBeGreaterThan(TILE_PX * 0.5);
   });
 
   it("lights the server rack with green and amber status LEDs", () => {
@@ -361,14 +377,14 @@ describe("paintAtlas", () => {
     expect(meanLum(rack)).toBeLessThan(60);
     const green = rack.filter((p) => p.g > 150 && p.g > p.r + 40).length;
     const amber = rack.filter((p) => p.r > 170 && p.b < 100).length;
-    expect(green).toBeGreaterThanOrEqual(2);
-    expect(amber).toBeGreaterThanOrEqual(1);
+    expect(green).toBeGreaterThanOrEqual(scaled(2));
+    expect(amber).toBeGreaterThanOrEqual(scaled(1));
   });
 
   it("glows the sign strip in a band across the middle", () => {
     const sign = cell(atlas, TILE.SIGN_STRIP);
-    expect(meanLum(rowOf(sign, 7))).toBeGreaterThan(200);
-    expect(meanLum(rowOf(sign, 1))).toBeLessThan(60);
+    expect(meanLum(rowAt(sign, 0.5)), "the band is not lit").toBeGreaterThan(200);
+    expect(meanLum(rowAt(sign, 0.06)), "the housing is not dark").toBeLessThan(60);
   });
 
   it("keeps the Upside Down dark and red", () => {

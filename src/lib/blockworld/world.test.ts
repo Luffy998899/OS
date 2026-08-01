@@ -219,8 +219,12 @@ describe("invariant 3: POIs", () => {
 });
 
 describe("invariant 4: everything is walkable from spawn", () => {
-  it("floods a large connected floor area", () => {
-    expect(reachedCount).toBeGreaterThan(5000);
+  it("floods a connected floor area the size of a real floorplate", () => {
+    // The plate is deliberately compact — big enough that the office reads as
+    // a building, small enough that nothing is a hike. Both ends matter: too
+    // small means rooms lost their space, too large means the sprawl is back.
+    expect(reachedCount).toBeGreaterThan(2500);
+    expect(reachedCount).toBeLessThan(8000);
   });
 
   it.each(
@@ -502,33 +506,59 @@ describe("the place reads as an office", () => {
   });
 
   it("keeps every doorway 3 wide and 3 high", () => {
-    const doors: { name: string; x?: number; z?: number; from: number }[] = [
-      { name: "conference", x: 83, from: 28 },
-      { name: "video", x: 83, from: 60 },
-      { name: "creative-internal", x: 83, from: 87 },
-      { name: "creative-clients", x: 83, from: 103 },
-      { name: "dev-wing", x: 97, from: 26 },
-      { name: "tasks", x: 97, from: 60 },
-      { name: "outreach", x: 97, from: 94 },
-      { name: "shoot", x: 73, from: 124 },
-      { name: "managing-heads", x: 107, from: 129 },
-      { name: "pantry", z: 13, from: 88 },
-    ];
-    for (const d of doors)
+    // Doors are located from their own signage rather than hardcoded, so this
+    // keeps testing the doorways after any layout change. The sign sits half a
+    // block off the wall on the reader's side, centred on the 3-wide gap.
+    const openingFor = (text: string) => {
+      const s = world.signs.find((x) => x.text === text);
+      if (!s) return null;
+      if (s.face === "e") return { axis: "x" as const, wall: Math.round(s.x - 1.05), from: Math.round(s.z - 1.5) };
+      if (s.face === "w") return { axis: "x" as const, wall: Math.round(s.x + 0.05), from: Math.round(s.z - 1.5) };
+      if (s.face === "s") return { axis: "z" as const, wall: Math.round(s.z - 1.05), from: Math.round(s.x - 1.5) };
+      return { axis: "z" as const, wall: Math.round(s.z + 0.05), from: Math.round(s.x - 1.5) };
+    };
+    for (const text of [
+      "CONFERENCE HALL",
+      "VIDEO EDITING BAY",
+      "CREATIVE — INTERNAL",
+      "CREATIVE — CLIENTS",
+      "DEV WING",
+      "TASK HALL",
+      "OUTREACH OFFICE",
+      "SHOOT STUDIO",
+      "MANAGING HEADS",
+      "PANTRY",
+    ]) {
+      const d = openingFor(text);
+      expect(d, `no door sign for ${text}`).not.toBeNull();
       for (let i = 0; i < 3; i++)
         for (let y = 1; y <= 3; y++) {
-          const x = d.x ?? d.from + i;
-          const z = d.z ?? d.from + i;
-          expect(solidAt(x, y, z), `${d.name} blocked at ${x},${y},${z}`).toBe(
-            false,
-          );
+          const x = d!.axis === "x" ? d!.wall : d!.from + i;
+          const z = d!.axis === "x" ? d!.from + i : d!.wall;
+          expect(solidAt(x, y, z), `${text} blocked at ${x},${y},${z}`).toBe(false);
         }
+    }
   });
 
-  it("opens the entrance 6 wide and 4 high", () => {
-    for (let x = 86; x <= 92; x++)
-      for (let y = 1; y <= 4; y++)
-        expect(solidAt(x, y, 134), `entrance blocked at ${x},${y}`).toBe(false);
+  it("opens the entrance at least 6 wide and 4 high", () => {
+    // The entrance is wherever the building's own name hangs.
+    const hq = world.signs.find((s) => s.text === "AUXA HQ");
+    expect(hq, "the building is unnamed").toBeDefined();
+    const facadeZ = Math.round(hq!.z - 1.05);
+    let run = 0;
+    let best = 0;
+    for (let x = 0; x < world.sx; x++) {
+      let clear = true;
+      for (let y = 1; y <= 4; y++) if (solidAt(x, y, facadeZ)) clear = false;
+      run = clear ? run + 1 : 0;
+      best = Math.max(best, run);
+    }
+    expect(best, `entrance gap at z=${facadeZ}`).toBeGreaterThanOrEqual(6);
+  });
+
+  it("is a compact floorplate, not a campus", () => {
+    // Task: "the area is too big" — the plate must stay small-to-medium.
+    expect(world.sx * world.sz).toBeLessThan(7000);
   });
 });
 
@@ -581,19 +611,44 @@ describe("the office is populated", () => {
     }
   });
 
-  it("dresses the floor with props, not just furniture", () => {
+  it("keeps the floor interactive instead of dressing it with scenery", () => {
+    const idOf = (key: string) => BLOCKS.findIndex((b) => b.key === key);
     const count = (key: string) => {
-      const id = BLOCKS.findIndex((b) => b.key === key);
+      const id = idOf(key);
       let n = 0;
       for (let i = 0; i < world.blocks.length; i++) if (world.blocks[i] === id) n++;
       return n;
     };
-    // Greenery, desk clutter and machines all present in real numbers.
-    expect(count("plant_fern") + count("plant_tall"), "no greenery").toBeGreaterThan(8);
-    expect(count("pot") + count("pot_white"), "plants with no pots").toBeGreaterThan(8);
-    expect(count("cpu"), "no computers under the desks").toBeGreaterThan(5);
-    expect(count("coffee") + count("papers") + count("book_stack"), "bare desks").toBeGreaterThan(10);
-    expect(count("camera") + count("tripod") + count("softbox"), "no camera kit").toBeGreaterThan(4);
-    expect(count("sofa"), "nowhere to sit").toBeGreaterThan(4);
+    // Scenery you cannot use is gone: it filled every corner and did nothing.
+    const scenery = [
+      "sofa",
+      "rug_pattern",
+      "lamp",
+      "cooler",
+      "printer",
+      "art",
+      "vent",
+      "exit_sign",
+      "coffee",
+      "papers",
+      "phone",
+      "book_stack",
+      "cpu",
+      "plant",
+      "planter",
+      "plant_fern",
+      "plant_tall",
+      "pot",
+      "pot_white",
+    ];
+    for (const key of scenery) {
+      // A typo here would make the assertion vacuous, so prove the block exists.
+      expect(idOf(key), `unknown block ${key}`).toBeGreaterThan(0);
+      expect(count(key), `${key} is back on the floor`).toBe(0);
+    }
+    // What's left is the furniture people actually walk up to and use.
+    expect(count("desk"), "no desks").toBeGreaterThan(20);
+    expect(count("monitor"), "nothing to sit down at").toBeGreaterThan(20);
+    expect(count("chair"), "nowhere to sit").toBeGreaterThan(15);
   });
 });

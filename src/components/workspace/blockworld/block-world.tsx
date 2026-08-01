@@ -19,9 +19,23 @@ import {
   type Poi,
   type World,
 } from "@/lib/blockworld/types";
-import { BLOCKS } from "@/lib/blockworld/blocks";
-import { buildWorld } from "@/lib/blockworld/world";
-import { buildMeshData, type MeshArrays } from "@/lib/blockworld/meshing";
+import { ATLAS_COLS, BLOCKS, TILE_PX } from "@/lib/blockworld/blocks";
+import {
+  buildChunkMeshData,
+  chunkKey,
+  allChunks,
+  dirtyChunksFor,
+  type MeshArrays,
+} from "@/lib/blockworld/meshing";
+import {
+  overlapsPlayer,
+  paletteIds,
+  raycastVoxel,
+  setBlock,
+  worldFromData,
+  BLOCK_GROUPS,
+  type VoxelHit,
+} from "@/lib/blockworld/edit";
 import {
   EYE_HEIGHT,
   stepPlayer,
@@ -293,31 +307,47 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
   const overlayRef = useRef<Overlay>(null);
   overlayRef.current = overlay;
 
-  // Build the world once per campus shape.
-  const rooms = state.data?.rooms;
+  // Opening any overlay must free the mouse and hand the keyboard to the
+  // panel — nobody should have to press Escape before they can type.
+  const openOverlay = useCallback((o: NonNullable<Overlay>) => {
+    if (document.pointerLockElement) document.exitPointerLock();
+    setOverlay(o);
+  }, []);
+
+  // Once the panel has rendered, put the caret in its first typeable field so
+  // interacting with a computer or opening chat means you can type instantly.
+  const overlayContentRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!overlay) return;
+    const id = window.setTimeout(() => {
+      const el = overlayContentRef.current;
+      if (!el || el.contains(document.activeElement)) return;
+      el.querySelector<HTMLElement>(
+        "textarea, input:not([type=hidden]):not([disabled]), [contenteditable='true']",
+      )?.focus();
+    }, 80);
+    return () => window.clearTimeout(id);
+  }, [overlay]);
+
+  // The world is whatever people have built. It is loaded, not generated, and
+  // only reassembled when the stored revision actually moves — rebuilding it on
+  // every poll would throw away the meshes mid-edit.
+  const loaded = trpc.world.load.useQuery(undefined, {
+    refetchOnWindowFocus: false,
+    staleTime: Infinity,
+  });
+  const remoteRevision = trpc.world.revision.useQuery(undefined, {
+    refetchInterval: 5000,
+  });
   const projects = state.data?.projects;
-  const worldSig = useMemo(
-    () =>
-      rooms && projects
-        ? rooms.map((r) => `${r.id}:${r.key}:${r.name}`).join("|") +
-          "//" +
-          projects.map((p) => `${p.id}:${p.name}:${p.floor}:${p.buildingKey}`).join("|")
-        : null,
-    [rooms, projects],
-  );
+  const [worldEpoch, setWorldEpoch] = useState(0);
   const world: World | null = useMemo(() => {
-    if (!rooms || !projects || rooms.length === 0) return null;
-    return buildWorld({
-      rooms: rooms.map((r) => ({ id: r.id, key: r.key, name: r.name, kind: r.kind })),
-      projects: projects.map((p) => ({
-        id: p.id,
-        name: p.name,
-        floor: p.floor,
-        buildingKey: p.buildingKey,
-      })),
-    });
+    if (!loaded.data) return null;
+    return worldFromData(loaded.data);
+    // worldEpoch forces a rebuild after someone else's edits land.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [worldSig]);
+  }, [loaded.data, worldEpoch]);
+  const canBuild = loaded.data?.canBuild ?? false;
 
   // Engine bag — everything the rAF loop touches lives here, not in React state.
   const E = useRef({
@@ -351,6 +381,18 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
     }[],
     scene: null as THREE.Scene | null,
     lairT: 0,
+    // ---- creative mode ----
+    build: false,
+    flying: false,
+    lastSpace: 0,
+    held: 1,
+    aimedVoxel: null as VoxelHit | null,
+    /** Set by the scene effect: re-mesh the chunks a block edit dirties. */
+    remesh: null as ((x: number, y: number, z: number) => void) | null,
+    /** Edits made locally but not yet flushed to the server. */
+    edits: [] as number[],
+    /** Debug/QA entry point for a single block edit. */
+    editAt: null as ((x: number, y: number, z: number, id: number) => void) | null,
   }).current;
   E.world = world;
   E.isAdmin = isAdmin;
@@ -450,6 +492,83 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
     prevSlot.current = slotLabel;
   }, [slotLabel]);
 
+  // ---- creative mode ----
+  const [buildMode, setBuildMode] = useState(false);
+  const [flying, setFlying] = useState(false);
+  const [hotbar, setHotbar] = useState<number[]>(() => paletteIds().slice(0, 9));
+  const [slot, setSlot] = useState(0);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [aimLabel, setAimLabel] = useState<string | null>(null);
+
+  const placeMutation = trpc.world.place.useMutation();
+  const loadTemplate = trpc.world.loadTemplate.useMutation();
+  const clearWorld = trpc.world.clear.useMutation();
+  const setSpawn = trpc.world.setSpawn.useMutation();
+  const appliedRevision = useRef(0);
+  useEffect(() => {
+    if (loaded.data) appliedRevision.current = loaded.data.revision;
+  }, [loaded.data]);
+
+  // Somebody else built something: pull it in and rebuild.
+  useEffect(() => {
+    const remote = remoteRevision.data;
+    if (remote === undefined || remote === appliedRevision.current) return;
+    appliedRevision.current = remote;
+    void loaded.refetch().then(() => setWorldEpoch((n) => n + 1));
+    // loaded is a stable query handle.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [remoteRevision.data]);
+
+  E.build = buildMode;
+  E.held = hotbar[slot] ?? 1;
+
+  /** Write one block locally, re-mesh what it touched, and queue the save. */
+  const editBlock = useCallback(
+    (x: number, y: number, z: number, id: number) => {
+      const w = E.world;
+      if (!w) return;
+      if (id !== 0 && overlapsPlayer(x, y, z, E.st.pos.x, E.st.pos.y, E.st.pos.z)) return;
+      if (blockAt(w, x, y, z) === id) return;
+      setBlock(w, x, y, z, id);
+      E.remesh?.(x, y, z);
+      E.edits.push(x, y, z, id);
+    },
+    [E],
+  );
+
+  // Stable handles for the scene effect, which is built once per world and must
+  // not be torn down every time a hotbar slot changes.
+  const editRef = useRef(editBlock);
+  editRef.current = editBlock;
+  // Same debug/QA hook the rest of the engine uses: lets tooling place a block
+  // without synthesising a pointer-locked mouse.
+  E.editAt = editBlock;
+  const canBuildRef = useRef(canBuild);
+  canBuildRef.current = canBuild;
+
+  // Edits are flushed on a short timer so holding the button down is one
+  // request per burst instead of one per block.
+  useEffect(() => {
+    if (!buildMode) return;
+    const timer = window.setInterval(() => {
+      if (E.edits.length === 0) return;
+      const batch = E.edits.splice(0, E.edits.length);
+      placeMutation.mutate(
+        { blocks: batch },
+        {
+          onSuccess: (res) => {
+            // Our own write moved the revision; don't treat it as someone else's.
+            appliedRevision.current = res.revision;
+          },
+          onError: (err) => toast.error(err.message),
+        },
+      );
+    }, 400);
+    return () => window.clearInterval(timer);
+    // placeMutation is a stable handle.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [buildMode, E]);
+
   // ---- interactions ----
   const openInteraction = useCallback(
     (poi: Poi | null) => {
@@ -470,17 +589,17 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
       if (poi.panel === "creative") {
         const door = poi.refId === "internal" ? "internal" : "clients";
         if (door === "internal") openCreative.mutate({ key: "internal" });
-        setOverlay({ kind: "creative", refId: door, name: poi.label });
+        openOverlay({ kind: "creative", refId: door, name: poi.label });
         return;
       }
       if (poi.panel === "client") {
-        setOverlay({ kind: "missions", refId: poi.refId, name: poi.label });
+        openOverlay({ kind: "missions", refId: poi.refId, name: poi.label });
         return;
       }
       const kind = poi.panel as OverlayKind;
-      setOverlay({ kind, refId: poi.refId, name: poi.label });
+      openOverlay({ kind, refId: poi.refId, name: poi.label });
     },
-    [E, openCreative],
+    [E, openCreative, openOverlay],
   );
 
   // ---- the Three.js scene ----
@@ -526,7 +645,6 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
     atlas.generateMipmaps = false;
     atlas.colorSpace = THREE.SRGBColorSpace;
 
-    const meshData = buildMeshData(world);
     const toGeometry = (m: MeshArrays) => {
       const g = new THREE.BufferGeometry();
       g.setAttribute("position", new THREE.BufferAttribute(m.positions, 3));
@@ -546,12 +664,39 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
       depthWrite: true,
     });
     const matEmissive = new THREE.MeshBasicMaterial({ map: atlas, vertexColors: true });
-    const meshes = [
-      new THREE.Mesh(toGeometry(meshData.opaque), matOpaque),
-      new THREE.Mesh(toGeometry(meshData.cutout), matCutout),
-      new THREE.Mesh(toGeometry(meshData.emissive), matEmissive),
-    ];
-    for (const m of meshes) scene.add(m);
+
+    // The world is meshed in chunks so placing a block re-meshes a few thousand
+    // voxels instead of the whole map.
+    const chunkMeshes = new Map<string, THREE.Mesh[]>();
+    const rebuildChunk = (cx: number, cy: number, cz: number) => {
+      const key = chunkKey(cx, cy, cz);
+      const existing = chunkMeshes.get(key);
+      if (existing) {
+        for (const m of existing) {
+          scene.remove(m);
+          m.geometry.dispose();
+        }
+        chunkMeshes.delete(key);
+      }
+      const data = buildChunkMeshData(world, cx, cy, cz);
+      const made: THREE.Mesh[] = [];
+      for (const [arr, mat] of [
+        [data.opaque, matOpaque],
+        [data.cutout, matCutout],
+        [data.emissive, matEmissive],
+      ] as const) {
+        if (arr.indices.length === 0) continue;
+        const mesh = new THREE.Mesh(toGeometry(arr), mat);
+        scene.add(mesh);
+        made.push(mesh);
+      }
+      if (made.length > 0) chunkMeshes.set(key, made);
+    };
+    for (const [cx, cy, cz] of allChunks(world)) rebuildChunk(cx, cy, cz);
+
+    E.remesh = (x: number, y: number, z: number) => {
+      for (const [cx, cy, cz] of dirtyChunksFor(x, y, z)) rebuildChunk(cx, cy, cz);
+    };
 
     // Door signs. Every sign gets a solid dark plate with light lettering —
     // dark text floating on a pale wall was unreadable at any distance.
@@ -703,8 +848,29 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
         lastPY = e.clientY;
       }
     };
+    // In build mode the mouse buttons are the tools: left breaks, right places.
+    // Holding either repeats, the way a creative-mode brush does.
+    let holdTimer = 0;
+    const applyTool = (button: number) => {
+      const hit = E.aimedVoxel;
+      if (!hit) return;
+      if (button === 0) editRef.current(hit.x, hit.y, hit.z, 0);
+      else if (button === 2) editRef.current(hit.px, hit.py, hit.pz, E.held);
+    };
+    const startHold = (button: number) => {
+      applyTool(button);
+      window.clearInterval(holdTimer);
+      holdTimer = window.setInterval(() => applyTool(button), 140);
+    };
+    const stopHold = () => window.clearInterval(holdTimer);
+
     const onPointerDown = (e: PointerEvent) => {
       if (overlayRef.current) return;
+      if (E.build && document.pointerLockElement === dom) {
+        e.preventDefault();
+        startHold(e.button);
+        return;
+      }
       if (document.pointerLockElement !== dom) {
         dragging = true;
         dragMoved = 0;
@@ -713,22 +879,29 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
       }
     };
     const onPointerUp = () => {
+      stopHold();
       if (overlayRef.current) {
         dragging = false;
         return;
       }
       if (document.pointerLockElement === dom) {
-        openInteraction(E.aimed);
+        // Building consumes the click; interaction is E only while in build mode.
+        if (!E.build) openInteraction(E.aimed);
       } else if (dragging) {
         dragging = false;
         if (dragMoved < 6) {
-          if (E.aimed) openInteraction(E.aimed);
+          if (!E.build && E.aimed) openInteraction(E.aimed);
           else dom.requestPointerLock?.();
         }
       }
     };
+    const onContextMenu = (e: Event) => {
+      if (E.build) e.preventDefault();
+    };
     dom.addEventListener("pointerdown", onPointerDown);
+    dom.addEventListener("contextmenu", onContextMenu);
     window.addEventListener("pointerup", onPointerUp);
+    window.addEventListener("blur", stopHold);
     window.addEventListener("mousemove", onMouseMove);
 
     const onResize = () => {
@@ -765,11 +938,15 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
       // Accumulating real time and running whole fixed steps decouples the two.
       if (!overlayRef.current) {
         const k = E.keys;
+        const crouch = k.has("ShiftLeft") || k.has("ShiftRight");
         const input: MoveInput = {
           forward: (k.has("KeyW") || k.has("ArrowUp") ? 1 : 0) - (k.has("KeyS") || k.has("ArrowDown") ? 1 : 0),
           strafe: (k.has("KeyD") ? 1 : 0) - (k.has("KeyA") ? 1 : 0),
           jump: k.has("Space"),
-          sprint: k.has("ShiftLeft") || k.has("ShiftRight"),
+          // Flying uses Shift to descend; on foot it is still sprint.
+          sprint: E.flying ? k.has("ControlLeft") || k.has("ControlRight") : crouch,
+          fly: E.flying,
+          descend: crouch,
         };
         if (k.has("ArrowLeft")) E.yaw -= 2.2 * dt * E.settings.sensitivity;
         if (k.has("ArrowRight")) E.yaw += 2.2 * dt * E.settings.sensitivity;
@@ -821,7 +998,38 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
         E.aimed = best;
         setPrompt(best);
       }
-      if (best) {
+
+      // Build mode aims at blocks, not points of interest: the highlight box
+      // follows the voxel under the crosshair and the POI outline stands down.
+      if (E.build) {
+        const hit = raycastVoxel(
+          world,
+          camera.position.x,
+          camera.position.y,
+          camera.position.z,
+          camDir.x,
+          camDir.y,
+          camDir.z,
+          7.5,
+        );
+        const changed =
+          hit?.x !== E.aimedVoxel?.x ||
+          hit?.y !== E.aimedVoxel?.y ||
+          hit?.z !== E.aimedVoxel?.z;
+        E.aimedVoxel = hit;
+        if (changed) {
+          const id = hit ? blockAt(world, hit.x, hit.y, hit.z) : 0;
+          setAimLabel(hit ? (BLOCKS[id]?.label ?? null) : null);
+        }
+        if (hit) {
+          highlight.visible = true;
+          highlight.position.set(hit.x + 0.5, hit.y + 0.5, hit.z + 0.5);
+          highlight.scale.set(1.02, 1.02, 1.02);
+          (highlight.material as THREE.LineBasicMaterial).color.setHex(0xffffff);
+        } else {
+          highlight.visible = false;
+        }
+      } else if (best) {
         highlight.visible = true;
         highlight.position.set(
           (best.min.x + best.max.x) / 2,
@@ -958,9 +1166,12 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
 
     return () => {
       cancelAnimationFrame(raf);
+      window.clearInterval(holdTimer);
       document.removeEventListener("pointerlockchange", onLockChange);
       dom.removeEventListener("pointerdown", onPointerDown);
+      dom.removeEventListener("contextmenu", onContextMenu);
       window.removeEventListener("pointerup", onPointerUp);
+      window.removeEventListener("blur", stopHold);
       window.removeEventListener("mousemove", onMouseMove);
       window.removeEventListener("resize", onResize);
       for (const [, entry] of E.rigs) {
@@ -972,9 +1183,14 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
         scene.remove(rig.group);
         rig.dispose();
       }
-      for (const m of meshes) {
-        m.geometry.dispose();
+      E.remesh = null;
+      for (const [, made] of chunkMeshes) {
+        for (const m of made) {
+          scene.remove(m);
+          m.geometry.dispose();
+        }
       }
+      chunkMeshes.clear();
       matOpaque.dispose();
       matCutout.dispose();
       matEmissive.dispose();
@@ -1015,30 +1231,74 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
       if (["Space", "Tab", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.code)) {
         e.preventDefault();
       }
+
+      // Creative flight: double-tap space, exactly like the game everyone
+      // already knows. Only meaningful while building.
+      if (e.code === "Space" && E.build && !e.repeat) {
+        const now = performance.now();
+        if (now - E.lastSpace < 320) {
+          E.flying = !E.flying;
+          setFlying(E.flying);
+          if (E.flying) E.st.vel.y = 0;
+        }
+        E.lastSpace = now;
+      }
+
+      // Hotbar slots 1-9.
+      if (E.build && /^Digit[1-9]$/.test(e.code)) {
+        setSlot(Number(e.code.slice(5)) - 1);
+        return;
+      }
+
       switch (e.code) {
+        case "KeyG":
+          if (canBuildRef.current) {
+            const next = !E.build;
+            E.build = next;
+            setBuildMode(next);
+            if (!next) {
+              E.flying = false;
+              setFlying(false);
+            }
+            toast(next ? "Build mode on" : "Build mode off", {
+              description: next
+                ? "Left click breaks · right click places · double-tap Space to fly"
+                : "Back to walking the floor.",
+            });
+          }
+          return;
+        case "KeyQ":
         case "KeyE":
-          openInteraction(E.aimed);
+          if (E.build) {
+            // Without this the keystroke lands in the picker's search box the
+            // moment it autofocuses, and every open starts with a stray letter.
+            e.preventDefault();
+            setPickerOpen(true);
+            if (document.pointerLockElement) document.exitPointerLock();
+            return;
+          }
+          if (e.code === "KeyE") openInteraction(E.aimed);
           return;
         case "KeyB":
-          setOverlay({ kind: "bounties" });
+          openOverlay({ kind: "bounties" });
           return;
         case "KeyT":
-          setOverlay({ kind: "skills" });
+          openOverlay({ kind: "skills" });
           return;
         case "KeyM":
-          setOverlay({ kind: "map" });
+          openOverlay({ kind: "map" });
           return;
         case "KeyO":
-          setOverlay({ kind: "settings" });
+          openOverlay({ kind: "settings" });
           return;
         case "KeyC":
-          setOverlay({ kind: "chat" });
+          openOverlay({ kind: "chat" });
           return;
         case "Tab":
-          setOverlay({ kind: "roster" });
+          openOverlay({ kind: "roster" });
           return;
         case "KeyH":
-          setOverlay({ kind: "help" });
+          openOverlay({ kind: "help" });
           return;
         case "KeyF":
           if (document.fullscreenElement) void document.exitFullscreen();
@@ -1058,7 +1318,18 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
       window.removeEventListener("keyup", up);
       window.removeEventListener("blur", blur);
     };
-  }, [E, onExit, openInteraction, container]);
+  }, [E, onExit, openInteraction, openOverlay, container, canBuild]);
+
+  // Scrolling the wheel walks the hotbar, like every block game.
+  useEffect(() => {
+    if (!buildMode) return;
+    const onWheel = (e: WheelEvent) => {
+      if (overlayRef.current || pickerOpen) return;
+      setSlot((s) => (s + (e.deltaY > 0 ? 1 : -1) + 9) % 9);
+    };
+    window.addEventListener("wheel", onWheel, { passive: true });
+    return () => window.removeEventListener("wheel", onWheel);
+  }, [buildMode, pickerOpen]);
 
   const leave = useCallback(() => {
     if (E.spawned && world) {
@@ -1140,7 +1411,7 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
       {/* Meeting banner */}
       {meeting ? (
         <button
-          onClick={() => setOverlay({ kind: "conference" })}
+          onClick={() => openOverlay({ kind: "conference" })}
           className="absolute top-14 left-1/2 flex -translate-x-1/2 items-center gap-2 rounded-full bg-[#7d1e30]/90 px-4 py-1.5 text-xs font-semibold text-white backdrop-blur-sm"
         >
           📣 {meeting.title} — urgent meeting
@@ -1170,8 +1441,58 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
         </div>
       ) : null}
 
+      {/* Build-mode HUD: what you're pointing at, and the mode banner */}
+      {buildMode && !overlay ? (
+        <div className="pointer-events-none absolute top-14 left-1/2 flex -translate-x-1/2 flex-col items-center gap-1">
+          <span className="rounded-full bg-[#ffd166]/90 px-3 py-1 text-[0.7rem] font-bold text-black">
+            BUILD MODE{flying ? " · FLYING" : ""}
+          </span>
+          {aimLabel ? (
+            <span className="rounded-full bg-black/60 px-2.5 py-0.5 font-mono text-[0.62rem] text-white/80 backdrop-blur-sm">
+              {aimLabel}
+            </span>
+          ) : null}
+        </div>
+      ) : null}
+
+      {/* Creative hotbar */}
+      {buildMode && !overlay ? (
+        <div className="absolute bottom-4 left-1/2 flex -translate-x-1/2 flex-col items-center gap-2">
+          <div className="flex items-center gap-1 rounded-xl border border-white/15 bg-black/60 p-1.5 backdrop-blur-sm">
+            {hotbar.map((id, i) => (
+              <button
+                key={i}
+                onClick={() => setSlot(i)}
+                title={BLOCKS[id]?.label ?? "Empty"}
+                className={`relative size-12 overflow-hidden rounded-lg border-2 transition-colors ${
+                  slot === i ? "border-[#ffd166] bg-white/10" : "border-white/10 hover:bg-white/5"
+                }`}
+              >
+                <BlockSwatch id={id} />
+                <span className="absolute top-0 left-0.5 font-mono text-[0.55rem] text-white/70">
+                  {i + 1}
+                </span>
+              </button>
+            ))}
+            <button
+              onClick={() => {
+                setPickerOpen(true);
+                if (document.pointerLockElement) document.exitPointerLock();
+              }}
+              title="All blocks (E)"
+              className="ml-1 size-12 rounded-lg border-2 border-dashed border-white/25 text-xs font-semibold text-white/70 hover:bg-white/5"
+            >
+              All
+            </button>
+          </div>
+          <p className="rounded-full bg-black/45 px-3 py-1 font-mono text-[0.6rem] tracking-wide text-white/60">
+            L-click break · R-click place · 1-9 / wheel slot · E all blocks · double-Space fly · G exit build
+          </p>
+        </div>
+      ) : null}
+
       {/* Hotbar */}
-      {!overlay ? (
+      {!overlay && !buildMode ? (
         <div className="absolute bottom-4 left-1/2 flex -translate-x-1/2 items-center gap-1.5">
           {(
             [
@@ -1186,7 +1507,7 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
           ).map(([key, label, kind]) => (
             <button
               key={key}
-              onClick={() => setOverlay({ kind })}
+              onClick={() => openOverlay({ kind })}
               className="flex min-w-16 flex-col items-center rounded-lg border border-white/12 bg-black/55 px-2.5 py-1.5 backdrop-blur-sm transition-colors hover:bg-black/75"
             >
               <kbd className="font-mono text-[0.6rem] text-[#ffd166]">{key}</kbd>
@@ -1196,9 +1517,108 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
         </div>
       ) : null}
 
+      {/* World management — the destructive bits live behind build mode */}
+      {buildMode && !overlay ? (
+        <div className="absolute top-24 right-3 flex w-44 flex-col gap-1.5">
+          <button
+            onClick={() => {
+              if (!confirm("Stamp the office template over the world? This replaces everything currently built.")) return;
+              loadTemplate.mutate(
+                { replace: true },
+                {
+                  onSuccess: (res) => {
+                    appliedRevision.current = res.revision;
+                    void loaded.refetch().then(() => setWorldEpoch((n) => n + 1));
+                    toast.success(`Office template loaded — ${res.blocks.toLocaleString()} blocks.`);
+                  },
+                  onError: (e) => toast.error(e.message),
+                },
+              );
+            }}
+            disabled={loadTemplate.isPending}
+            className="rounded-lg bg-black/60 px-3 py-1.5 text-xs font-medium text-white/90 backdrop-blur-sm transition-colors hover:bg-black/80 disabled:opacity-50"
+          >
+            {loadTemplate.isPending ? "Loading…" : "Load office template"}
+          </button>
+          <button
+            onClick={() => {
+              if (!confirm("Delete every block, sign and interactive spot? This cannot be undone.")) return;
+              clearWorld.mutate(undefined, {
+                onSuccess: (res) => {
+                  appliedRevision.current = res.revision;
+                  void loaded.refetch().then(() => setWorldEpoch((n) => n + 1));
+                  toast.success("World cleared.");
+                },
+                onError: (e) => toast.error(e.message),
+              });
+            }}
+            disabled={clearWorld.isPending}
+            className="rounded-lg bg-black/60 px-3 py-1.5 text-xs font-medium text-red-300 backdrop-blur-sm transition-colors hover:bg-black/80 disabled:opacity-50"
+          >
+            {clearWorld.isPending ? "Clearing…" : "Clear everything"}
+          </button>
+          <button
+            onClick={() =>
+              setSpawn.mutate(
+                {
+                  x: Math.round(E.st.pos.x * 10) / 10,
+                  y: Math.round(E.st.pos.y),
+                  z: Math.round(E.st.pos.z * 10) / 10,
+                  yaw: Math.round(E.yaw * 1000) / 1000,
+                },
+                {
+                  onSuccess: () => toast.success("Spawn moved here."),
+                  onError: (e) => toast.error(e.message),
+                },
+              )
+            }
+            className="rounded-lg bg-black/60 px-3 py-1.5 text-xs font-medium text-white/90 backdrop-blur-sm transition-colors hover:bg-black/80"
+          >
+            Set spawn here
+          </button>
+        </div>
+      ) : null}
+
+      {/* Build toggle — only for people with build rights */}
+      {canBuild && !overlay ? (
+        <button
+          onClick={() => {
+            const next = !buildMode;
+            E.build = next;
+            setBuildMode(next);
+            if (!next) {
+              E.flying = false;
+              setFlying(false);
+            }
+          }}
+          className={`absolute top-14 right-3 rounded-lg px-3 py-1.5 text-xs font-semibold backdrop-blur-sm transition-colors ${
+            buildMode
+              ? "bg-[#ffd166] text-black"
+              : "bg-black/60 text-white/90 hover:bg-black/80"
+          }`}
+        >
+          {buildMode ? "Building (G)" : "Build (G)"}
+        </button>
+      ) : null}
+
       {/* Always-on minimap */}
       {world && !overlay ? (
         <Minimap world={world} read={readPose} />
+      ) : null}
+
+      {/* Creative inventory */}
+      {pickerOpen ? (
+        <BlockPicker
+          onClose={() => setPickerOpen(false)}
+          onPick={(id) => {
+            setHotbar((h) => {
+              const next = [...h];
+              next[slot] = id;
+              return next;
+            });
+            setPickerOpen(false);
+          }}
+        />
       ) : null}
 
       {/* Hint line */}
@@ -1228,7 +1648,7 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
                 esc
               </button>
             </div>
-            <div className="min-h-0 flex-1 overflow-y-auto p-5">
+            <div ref={overlayContentRef} className="min-h-0 flex-1 overflow-y-auto p-5">
               {overlay.kind === "bounties" ? (
                 <BountyBoardPanel
                   onChanged={() => {
@@ -1283,6 +1703,122 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
           </div>
         </div>
       ) : null}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Creative inventory
+// ---------------------------------------------------------------------------
+
+/**
+ * The atlas, painted once and shared by every swatch. Slicing the real texture
+ * means the palette shows exactly what you are about to place.
+ */
+let swatchAtlas: HTMLCanvasElement | null = null;
+function atlasOnce(): HTMLCanvasElement | null {
+  if (typeof document === "undefined") return null;
+  swatchAtlas = swatchAtlas ?? paintAtlas();
+  return swatchAtlas;
+}
+
+/** One block's top-face tile, drawn at whatever size the button gives it. */
+function BlockSwatch({ id }: { id: number }) {
+  const ref = useRef<HTMLCanvasElement | null>(null);
+  useEffect(() => {
+    const canvas = ref.current;
+    const atlas = atlasOnce();
+    const def = BLOCKS[id];
+    if (!canvas || !atlas || !def) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    const tile = def.tiles.side;
+    const sx = (tile % ATLAS_COLS) * TILE_PX;
+    const sy = ((tile / ATLAS_COLS) | 0) * TILE_PX;
+    canvas.width = TILE_PX;
+    canvas.height = TILE_PX;
+    ctx.imageSmoothingEnabled = false;
+    ctx.clearRect(0, 0, TILE_PX, TILE_PX);
+    ctx.drawImage(atlas, sx, sy, TILE_PX, TILE_PX, 0, 0, TILE_PX, TILE_PX);
+  }, [id]);
+  return (
+    <canvas
+      ref={ref}
+      className="size-full"
+      style={{ imageRendering: "pixelated", display: "block" }}
+    />
+  );
+}
+
+function BlockPicker({
+  onClose,
+  onPick,
+}: {
+  onClose: () => void;
+  onPick: (id: number) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const byKey = useMemo(() => new Map(BLOCKS.map((b, i) => [b.key, i])), []);
+  const q = query.trim().toLowerCase();
+
+  return (
+    <div
+      className="absolute inset-0 z-30 flex items-center justify-center bg-black/70 p-4 backdrop-blur-[2px]"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div className="flex max-h-[82vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-white/10 bg-background text-foreground shadow-2xl">
+        <div className="flex items-center gap-3 border-b border-border px-5 py-3">
+          <h2 className="font-display text-base font-semibold">All blocks</h2>
+          <input
+            autoFocus
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search blocks…"
+            className="ml-auto w-56 rounded-md border border-input bg-transparent px-2.5 py-1 text-sm outline-none focus:ring-2 focus:ring-ring/40"
+          />
+          <button
+            onClick={onClose}
+            className="rounded px-2 py-0.5 font-mono text-[0.65rem] tracking-widest text-muted-foreground uppercase hover:text-foreground"
+          >
+            esc
+          </button>
+        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto p-5">
+          {BLOCK_GROUPS.map((group) => {
+            const ids = group.keys
+              .map((k) => byKey.get(k))
+              .filter((id): id is number => id !== undefined && id !== 0)
+              .filter((id) => !q || BLOCKS[id].label.toLowerCase().includes(q) || BLOCKS[id].key.includes(q));
+            if (ids.length === 0) return null;
+            return (
+              <div key={group.name} className="mb-5">
+                <p className="mb-2 font-mono text-[0.65rem] font-medium tracking-widest text-muted-foreground uppercase">
+                  {group.name}
+                </p>
+                <div className="grid grid-cols-[repeat(auto-fill,minmax(74px,1fr))] gap-2">
+                  {ids.map((id) => (
+                    <button
+                      key={id}
+                      onClick={() => onPick(id)}
+                      title={BLOCKS[id].label}
+                      className="flex flex-col items-center gap-1 rounded-lg border border-border p-2 transition-colors hover:border-foreground hover:bg-muted"
+                    >
+                      <span className="size-10 overflow-hidden rounded">
+                        <BlockSwatch id={id} />
+                      </span>
+                      <span className="w-full truncate text-center text-[0.62rem] leading-tight text-muted-foreground">
+                        {BLOCKS[id].label}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
     </div>
   );
 }

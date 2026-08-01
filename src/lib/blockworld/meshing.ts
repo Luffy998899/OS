@@ -223,13 +223,92 @@ function emitFace(b: Builder, w: World, x: number, y: number, z: number, def: Bl
   }
 }
 
+/**
+ * Edge length of a mesh chunk. Editing a block only rebuilds the chunk it sits
+ * in (and its neighbour when it sits on a seam), so placing a block costs a few
+ * thousand voxels of work rather than the whole world.
+ */
+export const CHUNK = 16;
+
+export type ChunkKey = string;
+
+export const chunkKey = (cx: number, cy: number, cz: number): ChunkKey => `${cx},${cy},${cz}`;
+
+/** Every chunk coordinate in the world, in render order. */
+export function allChunks(world: World): [number, number, number][] {
+  const out: [number, number, number][] = [];
+  for (let cy = 0; cy * CHUNK < world.sy; cy++)
+    for (let cz = 0; cz * CHUNK < world.sz; cz++)
+      for (let cx = 0; cx * CHUNK < world.sx; cx++) out.push([cx, cy, cz]);
+  return out;
+}
+
+/**
+ * The chunks a single block edit invalidates: its own, plus any neighbour whose
+ * meshed faces could change because they were culled against this block.
+ */
+export function dirtyChunksFor(x: number, y: number, z: number): [number, number, number][] {
+  const out: [number, number, number][] = [];
+  const seen = new Set<string>();
+  for (const [dx, dy, dz] of [
+    [0, 0, 0],
+    [1, 0, 0],
+    [-1, 0, 0],
+    [0, 1, 0],
+    [0, -1, 0],
+    [0, 0, 1],
+    [0, 0, -1],
+  ] as const) {
+    const c: [number, number, number] = [
+      Math.floor((x + dx) / CHUNK),
+      Math.floor((y + dy) / CHUNK),
+      Math.floor((z + dz) / CHUNK),
+    ];
+    const k = chunkKey(...c);
+    if (seen.has(k) || c[0] < 0 || c[1] < 0 || c[2] < 0) continue;
+    seen.add(k);
+    out.push(c);
+  }
+  return out;
+}
+
+/** Mesh one chunk. Neighbour lookups cross chunk borders, so seams stay culled. */
+export function buildChunkMeshData(
+  world: World,
+  cx: number,
+  cy: number,
+  cz: number,
+): { opaque: MeshArrays; cutout: MeshArrays; emissive: MeshArrays } {
+  return meshRange(
+    world,
+    cx * CHUNK,
+    Math.min(world.sx, (cx + 1) * CHUNK),
+    cy * CHUNK,
+    Math.min(world.sy, (cy + 1) * CHUNK),
+    cz * CHUNK,
+    Math.min(world.sz, (cz + 1) * CHUNK),
+  );
+}
+
 export function buildMeshData(world: World): { opaque: MeshArrays; cutout: MeshArrays; emissive: MeshArrays } {
+  return meshRange(world, 0, world.sx, 0, world.sy, 0, world.sz);
+}
+
+function meshRange(
+  world: World,
+  x0: number,
+  x1: number,
+  y0: number,
+  y1: number,
+  z0: number,
+  z1: number,
+): { opaque: MeshArrays; cutout: MeshArrays; emissive: MeshArrays } {
   const opaque = newBuilder();
   const cutout = newBuilder();
   const emissive = newBuilder();
-  for (let y = 0; y < world.sy; y++) {
-    for (let z = 0; z < world.sz; z++) {
-      for (let x = 0; x < world.sx; x++) {
+  for (let y = y0; y < y1; y++) {
+    for (let z = z0; z < z1; z++) {
+      for (let x = x0; x < x1; x++) {
         const id = world.blocks[(y * world.sz + z) * world.sx + x];
         if (id === 0) continue;
         const def = BLOCKS[id];

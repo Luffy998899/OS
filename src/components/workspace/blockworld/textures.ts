@@ -1,14 +1,32 @@
-// Procedural 16px texture atlas for the office workspace. Every tile is painted
-// from scratch with a per-tile seeded PRNG, so the atlas is byte-identical on
-// every load — no image assets, no network. These are office materials: carpet
-// tile, acoustic ceiling, painted drywall, glass, veneer, brushed metal. Muted
-// and low contrast on purpose — a real floorplate is not saturated.
+// Procedural 32px texture atlas for the office workspace. Every tile is
+// painted from scratch with a per-tile seeded PRNG, so the atlas is
+// byte-identical on every load — no image assets, no network.
+//
+// These are office materials: carpet tile, acoustic ceiling, painted drywall,
+// glass, veneer, brushed metal. They are muted — a real floorplate is not
+// saturated — but they are not flat. Every surface is built the same way a
+// modern texture pack builds one:
+//
+//   base gradient  →  material detail (weave, grain, panels, screens)
+//   →  fine noise  →  an edge bevel that gives the block a lit side.
+//
+// The bevel is what makes a wall read as a wall instead of a coloured square:
+// each tile is lit from the top-left, so adjacent blocks show seams.
+//
+// Painters address a 16-unit design grid (u()) so shapes stay on a readable
+// pixel scale, and drop to raw pixels (px()) for the half-unit detail the
+// higher resolution buys. Only fillRect/drawImage are used — the unit tests
+// rasterise these painters in Node with a software canvas that implements
+// exactly that much.
 
 import { ATLAS_COLS, ATLAS_ROWS, TILE, TILE_PX } from "@/lib/blockworld/blocks";
 
 type Ctx = CanvasRenderingContext2D;
 type Rand = () => number;
 type Painter = (c: Ctx, r: Rand) => void;
+
+/** Size of one design-grid unit in real pixels. The grid is always 16x16. */
+const U = TILE_PX / 16;
 
 /** mulberry32 — tiny deterministic PRNG, one instance per tile. */
 function mulberry32(seed: number): Rand {
@@ -31,36 +49,125 @@ function makeCanvas(w: number, h: number): [HTMLCanvasElement, Ctx] {
   return [el, c];
 }
 
-const px = (c: Ctx, x: number, y: number, color: string): void => {
+// ---------------------------------------------------------------------------
+// Colour maths. Painters name a base colour and derive their own highlight and
+// shadow from it, which is what keeps a material coherent.
+// ---------------------------------------------------------------------------
+
+const clamp255 = (v: number): number => (v < 0 ? 0 : v > 255 ? 255 : Math.round(v));
+
+function parseHex(hex: string): [number, number, number] {
+  const h = hex.replace("#", "");
+  return [
+    parseInt(h.slice(0, 2), 16),
+    parseInt(h.slice(2, 4), 16),
+    parseInt(h.slice(4, 6), 16),
+  ];
+}
+
+const toHex = (r: number, g: number, b: number): string =>
+  "#" +
+  [r, g, b]
+    .map((v) => clamp255(v).toString(16).padStart(2, "0"))
+    .join("");
+
+/** Lighten (positive) or darken (negative) a colour by a flat amount. */
+function shade(hex: string, amount: number): string {
+  const [r, g, b] = parseHex(hex);
+  return toHex(r + amount, g + amount, b + amount);
+}
+
+/** Blend two colours; t=0 is `a`, t=1 is `b`. */
+function mix(a: string, b: string, t: number): string {
+  const [r1, g1, b1] = parseHex(a);
+  const [r2, g2, b2] = parseHex(b);
+  return toHex(r1 + (r2 - r1) * t, g1 + (g2 - g1) * t, b1 + (b2 - b1) * t);
+}
+
+// ---------------------------------------------------------------------------
+// Drawing primitives
+// ---------------------------------------------------------------------------
+
+/** Raw-pixel rect — for detail finer than the design grid. */
+const px = (c: Ctx, x: number, y: number, w: number, h: number, color: string): void => {
   c.fillStyle = color;
-  c.fillRect(x, y, 1, 1);
+  c.fillRect(x, y, w, h);
 };
 
-const fill = (c: Ctx, color: string): void => {
-  c.fillStyle = color;
-  c.fillRect(0, 0, TILE_PX, TILE_PX);
+/** Design-grid rect: coordinates are 0..16 regardless of TILE_PX. */
+const u = (c: Ctx, x: number, y: number, w: number, h: number, color: string): void => {
+  px(c, x * U, y * U, w * U, h * U, color);
 };
+
+/** One design-grid cell. */
+const dot = (c: Ctx, x: number, y: number, color: string): void => u(c, x, y, 1, 1, color);
+
+const fill = (c: Ctx, color: string): void => px(c, 0, 0, TILE_PX, TILE_PX, color);
 
 const pick = <T,>(r: Rand, items: T[]): T => items[Math.floor(r() * items.length)];
 
+/** Distance from the tile centre, in design-grid units. */
 const dist = (x: number, y: number): number => Math.hypot(x - 7.5, y - 7.5);
 
-/** Per-pixel noise over a base fill: each color gets `chance` odds per pixel. */
-function speckle(c: Ctx, r: Rand, colors: string[], chance: number): void {
+/** A vertical gradient across the whole tile, one fillRect per pixel row. */
+function vgrad(c: Ctx, top: string, bottom: string): void {
+  for (let y = 0; y < TILE_PX; y++) {
+    px(c, 0, y, TILE_PX, 1, mix(top, bottom, y / (TILE_PX - 1)));
+  }
+}
+
+/** A horizontal gradient across the whole tile. */
+function hgrad(c: Ctx, left: string, right: string): void {
+  for (let x = 0; x < TILE_PX; x++) {
+    px(c, x, 0, 1, TILE_PX, mix(left, right, x / (TILE_PX - 1)));
+  }
+}
+
+/** Per-pixel luminance noise over whatever is already painted. */
+function grain(c: Ctx, r: Rand, amount: number, chance = 1): void {
   for (let y = 0; y < TILE_PX; y++) {
     for (let x = 0; x < TILE_PX; x++) {
-      if (r() < chance) px(c, x, y, pick(r, colors));
+      if (r() > chance) continue;
+      const n = (r() - 0.5) * 2 * amount;
+      px(c, x, y, 1, 1, `rgba(${n > 0 ? 255 : 0},${n > 0 ? 255 : 0},${n > 0 ? 255 : 0},${Math.abs(n) / 255})`);
     }
   }
 }
 
-/** A `w`px border hugging the tile edge — bezels, frames, mullions. */
+/** Per-pixel speckle in named colours — flecks in carpet, chips in stone. */
+function speckle(c: Ctx, r: Rand, colors: string[], chance: number): void {
+  for (let y = 0; y < TILE_PX; y++) {
+    for (let x = 0; x < TILE_PX; x++) {
+      if (r() < chance) px(c, x, y, 1, 1, pick(r, colors));
+    }
+  }
+}
+
+/**
+ * Light the tile from the top-left: a highlight along the top and left edges,
+ * a shadow along the bottom and right. This is the single thing that makes a
+ * flat colour read as a solid block.
+ */
+function bevel(c: Ctx, light: string, dark: string, w = 1, alpha = 1): void {
+  const l = alpha >= 1 ? light : withAlpha(light, alpha);
+  const d = alpha >= 1 ? dark : withAlpha(dark, alpha);
+  px(c, 0, 0, TILE_PX, w, l);
+  px(c, 0, 0, w, TILE_PX, l);
+  px(c, 0, TILE_PX - w, TILE_PX, w, d);
+  px(c, TILE_PX - w, 0, w, TILE_PX, d);
+}
+
+function withAlpha(hex: string, a: number): string {
+  const [r, g, b] = parseHex(hex);
+  return `rgba(${r},${g},${b},${a})`;
+}
+
+/** A `w`-pixel border hugging the tile edge — bezels, frames, mullions. */
 function border(c: Ctx, color: string, w: number): void {
-  c.fillStyle = color;
-  c.fillRect(0, 0, TILE_PX, w);
-  c.fillRect(0, TILE_PX - w, TILE_PX, w);
-  c.fillRect(0, 0, w, TILE_PX);
-  c.fillRect(TILE_PX - w, 0, w, TILE_PX);
+  px(c, 0, 0, TILE_PX, w, color);
+  px(c, 0, TILE_PX - w, TILE_PX, w, color);
+  px(c, 0, 0, w, TILE_PX, color);
+  px(c, TILE_PX - w, 0, w, TILE_PX, color);
 }
 
 /** Multiply every existing pixel's alpha by `alpha` (glass, water). */
@@ -76,935 +183,1006 @@ function crack(c: Ctx, r: Rand, color: string): void {
   let x = 2 + Math.floor(r() * 12);
   let y = 2 + Math.floor(r() * 12);
   const vertical = r() < 0.5;
-  const steps = 4 + Math.floor(r() * 4);
+  const steps = 5 + Math.floor(r() * 5);
   for (let i = 0; i < steps; i++) {
-    px(c, x, y, color);
+    px(c, x * U, y * U, U, U, color);
     if (vertical) {
-      y++;
-      x += Math.floor(r() * 3) - 1;
+      y += 1;
+      x += r() < 0.4 ? (r() < 0.5 ? 1 : -1) : 0;
     } else {
-      x++;
-      y += Math.floor(r() * 3) - 1;
+      x += 1;
+      y += r() < 0.4 ? (r() < 0.5 ? 1 : -1) : 0;
     }
-    if (x < 0 || x > 15 || y < 0 || y > 15) break;
+    if (x < 0 || y < 0 || x > 15 || y > 15) return;
   }
 }
+
+// ---------------------------------------------------------------------------
+// Material recipes shared by several tiles
+// ---------------------------------------------------------------------------
 
 /**
- * Commercial carpet tile: dithered fleck pile with the square tile seam
- * showing on two edges, the way a glue-down 500mm tile reads from above.
+ * Woven mat tile, after the bamboo/rattan reference: fine slats running one
+ * way, a slight warp thread across them, and a dark bound edge framing the
+ * mat. Laid out over a floor these read as mat tiles rather than broadloom.
  */
-function carpet(
-  c: Ctx,
-  r: Rand,
-  base: string,
-  light: string,
-  dark: string,
-  seam: string,
-): void {
-  fill(c, base);
-  speckle(c, r, [light, dark, light], 0.55);
-  c.fillStyle = seam;
-  c.fillRect(0, 0, TILE_PX, 1);
-  c.fillRect(0, 0, 1, TILE_PX);
-  // Feather the seam one pixel in so it reads as pile, not a drawn line.
-  for (let i = 0; i < TILE_PX; i++) {
-    if (r() < 0.4) px(c, i, 1, seam);
-    if (r() < 0.4) px(c, 1, i, seam);
-  }
-}
+function carpet(c: Ctx, r: Rand, base: string, flecks: string[]): void {
+  vgrad(c, shade(base, 7), shade(base, -7));
 
-/** Flat painted drywall with a faint roller nap. */
-function paintedWall(c: Ctx, r: Rand): void {
-  fill(c, "#e8e6e1");
-  speckle(c, r, ["#ecebe6", "#e3e1dc"], 0.3);
-  for (let i = 0; i < 4; i++) {
-    c.fillStyle = "#e4e2dd";
-    c.fillRect(Math.floor(r() * TILE_PX), Math.floor(r() * 11), 1, 3 + Math.floor(r() * 4));
-  }
-}
-
-/** Timber veneer: horizontal bands plus drawn-out grain streaks. */
-function veneer(
-  c: Ctx,
-  r: Rand,
-  base: string,
-  light: string,
-  mid: string,
-  grain: string,
-): void {
-  fill(c, base);
+  // The slats: a fine repeating run with a darker gap between each pair.
   for (let y = 0; y < TILE_PX; y++) {
-    c.fillStyle = pick(r, [base, light, mid, base]);
-    c.fillRect(0, y, TILE_PX, 1);
+    const inGap = y % 3 === 0;
+    px(c, 0, y, TILE_PX, 1, inGap ? "rgba(0,0,0,0.16)" : "rgba(255,255,255,0.05)");
   }
-  for (let i = 0; i < 7; i++) {
-    const y = Math.floor(r() * TILE_PX);
-    const x = Math.floor(r() * 12);
-    c.fillStyle = grain;
-    c.fillRect(x, y, 3 + Math.floor(r() * 5), 1);
-    if (r() < 0.4) px(c, x + 1, y + 1, mid);
+  // Warp threads crossing the slats, so the weave reads in both directions.
+  for (let x = 0; x < TILE_PX; x += 4) {
+    px(c, x, 0, 1, TILE_PX, "rgba(0,0,0,0.07)");
+    px(c, x + 1, 0, 1, TILE_PX, "rgba(255,255,255,0.05)");
   }
+  speckle(c, r, flecks, 0.1);
+  grain(c, r, 7, 0.4);
+
+  // The bound edge: a dark border all the way round, like the reference mat.
+  const band = shade(base, -74);
+  border(c, band, U);
+  px(c, U, U, TILE_PX - U * 2, 1, "rgba(0,0,0,0.22)");
+  px(c, 0, 0, TILE_PX, 1, shade(band, 14));
 }
 
-/** Brushed aluminium: fine vertical brush lines with a couple of bright ones. */
-function brushed(c: Ctx, r: Rand, base: string, shades: string[], sheen: string): void {
-  fill(c, base);
-  for (let x = 0; x < TILE_PX; x++) {
-    c.fillStyle = pick(r, shades);
-    c.fillRect(x, 0, 1, TILE_PX);
-    if (r() < 0.35) {
-      c.fillStyle = sheen;
-      c.fillRect(x, Math.floor(r() * 11), 1, 3 + Math.floor(r() * 4));
+/** Flat painted plaster: soft vertical wash, roller texture, corner bevel. */
+function paintedWall(c: Ctx, r: Rand, base: string): void {
+  vgrad(c, shade(base, 8), shade(base, -8));
+  grain(c, r, 7, 0.7);
+  // Faint roller streaks.
+  for (let i = 0; i < 4; i++) {
+    const x = Math.floor(r() * TILE_PX);
+    px(c, x, 0, 1, TILE_PX, `rgba(255,255,255,0.05)`);
+  }
+  bevel(c, shade(base, 16), shade(base, -20), 1);
+}
+
+/** Wood veneer with a run of grain lines along one axis. */
+function veneer(c: Ctx, r: Rand, base: string, dark: string, light: string): void {
+  vgrad(c, shade(base, 8), shade(base, -8));
+  // Long grain, drifting slightly so it never looks like a barcode.
+  for (let g = 0; g < 7; g++) {
+    let y = Math.floor(r() * TILE_PX);
+    const tone = r() < 0.5 ? dark : light;
+    const a = 0.18 + r() * 0.22;
+    for (let x = 0; x < TILE_PX; x++) {
+      if (r() < 0.12) y += r() < 0.5 ? 1 : -1;
+      if (y < 0 || y >= TILE_PX) continue;
+      px(c, x, y, 1, 1, withAlpha(tone, a));
     }
   }
+  // Board seam across the plank, and the lit edge.
+  px(c, 0, 0, TILE_PX, 1, shade(base, -26));
+  grain(c, r, 6, 0.4);
+  bevel(c, shade(base, 14), shade(base, -18), 1);
 }
 
-/** A wandering vertical tendril for the lair vines. */
-function tendril(c: Ctx, r: Rand, x0: number): void {
-  let x = x0;
+/** Brushed metal: a directional sheen plus fine scratches. */
+function brushed(c: Ctx, r: Rand, base: string): void {
+  hgrad(c, shade(base, -10), shade(base, 10));
   for (let y = 0; y < TILE_PX; y++) {
-    px(c, x, y, "#7a1f24");
-    if (r() < 0.3) px(c, x + (r() < 0.5 ? 1 : -1), y, "#5c1418");
-    if (r() < 0.15) px(c, x, y, "#a03434");
-    x += Math.floor(r() * 3) - 1;
-    if (x < 1) x = 1;
-    if (x > 14) x = 14;
+    const a = 0.05 + r() * 0.1;
+    px(c, 0, y, TILE_PX, 1, r() < 0.5 ? `rgba(255,255,255,${a})` : `rgba(0,0,0,${a})`);
   }
+  // A brighter band where the light catches it.
+  px(c, 0, Math.floor(TILE_PX * 0.28), TILE_PX, 2, "rgba(255,255,255,0.14)");
+  grain(c, r, 6, 0.5);
+  bevel(c, shade(base, 22), shade(base, -22), 1);
 }
+
+/** A lit screen: dark bezel, glowing panel, scanlines and window chrome. */
+function screen(c: Ctx, r: Rand, glow: string, chrome: string[]): void {
+  const bezel = "#15181e";
+  fill(c, bezel);
+  vgrad(c, shade(bezel, 14), shade(bezel, -6));
+  // Panel inset.
+  const m = 2 * U;
+  px(c, m, m, TILE_PX - m * 2, TILE_PX - m * 2 - U, glow);
+  // Content: a couple of window bars in different accent colours.
+  let y = m + U;
+  for (const col of chrome) {
+    const w = Math.floor((TILE_PX - m * 2) * (0.35 + r() * 0.5));
+    px(c, m + U, y, w, U, col);
+    y += U * 2;
+  }
+  // Scanlines keep the panel from reading as a flat rectangle.
+  for (let sy = m; sy < TILE_PX - m - U; sy += 2) {
+    px(c, m, sy, TILE_PX - m * 2, 1, "rgba(0,0,0,0.10)");
+  }
+  // Glass reflection down the top-left corner.
+  for (let i = 0; i < 5; i++) {
+    px(c, m + i, m, 1, Math.floor((TILE_PX - m * 2) * 0.5) - i * 2, "rgba(255,255,255,0.08)");
+  }
+  // Stand foot along the bottom.
+  px(c, 0, TILE_PX - U, TILE_PX, U, shade(bezel, -4));
+  px(c, Math.floor(TILE_PX * 0.35), TILE_PX - U, Math.floor(TILE_PX * 0.3), U, shade(bezel, 18));
+  bevel(c, "#39404c", "#080a0e", 1);
+  // A monitor's top bezel is the darkest edge on it, so it keeps its own line
+  // rather than the generic lit edge every other block gets.
+  px(c, 0, 0, TILE_PX, 1, "#12151a");
+}
+
+/** Foliage: a clump of leaves on a transparent field, cut round the edges. */
+function foliage(c: Ctx, r: Rand, tones: string[], density: number): void {
+  for (let y = 0; y < 16; y++) {
+    for (let x = 0; x < 16; x++) {
+      const d = dist(x, y);
+      if (d > 7.6) continue;
+      // Thins toward the rim so the clump has a soft edge rather than a disc.
+      if (r() > density - d * 0.03) continue;
+      dot(c, x, y, pick(r, tones));
+    }
+  }
+  // A stem so the clump is attached to something.
+  const stem = tones[tones.length - 1];
+  u(c, 7, 9, 2, 7, shade(stem, -24));
+}
+
+// ---------------------------------------------------------------------------
+// The painters — one per atlas tile
+// ---------------------------------------------------------------------------
 
 const PAINTERS: Record<keyof typeof TILE, Painter> = {
-  CARPET_GRAY: (c, r) => carpet(c, r, "#8b8d91", "#95979b", "#818387", "#75777b"),
-
-  CARPET_BLUE: (c, r) => carpet(c, r, "#6b7f9e", "#7589a8", "#617594", "#566a88"),
-
-  CARPET_GREEN: (c, r) => carpet(c, r, "#6f9177", "#799b81", "#65876d", "#5a7c62"),
-
-  CARPET_RED: (c, r) => carpet(c, r, "#a06a68", "#aa7472", "#96605e", "#8a5654"),
+  // ---- floors ----
+  CARPET_GRAY: (c, r) => carpet(c, r, "#8b8d91", ["#7e8085", "#96989c", "#84868b"]),
+  CARPET_BLUE: (c, r) => carpet(c, r, "#657b9c", ["#5a6f8f", "#7288a8", "#5f7493"]),
+  CARPET_GREEN: (c, r) => carpet(c, r, "#6b8e74", ["#5f8168", "#78997f", "#648a6d"]),
+  CARPET_RED: (c, r) => carpet(c, r, "#9c6866", ["#8d5d5c", "#a97674", "#95615f"]),
 
   CEILING_TILE: (c, r) => {
-    // Mineral fibre: near-white board, pinhole perforations, grid tee on two edges.
-    fill(c, "#eceae5");
-    speckle(c, r, ["#dedcd6", "#f3f1ec", "#e4e2dd"], 0.4);
-    for (let i = 0; i < 10; i++) {
-      px(c, 2 + Math.floor(r() * 13), 2 + Math.floor(r() * 13), "#d3d0ca");
-    }
-    c.fillStyle = "#c6c3bd";
-    c.fillRect(0, 0, TILE_PX, 1);
-    c.fillRect(0, 0, 1, TILE_PX);
+    // Mineral-fibre acoustic tile: near-white, finely pitted, dark grid edge.
+    vgrad(c, "#f2f0eb", "#e4e2dc");
+    speckle(c, r, ["#e0ded7", "#eae8e1", "#d8d6cf"], 0.3);
+    grain(c, r, 8, 0.6);
+    // The T-bar grid: a dark channel on the top and left.
+    px(c, 0, 0, TILE_PX, U, "#c3c1ba");
+    px(c, 0, 0, U, TILE_PX, "#c3c1ba");
+    px(c, 0, 0, TILE_PX, 1, "#a9a7a0");
+    px(c, 0, 0, 1, TILE_PX, "#a9a7a0");
+    // The lit face of the T-bar.
+    px(c, 0, U, TILE_PX, 1, "#fbfaf6");
+    px(c, U, 0, 1, TILE_PX, "#fbfaf6");
   },
 
-  CEILING_LIGHT: (c, r) => {
-    // Recessed LED panel: gray housing, evenly lit diffuser brightest mid-panel.
-    fill(c, "#f2f4f6");
-    for (let y = 1; y < TILE_PX - 1; y++) {
-      for (let x = 1; x < TILE_PX - 1; x++) {
-        const d = Math.max(Math.abs(x - 7.5), Math.abs(y - 7.5));
-        px(c, x, y, d < 3 ? "#ffffff" : d < 5.5 ? "#fbfcfd" : "#f1f3f6");
-      }
+  CEILING_LIGHT: (c) => {
+    // Recessed LED panel: a bright diffuser inside the same grid.
+    fill(c, "#cfcdc6");
+    px(c, 0, 0, TILE_PX, U, "#b6b4ad");
+    px(c, 0, 0, U, TILE_PX, "#b6b4ad");
+    const m = U;
+    px(c, m, m, TILE_PX - m * 2, TILE_PX - m * 2, "#fff8e2");
+    // Hot centre falling off to the frame, so it reads as emitting.
+    for (let i = 0; i < 5; i++) {
+      const k = m + 1 + i;
+      const size = TILE_PX - k * 2;
+      if (size <= 0) break;
+      px(c, k, k, size, size, `rgba(255,255,255,${0.14 + i * 0.06})`);
     }
-    speckle(c, r, ["#fdfdfe"], 0.12);
-    border(c, "#b6babe", 1);
-    px(c, 1, 1, "#9ea3a8");
-    px(c, 14, 14, "#9ea3a8");
+    px(c, m, m, TILE_PX - m * 2, 1, "rgba(255,255,255,0.85)");
   },
 
-  DRYWALL: (c, r) => paintedWall(c, r),
+  // ---- walls ----
+  DRYWALL: (c, r) => paintedWall(c, r, "#e6e4df"),
 
   DRYWALL_TRIM: (c, r) => {
-    paintedWall(c, r);
-    // Skirting board along the bottom three pixels.
-    c.fillStyle = "#b3b1ac";
-    c.fillRect(0, TILE_PX - 3, TILE_PX, 3);
-    c.fillStyle = "#c6c4bf";
-    c.fillRect(0, TILE_PX - 3, TILE_PX, 1);
-    c.fillStyle = "#9d9b97";
-    c.fillRect(0, TILE_PX - 1, TILE_PX, 1);
+    // Painted wall over a darker skirting board.
+    paintedWall(c, r, "#e8e6e1");
+    const skirt = Math.floor(TILE_PX * 0.78);
+    px(c, 0, skirt, TILE_PX, TILE_PX - skirt, "#b9b6ae");
+    px(c, 0, skirt, TILE_PX, 1, "#d7d4cc");
+    px(c, 0, TILE_PX - 1, TILE_PX, 1, "#918e87");
+    grain(c, r, 6, 0.3);
   },
 
   GLASS_CLEAR: (c) => {
-    // Almost entirely see-through: a cool wash, a thin frame, one wipe streak.
-    fill(c, "rgba(212,230,238,0.05)");
-    c.fillStyle = "rgba(198,216,226,0.4)";
-    c.fillRect(0, 0, TILE_PX, 1);
-    c.fillRect(0, TILE_PX - 1, TILE_PX, 1);
-    c.fillRect(0, 0, 1, TILE_PX);
-    c.fillRect(TILE_PX - 1, 0, 1, TILE_PX);
-    for (let i = 3; i < 12; i++) px(c, i, 13 - i, "rgba(255,255,255,0.24)");
+    // Mostly air with a cool tint, a frame, and one diagonal highlight.
+    fill(c, "#cfe3ec");
+    border(c, "#9fb6c2", U);
+    for (let i = 0; i < TILE_PX; i++) {
+      px(c, i, TILE_PX - 1 - i, 2, 2, "rgba(255,255,255,0.9)");
+    }
+    fadeAlpha(c, 0.17);
   },
 
   GLASS_FROSTED: (c, r) => {
-    fill(c, "rgba(246,248,249,0.55)");
-    for (let y = 0; y < TILE_PX; y++) {
-      if (y % 3 === 0) {
-        c.fillStyle = "rgba(255,255,255,0.1)";
-        c.fillRect(0, y, TILE_PX, 1);
-      } else if (y % 4 === 2) {
-        c.fillStyle = "rgba(202,212,218,0.08)";
-        c.fillRect(0, y, TILE_PX, 1);
-      }
-    }
-    for (let i = 0; i < 6; i++) {
-      c.fillStyle = "rgba(255,255,255,0.12)";
-      c.fillRect(Math.floor(r() * 10), Math.floor(r() * TILE_PX), 4 + Math.floor(r() * 5), 1);
-    }
+    fill(c, "#dbe6ea");
+    speckle(c, r, ["#e8f0f3", "#cfdde2", "#f2f7f9"], 0.5);
+    grain(c, r, 10, 0.8);
+    border(c, "#b9c9d1", U);
+    fadeAlpha(c, 0.6);
   },
 
-  WOOD_VENEER: (c, r) => veneer(c, r, "#c8a878", "#d2b485", "#bd9d6e", "#a8874f"),
+  CURTAIN_WALL: (c) => {
+    // Spandrel glazing: tinted panel inside a heavy aluminium mullion.
+    vgrad(c, "#93b3cb", "#7a9cb6");
+    border(c, "#8e969c", U);
+    px(c, 0, 0, TILE_PX, 1, "#c2cad0");
+    px(c, TILE_PX - 1, 0, 1, TILE_PX, "#666d73");
+    // The sky reflection in the top half.
+    px(c, U, U, TILE_PX - U * 2, Math.floor(TILE_PX * 0.34), "rgba(255,255,255,0.22)");
+    px(c, U, U, TILE_PX - U * 2, 2, "rgba(255,255,255,0.4)");
+    fadeAlpha(c, 0.78);
+  },
 
-  WOOD_DARK: (c, r) => veneer(c, r, "#6a4b33", "#74553b", "#5e412c", "#4a3323"),
+  // ---- timber + hard floors ----
+  WOOD_VENEER: (c, r) => veneer(c, r, "#b98d55", "#8d6539", "#d3ab73"),
+
+  WOOD_DARK: (c, r) => {
+    // The executive desk's pedestal from the reference: dark mahogany with a
+    // recessed drawer front and a brass pull. Doubles as the apron of a dark
+    // table, so the hardware stays understated.
+    veneer(c, r, "#5a3c29", "#3d281a", "#7a583e");
+    const m = 2 * U;
+    // Drawer front, set in from the carcass.
+    px(c, m, m, TILE_PX - m * 2, TILE_PX - m * 2, "rgba(0,0,0,0.16)");
+    px(c, m, m, TILE_PX - m * 2, 1, "rgba(255,255,255,0.12)");
+    px(c, m, TILE_PX - m - 1, TILE_PX - m * 2, 1, "rgba(0,0,0,0.34)");
+    px(c, m, m, 1, TILE_PX - m * 2, "rgba(255,255,255,0.08)");
+    px(c, TILE_PX - m - 1, m, 1, TILE_PX - m * 2, "rgba(0,0,0,0.3)");
+    // Brass pull across the middle of the drawer.
+    const hy = Math.floor(TILE_PX * 0.5);
+    px(c, Math.floor(TILE_PX * 0.34), hy, Math.floor(TILE_PX * 0.32), U, "#a8873f");
+    px(c, Math.floor(TILE_PX * 0.34), hy, Math.floor(TILE_PX * 0.32), 1, "#d8b866");
+    bevel(c, "#7a583e", "#2b1c12", 1);
+  },
 
   CONCRETE: (c, r) => {
-    // Power-floated slab: soft mottling, a couple of exposed aggregate specks.
-    fill(c, "#b7b8b5");
-    speckle(c, r, ["#bdbeba", "#b1b2af", "#c2c3bf"], 0.3);
-    for (let i = 0; i < 2; i++) {
-      const x = 3 + Math.floor(r() * 10);
-      const y = 3 + Math.floor(r() * 10);
-      px(c, x, y, "#8f918d");
-      px(c, x + 1, y, "#d0d1cd");
-    }
+    vgrad(c, "#a4a4a1", "#918f8c");
+    speckle(c, r, ["#8e8c89", "#adaba7", "#999794"], 0.35);
+    grain(c, r, 9, 0.7);
+    crack(c, r, "rgba(90,90,88,0.5)");
+    bevel(c, "#b6b6b3", "#75736f", 1);
   },
 
   MARBLE: (c, r) => {
-    fill(c, "#efece6");
-    speckle(c, r, ["#e6e3dc", "#f4f2ec"], 0.22);
-    for (let i = 0; i < 3; i++) {
-      let x = Math.floor(r() * TILE_PX);
-      let y = 0;
-      while (y < TILE_PX) {
-        px(c, x, y, "#b8b6b0");
-        if (r() < 0.3) px(c, x + 1, y, "#a5a39d");
-        x += Math.floor(r() * 3) - 1;
-        y += r() < 0.7 ? 1 : 0;
-        if (x < 0) x = 0;
-        if (x > 15) x = 15;
-        if (r() < 0.05) break;
+    vgrad(c, "#eeeae1", "#ded9cf");
+    // Veining: pale grey rivers wandering across the slab.
+    for (let v = 0; v < 3; v++) {
+      let y = Math.floor(r() * TILE_PX);
+      const a = 0.2 + r() * 0.2;
+      for (let x = 0; x < TILE_PX; x++) {
+        if (r() < 0.35) y += r() < 0.5 ? 1 : -1;
+        if (y < 0 || y >= TILE_PX) continue;
+        px(c, x, y, 1, 1, `rgba(150,146,138,${a})`);
+        px(c, x, y + 1, 1, 1, `rgba(150,146,138,${a * 0.4})`);
       }
     }
+    grain(c, r, 5, 0.4);
+    bevel(c, "#ffffff", "#bcb7ac", 1);
   },
 
   PAVING: (c, r) => {
-    // Four big plaza slabs with a recessed joint between them.
-    fill(c, "#8d887f");
-    for (const [sx, sy] of [[1, 1], [9, 1], [1, 9], [9, 9]] as const) {
-      c.fillStyle = pick(r, ["#aaa59c", "#a49f96", "#afaaa1"]);
-      c.fillRect(sx, sy, 6, 6);
-    }
-    speckle(c, r, ["#b0aba2", "#9d988f"], 0.2);
-    c.fillStyle = "#8d887f";
-    c.fillRect(0, 0, TILE_PX, 1);
-    c.fillRect(0, 8, TILE_PX, 1);
-    c.fillRect(0, 0, 1, TILE_PX);
-    c.fillRect(8, 0, 1, TILE_PX);
+    vgrad(c, "#adaaa2", "#9b9890");
+    speckle(c, r, ["#a4a199", "#b5b2aa", "#96938c"], 0.4);
+    grain(c, r, 8, 0.6);
+    // Slab joint on two sides.
+    px(c, 0, 0, TILE_PX, U, "#84817a");
+    px(c, 0, 0, U, TILE_PX, "#84817a");
+    px(c, 0, U, TILE_PX, 1, "#bdbab2");
   },
 
+  // ---- envelope ----
   FACADE: (c, r) => {
-    // Flat cladding panel; the shadow gap runs down the left edge.
-    fill(c, "#ada9a3");
-    speckle(c, r, ["#b1ada7", "#a9a59f"], 0.18);
-    c.fillStyle = "#8e8a85";
-    c.fillRect(0, 0, 1, TILE_PX);
-    c.fillStyle = "#bcb8b2";
-    c.fillRect(1, 0, 1, TILE_PX);
+    // Precast panel with a shadow gap between units.
+    vgrad(c, "#c2c5c9", "#a9acb1");
+    grain(c, r, 7, 0.5);
+    px(c, 0, 0, TILE_PX, U, "#8f9297");
+    px(c, 0, U, TILE_PX, 1, "#d3d6da");
+    px(c, 0, 0, U, TILE_PX, "#9a9da2");
+    bevel(c, "#d8dbdf", "#83868b", 1);
   },
 
-  CURTAIN_WALL: (c, r) => {
-    // Vision glass graded from sky at the head to a deeper reflection at the
-    // cill, held in a 2px mullion frame.
-    for (let y = 0; y < TILE_PX; y++) {
-      const t = y / (TILE_PX - 1);
-      const rr = (152 - 36 * t) | 0;
-      const gg = (170 - 34 * t) | 0;
-      const bb = (188 - 28 * t) | 0;
-      c.fillStyle = `rgba(${rr},${gg},${bb},0.7)`;
-      c.fillRect(0, y, TILE_PX, 1);
-    }
-    for (let y = 3; y < 8; y++) {
-      c.fillStyle = "rgba(255,255,255,0.12)";
-      c.fillRect(3, y, 11 - y, 1);
-    }
-    px(c, 5 + Math.floor(r() * 4), 10, "rgba(255,255,255,0.14)");
-    border(c, "#7c8188", 2);
-    c.fillStyle = "#9ba0a6";
-    c.fillRect(0, 0, TILE_PX, 1);
-  },
-
+  // ---- workstation ----
   MONITOR_ON: (c, r) => {
-    // A display, read head-on: black bezel, slate panel, a header strip and a
-    // few UI bars in the usual dashboard colors.
-    fill(c, "#0d0f12");
-    c.fillStyle = "#1d232c";
-    c.fillRect(1, 1, 14, 13);
-    c.fillStyle = "#2d3644";
-    c.fillRect(1, 1, 14, 3);
-    px(c, 2, 2, "#8fa4c4");
-    px(c, 13, 2, "#5f6b7d");
-    c.fillStyle = "#151a21";
-    c.fillRect(11, 5, 4, 8);
-    c.fillStyle = "#4a7fd0";
-    c.fillRect(3, 6, 6, 1);
-    c.fillStyle = "#4aa36a";
-    c.fillRect(3, 8, 4, 1);
-    c.fillStyle = "#d3a34a";
-    c.fillRect(3, 10, 7, 1);
-    c.fillStyle = "#39414d";
-    c.fillRect(3, 12, 5, 1);
-    for (let i = 0; i < 3; i++) {
-      px(c, 12 + Math.floor(r() * 2), 6 + i * 2, "#3b4a5f");
+    // The all-in-one from the reference: a thin silver frame round a black
+    // glossy panel, a deeper silver chin, and a slim stand. The screen keeps a
+    // dim desktop and a row of dock icons so it reads as switched on.
+    fill(c, "#0a0b0d");
+    // Aluminium frame.
+    const frame = "#b9bdc2";
+    px(c, 0, 0, TILE_PX, U, frame);
+    px(c, 0, 0, U, TILE_PX, frame);
+    px(c, TILE_PX - U, 0, U, TILE_PX, frame);
+    px(c, 0, 0, TILE_PX, 1, "#e4e7ea");
+    px(c, TILE_PX - 1, 0, 1, TILE_PX, "#8f9499");
+    // The chin below the glass, deeper than the other three sides.
+    const chinTop = TILE_PX - U * 3;
+    for (let y = chinTop; y < TILE_PX - U; y++) {
+      px(c, 0, y, TILE_PX, 1, mix("#c6cacf", "#9ea3a8", (y - chinTop) / (U * 2)));
     }
-    c.fillStyle = "#16191d";
-    c.fillRect(6, 14, 4, 2);
+    // Glass: near-black, with a soft reflection falling from the top-left.
+    const g0 = U;
+    const gw = TILE_PX - U * 2;
+    const gh = chinTop - U;
+    for (let y = 0; y < gh; y++) {
+      px(c, g0, U + y, gw, 1, mix("#1a2029", "#080a0d", y / gh));
+    }
+    // Dock icons along the bottom of the panel — the only colour on it.
+    const dockY = U + gh - U * 2;
+    const icons = ["#4a90e2", "#5fbf7a", "#e0a94a"];
+    icons.forEach((col, i) => {
+      px(c, g0 + U + i * U * 2, dockY, U, U, col);
+    });
+    // Menu bar and a window edge, very dim.
+    px(c, g0, U, gw, 1, "rgba(255,255,255,0.16)");
+    px(c, g0 + U, U + U * 2, gw - U * 3, 1, "rgba(255,255,255,0.10)");
+    // Glass reflection streak.
+    for (let i = 0; i < 6; i++) {
+      px(c, g0 + i, U, 1, Math.floor(gh * 0.45) - i * 2, "rgba(255,255,255,0.07)");
+    }
+    // Stand foot.
+    px(c, 0, TILE_PX - U, TILE_PX, U, "#0d0e10");
+    px(c, Math.floor(TILE_PX * 0.38), TILE_PX - U, Math.floor(TILE_PX * 0.24), U, "#a7acb1");
+    grain(c, r, 3, 0.15);
   },
 
   MONITOR_BACK: (c, r) => {
-    fill(c, "#2a2d31");
-    speckle(c, r, ["#2e3135", "#26292d"], 0.25);
-    c.fillStyle = "#33363b";
-    c.fillRect(2, 2, 12, 1);
-    // Stand notch.
-    c.fillStyle = "#1e2124";
-    c.fillRect(6, 11, 4, 5);
-    c.fillStyle = "#3a3e43";
-    c.fillRect(6, 11, 4, 1);
+    // Brushed aluminium shell, matching the front's frame.
+    vgrad(c, "#c4c8cd", "#a2a7ac");
+    for (let y = 0; y < TILE_PX; y++) {
+      px(c, 0, y, TILE_PX, 1, r() < 0.5 ? "rgba(255,255,255,0.06)" : "rgba(0,0,0,0.05)");
+    }
+    grain(c, r, 5, 0.35);
+    // The stand boss and column.
+    u(c, 5, 5, 6, 6, "#9aa0a6");
+    u(c, 7, 11, 2, 4, "#8f9499");
+    u(c, 5, 15, 6, 1, "#7d8287");
+    bevel(c, "#e2e5e8", "#7c8186", 1);
   },
 
   DESK_TOP: (c, r) => {
-    veneer(c, r, "#c8a878", "#d2b485", "#bd9d6e", "#a8874f");
-    // Paper sheet with ruled lines.
-    c.fillStyle = "#f6f4ee";
-    c.fillRect(2, 2, 5, 7);
-    c.fillStyle = "#cbc9c2";
-    c.fillRect(3, 4, 3, 1);
-    c.fillRect(3, 6, 3, 1);
-    // Keyboard.
-    c.fillStyle = "#2a2d33";
-    c.fillRect(8, 10, 7, 4);
-    c.fillStyle = "#3d424b";
-    for (let x = 9; x < 15; x += 2) {
-      px(c, x, 11, "#3d424b");
-      px(c, x, 12, "#3d424b");
+    // The executive desk from the reference, seen from above: a green leather
+    // writing inlay set into a mahogany surround with a gold tooling line.
+    veneer(c, r, "#6b4529", "#4a2e1a", "#8a5c38");
+    const m = 2 * U;
+    px(c, m, m, TILE_PX - m * 2, TILE_PX - m * 2, "#3f6b4f");
+    // Leather has a fine pebbled grain and darkens toward its edges.
+    for (let y = m; y < TILE_PX - m; y++) {
+      const t = Math.abs(y - TILE_PX / 2) / (TILE_PX / 2);
+      px(c, m, y, TILE_PX - m * 2, 1, mix("#477a58", "#2f5540", t));
     }
-    // Mouse.
-    c.fillStyle = "#31353b";
-    c.fillRect(12, 5, 2, 3);
-    px(c, 12, 5, "#464b52");
+    for (let i = 0; i < 90; i++) {
+      const x = m + Math.floor(r() * (TILE_PX - m * 2));
+      const y = m + Math.floor(r() * (TILE_PX - m * 2));
+      px(c, x, y, 1, 1, r() < 0.5 ? "rgba(255,255,255,0.07)" : "rgba(0,0,0,0.10)");
+    }
+    // Gold tooling around the inlay.
+    px(c, m - 1, m - 1, TILE_PX - m * 2 + 2, 1, "#c9a24e");
+    px(c, m - 1, TILE_PX - m, TILE_PX - m * 2 + 2, 1, "#9a7a36");
+    px(c, m - 1, m - 1, 1, TILE_PX - m * 2 + 2, "#c9a24e");
+    px(c, TILE_PX - m, m - 1, 1, TILE_PX - m * 2 + 2, "#9a7a36");
+    bevel(c, "#9a6c42", "#33200f", 1);
   },
 
   CHAIR: (c, r) => {
-    // Mesh weave: alternating warp/weft with a soft sheen across the seat.
-    for (let y = 0; y < TILE_PX; y++) {
-      for (let x = 0; x < TILE_PX; x++) {
-        px(c, x, y, (x + y) % 2 === 0 ? "#3a3d43" : "#2f3237");
-      }
-    }
-    speckle(c, r, ["#44474d", "#2a2d31"], 0.14);
-    c.fillStyle = "rgba(255,255,255,0.06)";
-    c.fillRect(0, 4, TILE_PX, 3);
-    c.fillStyle = "rgba(0,0,0,0.12)";
-    c.fillRect(0, 13, TILE_PX, 3);
+    // Moulded task-chair shell in dark mesh.
+    vgrad(c, "#565a61", "#3d4046");
+    for (let y = 0; y < TILE_PX; y += 2)
+      for (let x = 0; x < TILE_PX; x += 2) px(c, x, y, 1, 1, "rgba(0,0,0,0.22)");
+    grain(c, r, 6, 0.4);
+    // Lumbar band across the back.
+    px(c, 0, Math.floor(TILE_PX * 0.55), TILE_PX, U, "#2f3238");
+    px(c, 0, Math.floor(TILE_PX * 0.55), TILE_PX, 1, "#6c717a");
+    bevel(c, "#6e737c", "#26282d", 1);
   },
 
-  PLANT: (c, r) => {
-    // Cutout foliage — roughly a third of the tile stays fully transparent.
-    for (let i = 0; i < 66; i++) {
-      const x = Math.floor(r() * 15);
-      const y = Math.floor(r() * 15);
-      c.fillStyle = pick(r, ["#4a7a3c", "#568c45", "#3f6a33", "#61994e"]);
-      c.fillRect(x, y, 2, 2);
-    }
-    for (let i = 0; i < 10; i++) {
-      px(c, Math.floor(r() * TILE_PX), Math.floor(r() * TILE_PX), "#6ea658");
-    }
+  CPU_TOWER: (c, r) => {
+    vgrad(c, "#3a3f47", "#2a2e34");
+    grain(c, r, 6, 0.4);
+    // Front panel: mesh intake, power LED, a drive slot.
+    u(c, 2, 2, 12, 7, "#2f343a");
+    for (let y = 2; y < 9; y++)
+      for (let x = 2; x < 14; x++) if ((x + y) % 2 === 0) dot(c, x, y, "#262a30");
+    u(c, 3, 11, 10, 1, "#4a5058");
+    dot(c, 12, 13, "#63d6a0");
+    dot(c, 3, 13, "#4f555d");
+    bevel(c, "#4d535c", "#1b1e22", 1);
   },
+
+  // ---- plants ----
+  PLANT: (c, r) => foliage(c, r, ["#5da944", "#4d9138", "#6cbc50", "#3f7a2e"], 0.98),
+  PLANT_FERN: (c, r) => foliage(c, r, ["#4f9b46", "#5fae53", "#3f8438"], 0.95),
+  PLANT_TALL: (c, r) => foliage(c, r, ["#57a84d", "#68b95c", "#46903d"], 1.0),
 
   PLANTER: (c, r) => {
-    fill(c, "#a5674a");
-    speckle(c, r, ["#ad6f52", "#9a5f43", "#b47a5c"], 0.3);
-    // Rim: highlight over a shadow line, then the body darkens at the edges.
-    c.fillStyle = "#c08363";
-    c.fillRect(0, 0, TILE_PX, 2);
-    c.fillStyle = "#cf9575";
-    c.fillRect(0, 0, TILE_PX, 1);
-    c.fillStyle = "#8a5039";
-    c.fillRect(0, 2, TILE_PX, 1);
-    c.fillStyle = "rgba(0,0,0,0.12)";
-    c.fillRect(0, 3, 2, TILE_PX - 3);
-    c.fillRect(TILE_PX - 2, 3, 2, TILE_PX - 3);
-  },
-
-  METAL: (c, r) => brushed(c, r, "#a4a9ae", ["#a9aeb3", "#9ba0a5", "#a4a9ae"], "#b6bbc0"),
-
-  ELEVATOR: (c, r) => {
-    brushed(c, r, "#9ba1a7", ["#a0a6ac", "#949aa0", "#9ba1a7"], "#b0b6bc");
-    // Centre seam between the two leaves.
-    c.fillStyle = "#6f7479";
-    c.fillRect(7, 0, 1, TILE_PX);
-    c.fillStyle = "#c2c8ce";
-    c.fillRect(8, 0, 1, TILE_PX);
-    // Call-button plate.
-    c.fillStyle = "#b8bcc0";
-    c.fillRect(12, 5, 3, 5);
-    c.fillStyle = "#8d9297";
-    c.fillRect(12, 5, 3, 1);
-    px(c, 13, 7, "#e8c96a");
-    px(c, 13, 8, "#6f7479");
-  },
-
-  WHITEBOARD: (c, r) => {
-    fill(c, "#f6f6f4");
-    speckle(c, r, ["#f2f2f0"], 0.1);
-    border(c, "#b9bdc1", 1);
-    c.fillStyle = "#d9dcdf";
-    c.fillRect(1, 1, TILE_PX - 2, 1);
-    // Faint marker strokes.
-    c.fillStyle = "#93aed6";
-    c.fillRect(3, 5, 7, 1);
-    c.fillStyle = "#a8c6ac";
-    c.fillRect(3, 8, 4, 1);
-    px(c, 9, 9, "#d6a9a4");
-    px(c, 10, 10, "#d6a9a4");
-    px(c, 11, 11, "#d6a9a4");
-    // Marker resting in the tray.
-    c.fillStyle = "#6f7479";
-    c.fillRect(4 + Math.floor(r() * 5), 13, 3, 1);
-  },
-
-  CORKBOARD: (c, r) => {
-    fill(c, "#b99b74");
-    speckle(c, r, ["#c2a37c", "#ae8f68", "#c8ab86", "#a4855f"], 0.6);
-    // Pinned paper corners.
-    for (const [x, y] of [[2, 2], [10, 4], [5, 10]] as const) {
-      c.fillStyle = "#f2efe6";
-      c.fillRect(x, y, 4, 4);
-      c.fillStyle = "#d8d4c8";
-      c.fillRect(x, y + 3, 4, 1);
-      px(c, x + 1, y + 1, "#c0574c");
-    }
-    px(c, 13, 12, "#8f7350");
-  },
-
-  BOOKS: (c, r) => {
-    // A shelf of ring binders, spines out.
-    fill(c, "#4e4a45");
-    const spines = ["#7d6a5e", "#5f6d7d", "#6b7d68", "#8a7a5e", "#77607a", "#6d6f74"];
-    let x = 0;
-    while (x < TILE_PX) {
-      const w = 2 + Math.floor(r() * 2);
-      c.fillStyle = pick(r, spines);
-      c.fillRect(x, 1, w, 14);
-      c.fillStyle = "rgba(0,0,0,0.18)";
-      c.fillRect(x + w - 1, 1, 1, 14);
-      c.fillStyle = "#e6e2d8";
-      c.fillRect(x, 4, Math.max(1, w - 1), 2);
-      if (r() < 0.4) px(c, x, 10, "#3a3733");
-      x += w;
-    }
-    c.fillStyle = "#3a3733";
-    c.fillRect(0, 15, TILE_PX, 1);
-    c.fillRect(0, 0, TILE_PX, 1);
-  },
-
-  SERVER_RACK: (c, r) => {
-    fill(c, "#23262b");
-    for (let u = 0; u < 5; u++) {
-      const y = u * 3 + 1;
-      c.fillStyle = "#1b1e22";
-      c.fillRect(1, y, 14, 2);
-      c.fillStyle = "#2b2f35";
-      c.fillRect(1, y + 2, 14, 1);
-      // Status LEDs down the left of each unit.
-      px(c, 2, y, r() < 0.75 ? "#57c46a" : "#2f5c39");
-      px(c, 4, y, r() < 0.4 ? "#d8a53f" : "#5c4a24");
-      if (r() < 0.5) px(c, 6, y + 1, "#57c46a");
-      for (let x = 9; x < 15; x += 2) px(c, x, y + 1, "#33373d");
-    }
-    speckle(c, r, ["#26292e"], 0.1);
-  },
-
-  TV_SCREEN: (c, r) => {
-    // Big panel on standby: near-black with the backlight sitting slightly
-    // proud across the upper half, not a hotspot.
-    fill(c, "#0a0c10");
-    for (let y = 1; y < TILE_PX - 1; y++) {
-      for (let x = 1; x < TILE_PX - 1; x++) {
-        const glow = 1 - Math.abs(y - 6) / 12 - Math.abs(x - 7.5) / 40;
-        px(c, x, y, glow > 0.85 ? "#161e2e" : glow > 0.72 ? "#121927" : "#0f1522");
-      }
-    }
-    speckle(c, r, ["#0d1119"], 0.1);
-    border(c, "#191c21", 1);
-    px(c, 8, 14, "#2b6ea8");
-  },
-
-  PANTRY: (c, r) => {
-    // Stone counter with the ring somebody left behind.
-    fill(c, "#d9d5cd");
-    speckle(c, r, ["#cfcbc3", "#e2ded6", "#c4c0b8"], 0.45);
-    for (let y = 0; y < TILE_PX; y++) {
-      for (let x = 0; x < TILE_PX; x++) {
-        const d = Math.hypot(x - 10.5, y - 5.5);
-        if (d > 2.2 && d < 3.1) px(c, x, y, "#bfae97");
-      }
-    }
-    px(c, 3, 12, "#b3aea4");
-    px(c, 4, 12, "#c9c4ba");
-  },
-
-  ACOUSTIC_FELT: (c, r) => {
-    // Neutral gray: the felt blocks tint this at mesh time.
-    fill(c, "#9a9a98");
-    speckle(c, r, ["#a2a2a0", "#929290", "#9e9e9c", "#969694"], 0.6);
-    for (let i = 0; i < 8; i++) {
-      c.fillStyle = pick(r, ["#a6a6a4", "#8e8e8c"]);
-      c.fillRect(Math.floor(r() * 14), Math.floor(r() * TILE_PX), 2, 1);
-    }
-  },
-
-  CLOCK: (c, r) => {
-    // Analogue wall clock on the painted wall, hands at ten past ten.
-    paintedWall(c, r);
-    for (let y = 0; y < TILE_PX; y++) {
-      for (let x = 0; x < TILE_PX; x++) {
-        const d = dist(x, y);
-        if (d <= 5.6) px(c, x, y, "#fbfaf7");
-        else if (d <= 6.6) px(c, x, y, "#71757a");
-      }
-    }
-    for (const [x, y] of [[7, 3], [8, 3], [12, 7], [12, 8], [7, 12], [8, 12], [3, 7], [3, 8]] as const) {
-      px(c, x, y, "#5c6065");
-    }
-    // Minute hand up-right, hour hand up-left.
-    for (const [x, y] of [[9, 6], [10, 5], [11, 4]] as const) px(c, x, y, "#24272b");
-    for (const [x, y] of [[6, 6], [5, 5]] as const) px(c, x, y, "#24272b");
-    c.fillStyle = "#24272b";
-    c.fillRect(7, 7, 2, 2);
-  },
-
-  SIGN_STRIP: (c, r) => {
-    fill(c, "#1a1d22");
-    speckle(c, r, ["#1e2127"], 0.15);
-    c.fillStyle = "#3f4c62";
-    c.fillRect(0, 5, TILE_PX, 6);
-    c.fillStyle = "#8ba2c6";
-    c.fillRect(0, 6, TILE_PX, 4);
-    c.fillStyle = "#e6eefb";
-    c.fillRect(0, 7, TILE_PX, 2);
-    for (let i = 0; i < 4; i++) {
-      px(c, Math.floor(r() * TILE_PX), 7 + Math.floor(r() * 2), "#ffffff");
-    }
-    c.fillStyle = "#14171b";
-    c.fillRect(0, 0, 1, TILE_PX);
-    c.fillRect(TILE_PX - 1, 0, 1, TILE_PX);
-  },
-
-  ROOF: (c, r) => {
-    // Single-ply membrane with welded seams.
-    fill(c, "#6f7378");
-    speckle(c, r, ["#747880", "#6a6e73"], 0.3);
-    for (const y of [0, 5, 10, 15] as const) {
-      c.fillStyle = "#5e6267";
-      c.fillRect(0, y, TILE_PX, 1);
-      if (y + 1 < TILE_PX) {
-        c.fillStyle = "#7c8085";
-        c.fillRect(0, y + 1, TILE_PX, 1);
-      }
-    }
-  },
-
-  STONE: (c, r) => {
-    fill(c, "#8f8f8f");
-    speckle(c, r, ["#9a9a9a", "#828282", "#a3a3a3"], 0.35);
-    crack(c, r, "#6e6e6e");
-    crack(c, r, "#767676");
-  },
-
-  LAIR_STONE: (c, r) => {
-    fill(c, "#20242e");
-    speckle(c, r, ["#272c38", "#1a1d26", "#2c3140"], 0.35);
-    crack(c, r, "#12141b");
-    crack(c, r, "#12141b");
-    crack(c, r, "#31202a");
-  },
-
-  LAIR_VINE: (c, r) => {
-    tendril(c, r, 3 + Math.floor(r() * 3));
-    tendril(c, r, 9 + Math.floor(r() * 4));
-    // One horizontal runner tying the strands together.
-    let y = 4 + Math.floor(r() * 8);
-    for (let x = 0; x < TILE_PX; x++) {
-      px(c, x, y, "#6b1a1f");
-      y += Math.floor(r() * 3) - 1;
-      if (y < 1) y = 1;
-      if (y > 14) y = 14;
-    }
-  },
-
-  VECNA: (c, r) => {
-    fill(c, "#5a1e22");
-    speckle(c, r, ["#4c171b", "#68262a"], 0.3);
-    for (let i = 0; i < 5; i++) {
-      let y = Math.floor(r() * TILE_PX);
-      for (let x = 0; x < TILE_PX; x++) {
-        px(c, x, y, "#762d30");
-        if (r() < 0.2) px(c, x, y + 1, "#3f1114");
-        if (r() < 0.4) y += Math.floor(r() * 3) - 1;
-        if (y < 0) y = 0;
-        if (y > 15) y = 15;
-      }
-    }
-    speckle(c, r, ["#8e3a3a"], 0.04);
-  },
-
-  OBSIDIAN: (c, r) => {
-    fill(c, "#17101f");
-    speckle(c, r, ["#241635", "#1d1329", "#100b16"], 0.35);
-    for (let i = 0; i < 5; i++) {
-      px(c, Math.floor(r() * TILE_PX), Math.floor(r() * TILE_PX), "#4a2a66");
-    }
-    px(c, 3 + Math.floor(r() * 10), 3 + Math.floor(r() * 10), "#6b4a8e");
-  },
-
-  LAIR_GLOW: (c, r) => {
-    for (let y = 0; y < TILE_PX; y++) {
-      for (let x = 0; x < TILE_PX; x++) {
-        const d = dist(x, y) + r() * 0.8;
-        if (d < 2.5) px(c, x, y, "#ffe9b8");
-        else if (d < 4.5) px(c, x, y, "#ff9840");
-        else if (d < 6.5) px(c, x, y, "#e8531f");
-        else if (d < 8.5) px(c, x, y, "#a32712");
-        else px(c, x, y, "#7c1a10");
-      }
-    }
-  },
-
-  WATER: (c, r) => {
-    fill(c, "#4a6f86");
-    speckle(c, r, ["#446677", "#527a92"], 0.3);
-    for (let i = 0; i < 6; i++) {
-      c.fillStyle = "#8fb0c2";
-      c.fillRect(Math.floor(r() * 13), Math.floor(r() * TILE_PX), 2 + Math.floor(r() * 2), 1);
-    }
-    fadeAlpha(c, 0.72);
-  },
-
-  // ---- props & decoration -------------------------------------------------
-
-  /** Desktop tower: vented front, power LED, optical slot. */
-  CPU_TOWER: (c, r) => {
-    fill(c, "#2f333a");
-    speckle(c, r, ["#343941", "#292d33"], 0.22);
-    border(c, "#23262b", 1);
-    // vent grille
-    for (let y = 3; y < 8; y++) for (let x = 3; x < 8; x++) if ((x + y) % 2 === 0) px(c, x, y, "#1b1e22");
-    // optical drive slot
-    c.fillStyle = "#1b1e22";
-    c.fillRect(3, 10, 10, 1);
-    // power button + LED
-    px(c, 11, 4, "#7b828c");
-    px(c, 11, 6, "#4fd0ff");
-    px(c, 11, 12, "#3ad07a");
-  },
-
-  /** Bushy fern — leafy cutout with a transparent surround. */
-  PLANT_FERN: (c, r) => {
-    for (let i = 0; i < 46; i++) {
-      const x = 2 + Math.floor(r() * 12);
-      const y = 3 + Math.floor(r() * 12);
-      px(c, x, y, pick(r, ["#4f9b46", "#5eb054", "#3f8038", "#68c05c"]));
-      if (r() < 0.5) px(c, x, y - 1, pick(r, ["#5eb054", "#427f3a"]));
-    }
-    // a few fronds reaching up
-    for (const sx of [5, 8, 11]) for (let y = 1; y < 5; y++) px(c, sx, y, "#4f9b46");
-  },
-
-  /** Tall leafy stem plant. */
-  PLANT_TALL: (c, r) => {
-    for (let y = 1; y < TILE_PX; y++) {
-      px(c, 7, y, "#5a7a3e");
-      px(c, 8, y, "#4a6a34");
-    }
-    for (let i = 0; i < 34; i++) {
-      const y = 1 + Math.floor(r() * 13);
-      const spread = 1 + Math.floor(r() * 4);
-      const dir = r() < 0.5 ? -1 : 1;
-      for (let k = 1; k <= spread; k++) {
-        px(c, 7 + dir * k, y, pick(r, ["#57a84d", "#469a3e", "#63bb59"]));
-      }
-    }
+    vgrad(c, shade("#a8785c", 12), shade("#a8785c", -14));
+    grain(c, r, 8, 0.5);
+    // Rim, then the soil line just under it.
+    px(c, 0, 0, TILE_PX, U, "#8e6247");
+    px(c, 0, U, TILE_PX, U, "#4a3527");
+    px(c, 0, 0, TILE_PX, 1, "#c39a7d");
+    bevel(c, "#c49a7b", "#7a533b", 1);
   },
 
   POT_TERRACOTTA: (c, r) => {
-    fill(c, "#b1653f");
-    speckle(c, r, ["#bb6f47", "#a35b38", "#9a5433"], 0.28);
-    // rim
-    c.fillStyle = "#c47a52";
-    c.fillRect(0, 0, TILE_PX, 3);
-    c.fillStyle = "#8f4f31";
-    c.fillRect(0, 3, TILE_PX, 1);
-    // taper shading down the sides
-    for (let y = 4; y < TILE_PX; y++) { px(c, 0, y, "#8f4f31"); px(c, 15, y, "#8f4f31"); }
+    vgrad(c, "#c07a4f", "#a3623c");
+    grain(c, r, 8, 0.5);
+    px(c, 0, 0, TILE_PX, U + 1, "#b16a42");
+    px(c, 0, 0, TILE_PX, 1, "#d69368");
+    px(c, 0, U + 1, TILE_PX, U, "#4a3527");
+    bevel(c, "#d0895c", "#7d4a2c", 1);
   },
 
   POT_WHITE: (c, r) => {
-    fill(c, "#d9d5cd");
-    speckle(c, r, ["#e2ded6", "#cec9c1"], 0.22);
-    c.fillStyle = "#eae7e1";
-    c.fillRect(0, 0, TILE_PX, 3);
-    c.fillStyle = "#bdb8b0";
-    c.fillRect(0, 3, TILE_PX, 1);
-    for (let y = 4; y < TILE_PX; y++) { px(c, 0, y, "#bdb8b0"); px(c, 15, y, "#bdb8b0"); }
+    vgrad(c, "#e3dfd7", "#cbc6bc");
+    grain(c, r, 6, 0.4);
+    px(c, 0, 0, TILE_PX, U + 1, "#d5d0c6");
+    px(c, 0, 0, TILE_PX, 1, "#f5f2ec");
+    px(c, 0, U + 1, TILE_PX, U, "#4a3527");
+    bevel(c, "#f3f0ea", "#a9a49a", 1);
   },
 
-  /** Video camera body: lens barrel, hood, record tally. */
-  CAMERA: (c, r) => {
-    fill(c, "#26292e");
-    speckle(c, r, ["#2c3036", "#212429"], 0.2);
-    // lens
-    for (let y = 0; y < TILE_PX; y++) {
-      for (let x = 0; x < TILE_PX; x++) {
-        const d = Math.hypot(x - 6, y - 8);
-        if (d < 4.6) px(c, x, y, "#15181c");
-        if (d < 3.2) px(c, x, y, "#1d2733");
-        if (d < 1.8) px(c, x, y, "#2f4a63");
-        if (d < 0.9) px(c, x, y, "#6fa8d8");
-      }
-    }
-    // grip / body detail
-    c.fillStyle = "#3a3f46";
-    c.fillRect(11, 4, 4, 8);
-    px(c, 13, 2, "#e0483c"); // tally light
-    px(c, 12, 2, "#3b3f45");
+  // ---- metals + fittings ----
+  METAL: (c, r) => brushed(c, r, "#9aa0a6"),
+
+  ELEVATOR: (c, r) => {
+    brushed(c, r, "#b0b6bc");
+    // The leaf joint down the middle of a pair of lift doors.
+    const m = Math.floor(TILE_PX / 2);
+    px(c, m - 1, 0, 1, TILE_PX, "#7f858b");
+    px(c, m, 0, 1, TILE_PX, "#d2d7dc");
+    // Sill at the bottom.
+    px(c, 0, TILE_PX - U, TILE_PX, U, "#8a9096");
   },
 
-  /** Tripod legs on transparent background. */
-  TRIPOD: (c) => {
-    for (let y = 0; y < TILE_PX; y++) {
-      const spread = Math.floor(y * 0.42);
-      px(c, 7 - spread, y, "#3c4148");
-      px(c, 8 + spread, y, "#3c4148");
-      if (y < 6) { px(c, 7, y, "#4a5058"); px(c, 8, y, "#4a5058"); }
-    }
-    c.fillStyle = "#5a616a";
-    c.fillRect(5, 4, 6, 2);
+  WHITEBOARD: (c, r) => {
+    vgrad(c, "#fbfaf6", "#eceada");
+    grain(c, r, 4, 0.3);
+    // Ghosted marker strokes, and the aluminium tray along the bottom.
+    u(c, 3, 4, 6, 1, "rgba(70,110,170,0.30)");
+    u(c, 3, 6, 9, 1, "rgba(70,110,170,0.20)");
+    u(c, 3, 8, 4, 1, "rgba(190,80,70,0.24)");
+    px(c, 0, TILE_PX - U * 2, TILE_PX, U, "#c9ccd0");
+    px(c, 0, TILE_PX - U * 2, TILE_PX, 1, "#eceef0");
+    px(c, 0, TILE_PX - U, TILE_PX, U, "#9aa0a6");
+    bevel(c, "#ffffff", "#b9b7ad", 1);
   },
 
-  /** Softbox / studio light — bright diffuser in a dark frame. */
-  SOFTBOX: (c, r) => {
-    fill(c, "#2a2d32");
-    c.fillStyle = "#fff6e0";
-    c.fillRect(2, 2, 12, 12);
-    for (let y = 3; y < 13; y++) {
-      for (let x = 3; x < 13; x++) {
-        if (r() < 0.25) px(c, x, y, "#fffdf6");
-      }
-    }
-    border(c, "#1e2126", 1);
-    // diffuser cross-bars
-    c.fillStyle = "#f0e4cc";
-    c.fillRect(7, 2, 1, 12);
-    c.fillRect(2, 7, 12, 1);
+  CORKBOARD: (c, r) => {
+    vgrad(c, "#cba677", "#b08e60");
+    speckle(c, r, ["#b8955f", "#d8b98d", "#a6844f"], 0.45);
+    grain(c, r, 10, 0.7);
+    // Pinned notes with their pins.
+    u(c, 2, 3, 4, 4, "#f4f1e6");
+    u(c, 9, 5, 5, 4, "#eef3f6");
+    dot(c, 4, 3, "#c8443c");
+    dot(c, 11, 5, "#3f6fbf");
+    // Aluminium frame.
+    border(c, "#8d7047", U);
+    px(c, 0, 0, TILE_PX, 1, "#bda079");
   },
 
-  /** Clapperboard, seen from above. */
-  CLAPBOARD: (c) => {
-    fill(c, "#1c1f24");
-    // the striped clapper
-    for (let x = 0; x < TILE_PX; x++) {
-      const on = Math.floor(x / 2) % 2 === 0;
-      c.fillStyle = on ? "#eceae4" : "#22262b";
-      c.fillRect(x, 0, 1, 4);
+  BOOKS: (c, r) => {
+    // The glass-fronted cabinet from the reference: a dark mahogany carcass
+    // with a smoked glass door, a shelf rail across it and a slim handle.
+    const wood = "#4a2c1c";
+    vgrad(c, shade(wood, 10), shade(wood, -10));
+    // Grain on the visible frame.
+    for (let i = 0; i < 6; i++) {
+      const y = Math.floor(r() * TILE_PX);
+      px(c, 0, y, TILE_PX, 1, r() < 0.5 ? "rgba(0,0,0,0.16)" : "rgba(255,255,255,0.06)");
     }
-    // slate rows
-    c.fillStyle = "#3a3f46";
-    c.fillRect(2, 7, 12, 1);
-    c.fillRect(2, 10, 12, 1);
-    c.fillRect(2, 13, 8, 1);
-  },
-
-  /** Microphone on a slim stand. */
-  MIC: (c) => {
-    for (let y = 6; y < TILE_PX; y++) px(c, 7, y, "#43484f");
-    for (let y = 6; y < TILE_PX; y++) px(c, 8, y, "#33383e");
-    // head
-    for (let y = 1; y < 7; y++) {
-      for (let x = 5; x < 11; x++) {
-        const d = Math.hypot(x - 7.5, y - 3.6);
-        if (d < 3.1) px(c, x, y, d < 2.1 ? "#4d545c" : "#3a3f46");
-      }
+    // The glazed opening, recessed inside the frame.
+    const m = 2 * U;
+    for (let y = m; y < TILE_PX - m; y++) {
+      px(c, m, y, TILE_PX - m * 2, 1, mix("#1c1a19", "#2a2724", (y - m) / (TILE_PX - m * 2)));
     }
-    px(c, 6, 3, "#6d757e");
-    px(c, 9, 4, "#292d32");
-  },
-
-  /** A mug of coffee seen from above. */
-  COFFEE: (c) => {
-    for (let y = 0; y < TILE_PX; y++) {
-      for (let x = 0; x < TILE_PX; x++) {
-        const d = dist(x, y);
-        if (d < 5.4) px(c, x, y, "#f2efe9");
-        if (d < 4.2) px(c, x, y, "#4a2c1c");
-        if (d < 3.0) px(c, x, y, "#5c3a24");
-      }
-    }
-    // handle
-    c.fillStyle = "#f2efe9";
-    c.fillRect(12, 7, 3, 2);
-  },
-
-  /** Loose paperwork on a desk. */
-  PAPERS: (c, r) => {
-    for (const [ox, oy, tone] of [
-      [1, 2, "#d9d6ce"],
-      [3, 4, "#eceae4"],
-      [2, 6, "#f6f4ef"],
-    ] as const) {
-      c.fillStyle = tone;
-      c.fillRect(ox, oy, 11, 8);
-    }
-    c.fillStyle = "#a9adb4";
+    // Shelf rail crossing the glass, with its lit top edge.
+    const shelf = Math.floor(TILE_PX * 0.52);
+    px(c, m, shelf, TILE_PX - m * 2, U, "#5a381f");
+    px(c, m, shelf, TILE_PX - m * 2, 1, "#8a5c38");
+    // What is behind the glass, dimly.
+    px(c, m + U, m + U, TILE_PX - m * 2 - U * 2, U, "rgba(150,130,110,0.18)");
+    px(c, m + U, shelf + U * 2, TILE_PX - m * 2 - U * 3, U, "rgba(150,130,110,0.14)");
+    // Reflection down the glass, and the handle.
     for (let i = 0; i < 5; i++) {
-      c.fillRect(4, 8 + i, 6 + Math.floor(r() * 3), 1);
+      px(c, m + i, m, 1, Math.floor((TILE_PX - m * 2) * 0.5) - i * 2, "rgba(255,255,255,0.07)");
     }
-  },
-
-  DESK_PHONE: (c) => {
-    fill(c, "#22262b");
-    c.fillStyle = "#2c3138";
-    c.fillRect(1, 4, 14, 10);
-    // handset
-    c.fillStyle = "#171a1e";
-    c.fillRect(2, 1, 12, 4);
-    // keypad
-    for (let ky = 0; ky < 3; ky++) {
-      for (let kx = 0; kx < 3; kx++) px(c, 5 + kx * 2, 7 + ky * 2, "#5a616a");
-    }
-    px(c, 12, 7, "#3ad07a");
-  },
-
-  PRINTER: (c, r) => {
-    fill(c, "#3a3f46");
-    speckle(c, r, ["#41464e", "#33383f"], 0.18);
-    // paper tray
-    c.fillStyle = "#eceae4";
-    c.fillRect(2, 3, 12, 3);
-    // output slot
-    c.fillStyle = "#1c1f24";
-    c.fillRect(2, 8, 12, 2);
-    // status lights
-    px(c, 3, 12, "#3ad07a");
-    px(c, 5, 12, "#e0a13a");
-  },
-
-  WATER_COOLER: (c, r) => {
-    fill(c, "#e8eaec");
-    speckle(c, r, ["#eff1f3", "#dfe2e5"], 0.18);
-    // bottle
-    c.fillStyle = "#8fc8e0";
-    c.fillRect(3, 0, 10, 7);
-    for (let i = 0; i < 8; i++) px(c, 3 + Math.floor(r() * 10), Math.floor(r() * 7), "#b5dced");
-    // body + taps
-    c.fillStyle = "#cfd3d7";
-    c.fillRect(2, 7, 12, 9);
-    px(c, 6, 10, "#3f7fa8");
-    px(c, 9, 10, "#b04a4a");
-    c.fillStyle = "#9aa0a6";
-    c.fillRect(4, 13, 8, 1);
-  },
-
-  /** Framed artwork for blank walls. */
-  ART_FRAME: (c, r) => {
-    fill(c, "#8a6a45");
-    border(c, "#6d5335", 1);
-    c.fillStyle = "#f2efe8";
-    c.fillRect(2, 2, 12, 12);
-    // abstract blocks of colour
-    const tones = ["#6f9ff0", "#e0a862", "#63c98a", "#d98a8a", "#a48fd8"];
-    for (let i = 0; i < 7; i++) {
-      c.fillStyle = pick(r, tones);
-      c.fillRect(3 + Math.floor(r() * 8), 3 + Math.floor(r() * 8), 2 + Math.floor(r() * 3), 2 + Math.floor(r() * 3));
-    }
+    px(c, TILE_PX - m - U, Math.floor(TILE_PX * 0.34), 1, U * 3, "#9a7a4e");
+    // Frame edges last, so the glass sits inside them.
+    px(c, 0, 0, TILE_PX, 1, shade(wood, 28));
+    px(c, 0, TILE_PX - 1, TILE_PX, 1, shade(wood, -22));
+    px(c, 0, 0, 1, TILE_PX, shade(wood, 20));
+    px(c, TILE_PX - 1, 0, 1, TILE_PX, shade(wood, -20));
   },
 
   BOOK_STACK: (c, r) => {
-    const tones = ["#8a4a3c", "#3f6b8a", "#5c7a45", "#8a7a3c", "#6b4a7a"];
-    let y = 15;
-    while (y > 2) {
-      const h = 2 + Math.floor(r() * 2);
-      const inset = Math.floor(r() * 2);
-      c.fillStyle = pick(r, tones);
-      c.fillRect(1 + inset, y - h, 14 - inset * 2, h);
-      c.fillStyle = "#efeadd";
-      c.fillRect(1 + inset, y - h, 14 - inset * 2, 1);
-      y -= h + 1;
+    fill(c, "#6b4a7a");
+    // Books lying flat, seen from the side.
+    const layers = ["#6b4a7a", "#4a6b7a", "#7a6b4a", "#7a4a5a"];
+    let y = TILE_PX;
+    let i = 0;
+    while (y > 0 && i < layers.length) {
+      const h = U + Math.floor(r() * 2) * U;
+      y -= h;
+      px(c, 0, y, TILE_PX, h, layers[i]);
+      px(c, 0, y, TILE_PX, 1, shade(layers[i], 26));
+      px(c, 0, y + h - 1, TILE_PX, 1, shade(layers[i], -26));
+      // The page block on one side.
+      px(c, TILE_PX - U, y + 1, U, h - 2, "#e6e0d2");
+      i++;
     }
+    grain(c, r, 5, 0.3);
+  },
+
+  SERVER_RACK: (c, r) => {
+    vgrad(c, "#31363d", "#22262b");
+    grain(c, r, 5, 0.4);
+    // Rack units with vents and status LEDs.
+    for (let uy = 1; uy < 15; uy += 3) {
+      u(c, 1, uy, 14, 2, "#2a2e34");
+      // Vent slots across the face of each rack unit.
+      for (let x = 3; x < 12; x++) dot(c, x, uy, "#232730");
+      dot(c, 13, uy, r() < 0.5 ? "#4ade80" : "#f5b544");
+      dot(c, 1, uy, "#3c424a");
+    }
+    bevel(c, "#454b53", "#15181c", 1);
+  },
+
+  TV_SCREEN: (c, r) => screen(c, r, "#20242e", ["#7f8ea8", "#5c6a80"]),
+
+  PANTRY: (c, r) => {
+    // Laminate cabinet fronts with a handle line.
+    vgrad(c, "#d2ccbf", "#bcb5a6");
+    grain(c, r, 7, 0.5);
+    const m = Math.floor(TILE_PX / 2);
+    px(c, m - 1, 0, 2, TILE_PX, "#a8a194");
+    px(c, m, 0, 1, TILE_PX, "#e0dacd");
+    u(c, 2, 7, 4, 1, "#8d8779");
+    u(c, 10, 7, 4, 1, "#8d8779");
+    bevel(c, "#e8e2d6", "#9b9587", 1);
+  },
+
+  ACOUSTIC_FELT: (c, r) => {
+    vgrad(c, "#a3a09b", "#8f8c87");
+    // Felt is fibrous: dense short strokes, no sheen at all.
+    for (let i = 0; i < TILE_PX * 6; i++) {
+      const x = Math.floor(r() * TILE_PX);
+      const y = Math.floor(r() * TILE_PX);
+      px(c, x, y, 1, 1 + Math.floor(r() * 2), r() < 0.5 ? "rgba(255,255,255,0.07)" : "rgba(0,0,0,0.07)");
+    }
+    grain(c, r, 9, 0.8);
+    px(c, 0, 0, TILE_PX, 1, "rgba(255,255,255,0.12)");
+  },
+
+  CLOCK: (c, r) => {
+    // The mantel clock from the reference: a cream dial in a sandy case,
+    // standing on a dark timber plinth, hands at ten past ten.
+    const plinth = Math.floor(TILE_PX * 0.72);
+    vgrad(c, "#cdbfa4", "#b9a988");
+    for (let y = 0; y < 16; y++)
+      for (let x = 0; x < 16; x++) {
+        const d = dist(x, y - 1.2);
+        // Case, then the pale bezel, then the dial itself.
+        if (d > 6.6) continue;
+        if (d > 5.6) dot(c, x, y, "#a2937a");
+        else if (d > 5.0) dot(c, x, y, "#e6dfcd");
+        else dot(c, x, y, "#f3eddc");
+      }
+    // Hour marks. The dial's centre sits at (7.5, 8.7), so these ring it at a
+    // constant radius rather than the tile centre — otherwise they scatter.
+    for (const [x, y] of [
+      [7, 4],
+      [11, 8],
+      [3, 8],
+    ] as const)
+      dot(c, x, y, "#2a2622");
+    for (const [x, y] of [
+      [10, 5],
+      [4, 5],
+    ] as const)
+      dot(c, x, y, "#6a6157");
+    // Hands: hour to ten, minute to two, plus the centre boss.
+    dot(c, 6, 7, "#241f1b");
+    dot(c, 5, 6, "#241f1b");
+    dot(c, 8, 7, "#241f1b");
+    dot(c, 9, 6, "#241f1b");
+    dot(c, 7, 8, "#241f1b");
+    // The timber base the case stands on.
+    for (let y = plinth; y < TILE_PX; y++) {
+      px(c, 0, y, TILE_PX, 1, mix("#5a3a24", "#3a2416", (y - plinth) / (TILE_PX - plinth)));
+    }
+    px(c, 0, plinth, TILE_PX, 1, "#7a5334");
+    // Only the case and base get grain — speckling the dial makes it unreadable.
+    for (let y = plinth; y < TILE_PX; y++)
+      for (let x = 0; x < TILE_PX; x++)
+        if (r() < 0.3) px(c, x, y, 1, 1, r() < 0.5 ? "rgba(255,255,255,0.05)" : "rgba(0,0,0,0.07)");
+    px(c, 0, 0, TILE_PX, 1, "#ded1b6");
+  },
+
+  SIGN_STRIP: (c) => {
+    // Illuminated door strip: dark housing, a bright band across the middle.
+    fill(c, "#22262c");
+    vgrad(c, "#2b3037", "#1b1e23");
+    const top = Math.floor(TILE_PX * 0.34);
+    const h = Math.floor(TILE_PX * 0.32);
+    px(c, 0, top, TILE_PX, h, "#f7f3e4");
+    px(c, 0, top, TILE_PX, 1, "#ffffff");
+    px(c, 0, top + h - 1, TILE_PX, 1, "#cfc9b4");
+    // Diffuser falloff into the housing.
+    px(c, 0, top - 1, TILE_PX, 1, "rgba(247,243,228,0.5)");
+    px(c, 0, top + h, TILE_PX, 1, "rgba(247,243,228,0.5)");
+  },
+
+  ROOF: (c, r) => {
+    // Single-ply membrane with welded seams and ballast grit.
+    vgrad(c, "#525860", "#414750");
+    speckle(c, r, ["#474d55", "#5b6169", "#3c424a"], 0.4);
+    grain(c, r, 8, 0.6);
+    px(c, 0, Math.floor(TILE_PX * 0.5), TILE_PX, 1, "#333940");
+    px(c, 0, Math.floor(TILE_PX * 0.5) + 1, TILE_PX, 1, "#5f656d");
+    bevel(c, "#646a72", "#31363d", 1);
+  },
+
+  STONE: (c, r) => {
+    vgrad(c, "#95958f", "#7e7e79");
+    speckle(c, r, ["#8a8a85", "#a0a09a", "#767671"], 0.45);
+    grain(c, r, 10, 0.7);
+    crack(c, r, "rgba(70,70,66,0.55)");
+    crack(c, r, "rgba(70,70,66,0.4)");
+    bevel(c, "#a6a6a0", "#65655f", 1);
+  },
+
+  // ---- the Upside Down ----
+  LAIR_STONE: (c, r) => {
+    vgrad(c, "#2b2130", "#1c1521");
+    speckle(c, r, ["#241c29", "#332639", "#191320"], 0.45);
+    grain(c, r, 8, 0.6);
+    // Wet, veined surface.
+    for (let i = 0; i < 3; i++) crack(c, r, "rgba(110,30,50,0.45)");
+    bevel(c, "#3a2c42", "#120d16", 1);
+  },
+
+  LAIR_VINE: (c, r) => {
+    fill(c, "#2a1420");
+    // Sinew running down the tile, splitting as it goes.
+    for (let s = 0; s < 4; s++) {
+      let x = 2 + Math.floor(r() * 12);
+      for (let y = 0; y < 16; y++) {
+        if (r() < 0.3) x += r() < 0.5 ? 1 : -1;
+        if (x < 0 || x > 15) break;
+        dot(c, x, y, pick(r, ["#7d1e30", "#95283b", "#5f1626"]));
+        if (r() < 0.25) dot(c, x + 1, y, "#5f1626");
+      }
+    }
+    speckle(c, r, ["#a83348"], 0.05);
+    grain(c, r, 9, 0.5);
+  },
+
+  VECNA: (c, r) => {
+    vgrad(c, "#5a1f26", "#3d141a");
+    speckle(c, r, ["#6b2730", "#48181f", "#7d2c37"], 0.4);
+    // Cracked, glowing fissures.
+    for (let i = 0; i < 3; i++) crack(c, r, "rgba(224,90,58,0.65)");
+    grain(c, r, 10, 0.6);
+    bevel(c, "#6f2831", "#2a0d12", 1);
+  },
+
+  OBSIDIAN: (c, r) => {
+    vgrad(c, "#2f2440", "#1d1529");
+    speckle(c, r, ["#3a2c4e", "#251b34", "#443358"], 0.3);
+    // Conchoidal glints — obsidian is volcanic glass.
+    for (let i = 0; i < 6; i++) {
+      const x = Math.floor(r() * TILE_PX);
+      const y = Math.floor(r() * TILE_PX);
+      px(c, x, y, 2, 1, "rgba(190,170,230,0.28)");
+    }
+    grain(c, r, 7, 0.5);
+    bevel(c, "#453458", "#140e1d", 1);
+  },
+
+  LAIR_GLOW: (c, r) => {
+    fill(c, "#8a3420");
+    vgrad(c, "#e05a3a", "#8a3420");
+    // Embers pulsing through a dark crust.
+    speckle(c, r, ["#ff8f5e", "#c04726", "#ffb37f"], 0.35);
+    for (let i = 0; i < 5; i++) {
+      const x = Math.floor(r() * TILE_PX);
+      const y = Math.floor(r() * TILE_PX);
+      px(c, x, y, 2, 2, "rgba(255,210,160,0.6)");
+    }
+    grain(c, r, 12, 0.6);
+  },
+
+  WATER: (c, r) => {
+    vgrad(c, "#7d9db6", "#61819a");
+    // Ripple bands.
+    for (let y = 0; y < TILE_PX; y += 4) {
+      px(c, 0, y, TILE_PX, 1, "rgba(255,255,255,0.16)");
+      px(c, 0, y + 1, TILE_PX, 1, "rgba(0,0,0,0.08)");
+    }
+    grain(c, r, 8, 0.5);
+    fadeAlpha(c, 0.72);
+  },
+
+  // ---- studio kit ----
+  CAMERA: (c, r) => {
+    // The blocky SLR from the reference: near-black body, a stepped lens
+    // barrel with a bright rim, a viewfinder hump and a shutter button.
+    vgrad(c, "#242628", "#141517");
+    grain(c, r, 5, 0.35);
+    // Body plate.
+    u(c, 0, 4, 16, 10, "#1b1c1e");
+    px(c, 0, 4 * U, TILE_PX, 1, "#3a3d41");
+    // Viewfinder hump across the top, offset like the reference.
+    u(c, 4, 1, 7, 3, "#202225");
+    px(c, 4 * U, U, 7 * U, 1, "#43474c");
+    // Shutter button and hot shoe, in the pale grey the model uses.
+    u(c, 12, 2, 2, 1, "#c9ccd0");
+    u(c, 2, 2, 2, 1, "#8b9096");
+    // Lens: concentric square rings stepping outward, brightest at the rim.
+    const rings = ["#101113", "#1d1f22", "#101113", "#2a2d31", "#0c0d0f"];
+    for (let i = 0; i < rings.length; i++) {
+      const k = 4 + i;
+      const size = 16 - k * 2;
+      if (size <= 1) break;
+      u(c, k, k, size, size, rings[i]);
+    }
+    // The white rim stripe that reads instantly as a lens.
+    u(c, 4, 4, 8, 1, "#e8eaec");
+    u(c, 4, 11, 8, 1, "#9aa0a6");
+    u(c, 4, 4, 1, 8, "#c9ccd0");
+    // Glass at the centre, with a highlight.
+    u(c, 7, 7, 2, 2, "#1a2330");
+    dot(c, 7, 7, "#5b7fa5");
+    bevel(c, "#3c4046", "#0a0b0c", 1);
+  },
+
+  TRIPOD: (c, r) => {
+    // Cut-out tile: black legs and a silver centre column against nothing, so
+    // the stand reads as a frame rather than a solid slab.
+    // Pan head and quick-release plate on top.
+    u(c, 5, 0, 6, 2, "#26292d");
+    u(c, 6, 0, 4, 1, "#4c525a");
+    // The telescoping column — the reference's one bright element.
+    u(c, 7, 2, 2, 4, "#b9bec4");
+    u(c, 7, 2, 1, 4, "#e2e6ea");
+    u(c, 6, 5, 4, 1, "#3a4046");
+    // A pan handle angling off to one side.
+    for (let i = 0; i < 4; i++) dot(c, 10 + i, 1 + i, "#2b2f34");
+    // Three legs splaying from the collar, the outer two thinning as they go.
+    for (let i = 0; i < 10; i++) {
+      const spread = Math.floor(i * 0.62);
+      dot(c, 7 - spread, 6 + i, "#1e2125");
+      dot(c, 8 + spread, 6 + i, "#1e2125");
+      if (i > 2) {
+        dot(c, 7 - spread, 6 + i, "#2a2e33");
+        dot(c, 8 + spread, 6 + i, "#2a2e33");
+      }
+      dot(c, 7, 6 + i, "#232629");
+      dot(c, 8, 6 + i, "#171a1d");
+    }
+    // Rubber feet.
+    for (const fx of [1, 7, 14]) u(c, fx, 15, 2, 1, "#0e1012");
+    grain(c, r, 4, 0.2);
+  },
+
+  SOFTBOX: (c, r) => {
+    // A big diffused light source: hot in the middle, framed in black.
+    fill(c, "#1e2126");
+    const m = U;
+    px(c, m, m, TILE_PX - m * 2, TILE_PX - m * 2, "#fff6e0");
+    for (let i = 0; i < 6; i++) {
+      const k = m + 1 + i;
+      const sz = TILE_PX - k * 2;
+      if (sz <= 0) break;
+      px(c, k, k, sz, sz, `rgba(255,255,255,${0.1 + i * 0.05})`);
+    }
+    grain(c, r, 4, 0.2);
+    border(c, "#15181c", U);
+  },
+
+  CLAPBOARD: (c) => {
+    fill(c, "#1c1f24");
+    // The diagonal clapper stripes across the top.
+    for (let x = 0; x < 16; x++) {
+      const on = Math.floor(x / 2) % 2 === 0;
+      u(c, x, 0, 1, 3, on ? "#f2f2ee" : "#1c1f24");
+    }
+    // Slate lines below.
+    u(c, 2, 6, 12, 1, "#4a5058");
+    u(c, 2, 9, 9, 1, "#4a5058");
+    u(c, 2, 12, 11, 1, "#4a5058");
+    bevel(c, "#3a4048", "#0d0f12", 1);
+  },
+
+  MIC: (c, r) => {
+    // The black boom rig from the reference: a barrel head pointing off to one
+    // side, carried on an arm, over a pale grip. Cut-out, so the arm reads.
+    // The barrel, stepped like the voxel model.
+    u(c, 0, 5, 7, 4, "#17191b");
+    u(c, 0, 6, 7, 2, "#212427");
+    u(c, 0, 5, 1, 4, "#3d4247");
+    // A silver band where the head meets the body.
+    u(c, 7, 5, 1, 4, "#c2c7cc");
+    // Body block.
+    u(c, 8, 4, 5, 6, "#1b1d20");
+    px(c, 8 * U, 4 * U, 5 * U, 1, "#40454a");
+    // The arm sweeping up and away.
+    for (let i = 0; i < 5; i++) dot(c, 12 + Math.floor(i * 0.6), 4 - i + 1, "#232629");
+    u(c, 13, 1, 3, 1, "#2b2f33");
+    // Pale vertical grip under the body — the one light element on the model.
+    u(c, 5, 9, 2, 7, "#d3d7db");
+    u(c, 5, 9, 1, 7, "#f0f2f4");
+    u(c, 4, 15, 4, 1, "#2b2f33");
+    grain(c, r, 4, 0.25);
+  },
+
+  // ---- desk clutter (kept in the palette; the floor no longer places it) ----
+  COFFEE: (c, r) => {
+    fill(c, "#efece5");
+    vgrad(c, "#f6f3ec", "#dfdbd3");
+    // Mug seen from above: rim, dark coffee, handle.
+    for (let y = 0; y < 16; y++)
+      for (let x = 0; x < 16; x++) {
+        const d = dist(x, y);
+        if (d > 6.4) continue;
+        dot(c, x, y, d > 5.2 ? "#ffffff" : d > 4.4 ? "#d8d4cc" : "#5c3a24");
+      }
+    dot(c, 13, 7, "#e8e4dc");
+    dot(c, 14, 7, "#e8e4dc");
+    dot(c, 6, 6, "rgba(255,255,255,0.35)");
+    grain(c, r, 5, 0.3);
+  },
+
+  PAPERS: (c, r) => {
+    fill(c, "#d9d5cc");
+    // A few sheets fanned out, each with ruled lines.
+    for (let s = 0; s < 3; s++) {
+      const ox = s * U;
+      const oy = s * U;
+      px(c, ox, oy, TILE_PX - U * 3, TILE_PX - U * 3, "#f4f2ec");
+      px(c, ox, oy, TILE_PX - U * 3, 1, "#ffffff");
+      px(c, ox, oy + TILE_PX - U * 3 - 1, TILE_PX - U * 3, 1, "#c9c5bd");
+      for (let ly = 2; ly < 10; ly += 2) u(c, 1 + s, ly + s, 8, 1, "rgba(120,120,130,0.35)");
+    }
+    grain(c, r, 4, 0.2);
+  },
+
+  DESK_PHONE: (c, r) => {
+    vgrad(c, "#2a2e33", "#1c2024");
+    grain(c, r, 5, 0.3);
+    u(c, 1, 2, 14, 5, "#22262b");
+    // Keypad.
+    for (let ky = 0; ky < 3; ky++)
+      for (let kx = 0; kx < 3; kx++) dot(c, 4 + kx * 2, 9 + ky * 2, "#4a5058");
+    // Handset resting across the top.
+    u(c, 1, 1, 14, 2, "#3a4046");
+    u(c, 1, 1, 14, 1, "#565d66");
+    dot(c, 12, 9, "#4ade80");
+    bevel(c, "#41474e", "#141719", 1);
+  },
+
+  PRINTER: (c, r) => {
+    vgrad(c, "#474d54", "#33383e");
+    grain(c, r, 6, 0.4);
+    // Paper tray, output slot and a status strip.
+    u(c, 1, 9, 14, 4, "#2c3137");
+    u(c, 2, 5, 12, 1, "#22262b");
+    u(c, 2, 10, 12, 2, "#e8e5dd");
+    dot(c, 13, 3, "#4ade80");
+    dot(c, 11, 3, "#f5b544");
+    bevel(c, "#5a6068", "#22262b", 1);
+  },
+
+  WATER_COOLER: (c, r) => {
+    vgrad(c, "#dfe3e7", "#c4c9ce");
+    grain(c, r, 5, 0.3);
+    // The bottle up top, the dispenser below.
+    u(c, 3, 0, 10, 7, "#b9dce8");
+    u(c, 4, 1, 8, 5, "#a2d2e2");
+    px(c, 4 * U, 1 * U, 2, 5 * U, "rgba(255,255,255,0.5)");
+    u(c, 2, 7, 12, 9, "#d3d7db");
+    u(c, 6, 10, 4, 2, "#8d939a");
+    dot(c, 5, 9, "#4f9be0");
+    dot(c, 10, 9, "#e05a5a");
+    bevel(c, "#eef1f4", "#a4a9ae", 1);
+  },
+
+  ART_FRAME: (c, r) => {
+    // A framed print: mount board, frame, and an abstract block composition.
+    fill(c, "#8a6a45");
+    border(c, "#6d5133", U);
+    px(c, U, U, TILE_PX - U * 2, TILE_PX - U * 2, "#f2efe6");
+    const art = ["#4f6b8a", "#c8845c", "#7a8a6b", "#8a6a8c"];
+    for (let i = 0; i < 4; i++) {
+      const x = 3 + Math.floor(r() * 4);
+      const y = 3 + Math.floor(r() * 4);
+      u(c, x, y, 2 + Math.floor(r() * 4), 2 + Math.floor(r() * 4), art[i]);
+    }
+    px(c, U, U, TILE_PX - U * 2, 1, "#ffffff");
+    bevel(c, "#a8845c", "#4f3a24", 1);
   },
 
   SOFA: (c, r) => {
-    fill(c, "#4a5560");
-    speckle(c, r, ["#515d69", "#434e58"], 0.22);
-    // seat cushions
-    c.fillStyle = "#56626e";
-    c.fillRect(1, 6, 6, 9);
-    c.fillRect(9, 6, 6, 9);
-    // backrest
-    c.fillStyle = "#3e4852";
-    c.fillRect(0, 0, TILE_PX, 5);
-    px(c, 8, 9, "#3a444d");
+    // The bench from the reference: a pale stone-grey slab seat sitting on a
+    // dark timber base, with the shadow line where the two meet.
+    const split = Math.floor(TILE_PX * 0.56);
+    vgrad(c, "#e6e6e4", "#c9c9c6");
+    grain(c, r, 8, 0.6);
+    speckle(c, r, ["#d6d6d3", "#efefec", "#c2c2bf"], 0.22);
+    // The slab's front edge catches the light; under it the base is in shade.
+    px(c, 0, split - 1, TILE_PX, 1, "#f4f4f2");
+    px(c, 0, split, TILE_PX, TILE_PX - split, "#3b2f28");
+    for (let y = split; y < TILE_PX; y++) {
+      px(c, 0, y, TILE_PX, 1, mix("#4a3b31", "#2b221c", (y - split) / (TILE_PX - split)));
+    }
+    px(c, 0, split, TILE_PX, 1, "rgba(0,0,0,0.5)");
+    grain(c, r, 6, 0.35);
+    px(c, 0, 0, TILE_PX, 1, "#ffffff");
+    px(c, TILE_PX - 1, 0, 1, split, "#b4b4b1");
   },
 
-  /** Floor lamp — warm shade over a slim stand. */
-  LAMP: (c) => {
-    for (let y = 8; y < TILE_PX; y++) px(c, 7, y, "#4a5058");
-    for (let y = 8; y < TILE_PX; y++) px(c, 8, y, "#3c4148");
-    c.fillStyle = "#5a616a";
-    c.fillRect(5, 15, 6, 1);
-    // shade
-    for (let y = 1; y < 8; y++) {
-      const w = 3 + y;
-      c.fillStyle = y < 3 ? "#f7e6bd" : "#ffd98f";
-      c.fillRect(8 - Math.floor(w / 2), y, w, 1);
-    }
+  LAMP: (c, r) => {
+    fill(c, "#2b2f34");
+    // A warm shade with light spilling down it.
+    for (let y = 0; y < 16; y++)
+      for (let x = 0; x < 16; x++) {
+        const d = dist(x, y);
+        if (d > 7) continue;
+        dot(c, x, y, d > 5.4 ? "#e0b463" : d > 3 ? "#ffd98f" : "#fff2cd");
+      }
+    u(c, 7, 12, 2, 4, "#4a5058");
+    u(c, 5, 15, 6, 1, "#3a4046");
+    grain(c, r, 5, 0.25);
   },
 
   RUG_PATTERN: (c, r) => {
-    fill(c, "#7d5a63");
-    speckle(c, r, ["#87626c", "#73525b"], 0.2);
-    border(c, "#5f434b", 2);
-    // simple woven diamond
-    for (let i = 0; i < 6; i++) {
-      px(c, 7 + i, 7 + i, "#d8c3a8");
-      px(c, 8 - i, 7 + i, "#d8c3a8");
-      px(c, 7 + i, 8 - i, "#d8c3a8");
-      px(c, 8 - i, 8 - i, "#d8c3a8");
+    // The cream fine-woven mat: pale, tightly ribbed, almost no pattern. Its
+    // whole character is the density of the weave, so that is all it gets.
+    vgrad(c, "#eae4d1", "#ddd6c1");
+    for (let y = 0; y < TILE_PX; y++) {
+      px(c, 0, y, TILE_PX, 1, y % 2 === 0 ? "rgba(0,0,0,0.07)" : "rgba(255,255,255,0.10)");
     }
+    // A slow slub in the weave so the ribs are not perfectly mechanical.
+    for (let i = 0; i < 10; i++) {
+      const y = Math.floor(r() * TILE_PX);
+      px(c, 0, y, TILE_PX, 1, "rgba(160,150,125,0.16)");
+    }
+    for (let x = 0; x < TILE_PX; x += 6) px(c, x, 0, 1, TILE_PX, "rgba(0,0,0,0.045)");
+    grain(c, r, 5, 0.35);
+    px(c, 0, 0, TILE_PX, 1, "rgba(255,255,255,0.25)");
+    px(c, 0, TILE_PX - 1, TILE_PX, 1, "rgba(0,0,0,0.12)");
   },
 
-  VENT: (c) => {
-    fill(c, "#c9ccd0");
-    border(c, "#a8acb1", 1);
-    c.fillStyle = "#8f9499";
-    for (let y = 3; y < 14; y += 2) c.fillRect(2, y, 12, 1);
-    px(c, 2, 2, "#7d8287");
-    px(c, 13, 2, "#7d8287");
-    px(c, 2, 13, "#7d8287");
-    px(c, 13, 13, "#7d8287");
+  VENT: (c, r) => {
+    vgrad(c, "#cfd2d6", "#b4b8bd");
+    grain(c, r, 5, 0.3);
+    // Louvre blades, each with a lit top edge and a shadow beneath.
+    for (let y = 2; y < 15; y += 3) {
+      u(c, 1, y, 14, 2, "#9aa0a6");
+      px(c, U, y * U, 14 * U, 1, "#e3e6e9");
+      px(c, U, (y + 2) * U - 1, 14 * U, 1, "#7d8288");
+    }
+    border(c, "#a8adb2", U);
+    bevel(c, "#e2e5e8", "#8f949a", 1);
   },
 
   EXIT_SIGN: (c) => {
-    fill(c, "#12331f");
-    border(c, "#0d2417", 1);
-    // "EXIT" block letters in a lit green
-    const on = "#5df08a";
-    const cols = [2, 5, 8, 11];
-    for (const x of cols) for (let y = 5; y < 11; y++) px(c, x, y, on);
-    for (const y of [5, 7, 10]) { px(c, 3, y, on); }
-    px(c, 6, 7, on); px(c, 7, 8, on); px(c, 6, 9, on);
-    px(c, 12, 5, on); px(c, 13, 5, on); px(c, 10, 5, on);
+    // Backlit green running-man sign.
+    fill(c, "#0f2b1a");
+    const m = U;
+    px(c, m, m, TILE_PX - m * 2, TILE_PX - m * 2, "#12331f");
+    const on = "#5ee08a";
+    // A blocky figure mid-stride, plus the door frame it runs toward.
+    u(c, 5, 3, 2, 2, on);
+    u(c, 5, 5, 2, 4, on);
+    u(c, 4, 9, 2, 3, on);
+    u(c, 7, 9, 2, 3, on);
+    u(c, 7, 6, 2, 1, on);
+    u(c, 11, 2, 1, 12, on);
+    u(c, 11, 2, 3, 1, on);
+    u(c, 11, 13, 3, 1, on);
+    px(c, m, m, TILE_PX - m * 2, 1, "rgba(94,224,138,0.5)");
+    border(c, "#0b2114", U);
   },
 };
 
-/** Paint the full 128x128 atlas: one 16px tile per TILE index. */
+/** Paint the full atlas: one TILE_PX tile per TILE index. */
 export function paintAtlas(): HTMLCanvasElement {
   const [atlas, ctx] = makeCanvas(ATLAS_COLS * TILE_PX, ATLAS_ROWS * TILE_PX);
   for (const name of Object.keys(TILE) as (keyof typeof TILE)[]) {
@@ -1031,8 +1209,9 @@ export function paintSkinFace(hue: number): HTMLCanvasElement {
   c.fillStyle = "#1e1a18";
   c.fillRect(1, 2, 2, 2);
   c.fillRect(5, 2, 2, 2);
-  px(c, 1, 2, "#ffffff");
-  px(c, 5, 2, "#ffffff");
+  c.fillStyle = "#ffffff";
+  c.fillRect(1, 2, 1, 1);
+  c.fillRect(5, 2, 1, 1);
   c.fillStyle = `hsl(${h}, 50%, 32%)`;
   c.fillRect(3, 5, 2, 1);
   return face;

@@ -66,6 +66,7 @@ model User {
   journals       DailyJournal[]
   createdInvoices Invoice[]         @relation("InvoiceCreator")
   chatMessages   ChatMessage[]
+  chatVoice      ChatVoicePresence[]
 }
 
 // ---------------------------------------------------------------------------
@@ -680,6 +681,86 @@ model InvoiceItem {
 }
 
 // ---------------------------------------------------------------------------
+// The editable world — creative mode
+//
+// The voxel world is no longer generated behind the app's back: it IS these
+// tables. A row per placed block, plus the signs and the interactive spots
+// that wire a block to a tool panel. Anything not in here is air, over a
+// paved ground plane.
+// ---------------------------------------------------------------------------
+
+model WorldBlock {
+  x         Int
+  y         Int
+  z         Int
+  blockId   Int
+  updatedAt DateTime @updatedAt
+  updatedBy String?
+
+  @@id([x, y, z])
+  @@index([updatedAt])
+}
+
+// Flat text on a wall. Placed and worded by a builder, never generated.
+model WorldSign {
+  id        String   @id @default(cuid())
+  x         Float
+  y         Float
+  z         Float
+  face      String // n | s | e | w
+  text      String
+  size      Float    @default(0.9)
+  color     String?
+  bg        String?
+  updatedAt DateTime @updatedAt
+}
+
+// A block you can walk up to and press E on. `panel` names the overlay it
+// opens; `refId` points it at the room, project or client it belongs to.
+model WorldPoi {
+  id        String   @id @default(cuid())
+  x         Int
+  y         Int
+  z         Int
+  label     String
+  sublabel  String?
+  panel     String
+  refId     String?
+  adminOnly Boolean  @default(false)
+  updatedAt DateTime @updatedAt
+
+  @@unique([x, y, z])
+}
+
+// A named volume: what the HUD calls the place you're standing in, and which
+// database Room presence is attributed to.
+model WorldRegion {
+  id      String  @id @default(cuid())
+  key     String  @unique
+  label   String
+  roomId  String?
+  minX    Int
+  minY    Int
+  minZ    Int
+  maxX    Int
+  maxY    Int
+  maxZ    Int
+  lair    Boolean @default(false)
+}
+
+// One row. Where new arrivals spawn, and a revision counter clients poll so
+// they can pull in everyone else's edits.
+model WorldMeta {
+  id        String   @id @default("world")
+  spawnX    Float    @default(38)
+  spawnY    Float    @default(1)
+  spawnZ    Float    @default(36)
+  spawnYaw  Float    @default(0)
+  revision  Int      @default(0)
+  updatedAt DateTime @updatedAt
+}
+
+// ---------------------------------------------------------------------------
 // Team chat — spaces, channels and messages
 // ---------------------------------------------------------------------------
 
@@ -706,6 +787,8 @@ model ChatChannel {
   sortOrder Int           @default(0)
   messages  ChatMessage[]
   reads     ChatRead[]
+  voice     ChatVoicePresence[]
+  signals   ChatVoiceSignal[]
   createdAt DateTime      @default(now())
 
   @@unique([serverId, key])
@@ -734,4 +817,38 @@ model ChatRead {
 
   @@unique([channelId, userId])
   @@index([userId])
+}
+
+// Who is sitting in a voice channel right now. Clients heartbeat while
+// connected; a row that stops being touched goes stale and is swept, so a
+// closed tab never leaves a ghost in the channel.
+model ChatVoicePresence {
+  id        String      @id @default(cuid())
+  channelId String
+  channel   ChatChannel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  muted     Boolean     @default(false)
+  deafened  Boolean     @default(false)
+  joinedAt  DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+
+  @@unique([channelId, userId])
+  @@index([channelId, updatedAt])
+}
+
+// WebRTC handshake traffic between two people in a voice channel. Rows are
+// consumed (deleted) by the recipient's next poll — this is a mailbox, not a
+// log.
+model ChatVoiceSignal {
+  id         String      @id @default(cuid())
+  channelId  String
+  channel    ChatChannel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  fromUserId String
+  toUserId   String
+  kind       String // offer | answer | ice
+  payload    String
+  createdAt  DateTime    @default(now())
+
+  @@index([toUserId, channelId, createdAt])
 }
