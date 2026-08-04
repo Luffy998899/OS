@@ -382,6 +382,33 @@ describe("paintAtlas", () => {
     }
   });
 
+  // Relief shading is a difference between neighbouring texels, so it scales
+  // with how far apart they are. Halving the tile size once doubled it, and
+  // four materials came out at sigma 45+ against a photograph's 20 — visibly
+  // static rather than surface. This keeps every material in one family.
+  it("holds every material to a believable amount of texture", () => {
+    const sigmaOf = (name: keyof typeof TILE) => {
+      const lums = cell(atlas, TILE[name]).map(lum);
+      const mean = lums.reduce((a, b) => a + b, 0) / lums.length;
+      return Math.sqrt(lums.reduce((a, b) => a + (b - mean) ** 2, 0) / lums.length);
+    };
+    // The photographed surfaces set the reference; nothing drawn should be
+    // more than half again as noisy as the roughest real one.
+    const reference = Math.max(sigmaOf("CARPET_GRAY"), sigmaOf("DRYWALL"), sigmaOf("CEILING_TILE"));
+    for (const name of [
+      "CONCRETE",
+      "PAVING",
+      "STONE",
+      "MARBLE",
+      "METAL",
+      "ACOUSTIC_FELT",
+      "WOOD_VENEER",
+      "ROOF",
+    ] as const) {
+      expect(sigmaOf(name), `${name} is static, not a surface`).toBeLessThan(reference * 1.5);
+    }
+  });
+
   // A photograph is not automatically better than a drawing: reduced the naive
   // way it comes out smoother than the hand-drawn tile it replaced. Measured on
   // the source, real office carpet has a luminance sigma near 19; a flat 16x16

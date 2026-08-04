@@ -470,8 +470,8 @@ const PAINTERS: Record<keyof typeof TILE, Painter> = {
 
   CONCRETE: (c, r) => {
     field(c, "#a4a4a1", "#918f8c", r);
-    speckle(c, r, ["#8e8c89", "#adaba7", "#999794"], 0.35);
-    grain(c, r, 9, 0.7);
+    speckle(c, r, ["#9a9895", "#adaba7", "#a09e9b"], 0.16);
+    grain(c, r, 6, 0.6);
     crack(c, r, "rgba(90,90,88,0.5)");
   },
 
@@ -492,9 +492,9 @@ const PAINTERS: Record<keyof typeof TILE, Painter> = {
   },
 
   PAVING: (c, r) => {
-    vgrad(c, "#adaaa2", "#9b9890");
-    speckle(c, r, ["#a4a199", "#b5b2aa", "#96938c"], 0.4);
-    grain(c, r, 8, 0.6);
+    field(c, "#adaaa2", "#9b9890", r);
+    speckle(c, r, ["#a8a59d", "#b2afa7", "#a09d96"], 0.18);
+    grain(c, r, 5, 0.5);
     // Slab joint on two sides.
     px(c, 0, 0, TILE_PX, U, "#84817a");
     px(c, 0, 0, U, TILE_PX, "#84817a");
@@ -855,8 +855,8 @@ const PAINTERS: Record<keyof typeof TILE, Painter> = {
 
   STONE: (c, r) => {
     field(c, "#95958f", "#7e7e79", r);
-    speckle(c, r, ["#8a8a85", "#a0a09a", "#767671"], 0.45);
-    grain(c, r, 10, 0.7);
+    speckle(c, r, ["#8d8d88", "#9b9b95", "#84847f"], 0.22);
+    grain(c, r, 6, 0.6);
     crack(c, r, "rgba(70,70,66,0.55)");
     crack(c, r, "rgba(70,70,66,0.4)");
   },
@@ -1379,6 +1379,16 @@ function fbm(seed: number, x: number, y: number, cells: number, octaves = 4): nu
 }
 
 /**
+ * Slope shading is a difference between neighbouring texels, so it depends on
+ * how far apart those texels are: halve the tile size and the same height field
+ * yields twice the step, and the relief comes out twice as harsh. Both terms
+ * are pinned to the resolution they were tuned at so a material keeps its
+ * character when the atlas changes size.
+ */
+const SLOPE = 5.5 * (ATLAS_TILE_PX / 128);
+const TOOTH = 0.06 * (ATLAS_TILE_PX / 128);
+
+/**
  * Fully transparent tiles (leaves, glass cut-outs) must keep their exact alpha
  * or the cut-out silhouette softens; relief is applied to colour only.
  */
@@ -1387,6 +1397,7 @@ function enrich(
   ctx: Ctx,
   seed: number,
   strength: number,
+  grime = 0,
 ): HTMLCanvasElement {
   const size = ATLAS_TILE_PX;
   const [out, oc] = makeCanvas(size, size);
@@ -1396,6 +1407,14 @@ function enrich(
 
   const img = oc.getImageData(0, 0, size, size);
   const d = img.data;
+  // A photographed stain mask, laid over the materials that have no photograph
+  // of their own. Concrete and stone are never one even tone in a real
+  // building; without this they read as a flat swatch no matter how much fine
+  // noise is on them. Each tile samples the mask at its own offset so the same
+  // stain does not appear on every surface in the room.
+  const dirt = grime > 0 ? bakedBytes("GRUNGE") : null;
+  const dirtOffX = (seed * 7) % size;
+  const dirtOffY = (seed * 13) % size;
   // Height field: coarse undulation plus a fine tooth. 6 cells across the tile
   // is roughly a centimetre of real surface at office scale.
   const inv = 1 / size;
@@ -1421,8 +1440,12 @@ function enrich(
       // The slope term is the relief you want; the flat height term is a broad
       // stain that reads as blotchy plaster if you lean on it, so it stays low.
       // Per-texel tooth: the fine grain the design can no longer carry itself.
-      const tooth = (lattice(seed + 7919, x, y) - 0.5) * 0.06;
-      const gain = 1 + ((hx + hy) * 5.5 + (h[i] - 0.5) * 0.14 + tooth) * strength;
+      const tooth = (lattice(seed + 7919, x, y) - 0.5) * TOOTH;
+      let gain = 1 + ((hx + hy) * SLOPE + (h[i] - 0.5) * 0.14 + tooth) * strength;
+      if (dirt) {
+        const m = dirt[(((y + dirtOffY) % size) * size + ((x + dirtOffX) % size))] / 255;
+        gain *= 1 - (1 - m) * grime;
+      }
       d[o] = Math.max(0, Math.min(255, d[o] * gain));
       d[o + 1] = Math.max(0, Math.min(255, d[o + 1] * gain));
       d[o + 2] = Math.max(0, Math.min(255, d[o + 2] * gain));
@@ -1462,6 +1485,22 @@ function reliefFor(name: string): number {
 const atlasX = (t: number): number => (t % ATLAS_COLS) * ATLAS_TILE_PX;
 const atlasY = (t: number): number => ((t / ATLAS_COLS) | 0) * ATLAS_TILE_PX;
 
+/**
+ * How much of the stain mask each material takes. Built surfaces that see
+ * traffic and weather get the most; anything meant to look clean, new or lit
+ * gets none.
+ */
+function grimeFor(name: string): number {
+  const key = name.toLowerCase();
+  if (/^(monitor|tv|screen|whiteboard|clock|sign|exit|glass|water|lair_glow|ceiling_light|softbox|led)/.test(key)) {
+    return 0;
+  }
+  if (/^(concrete|paving|stone|roof|facade|lair|obsidian|vecna)/.test(key)) return 0.32;
+  if (/^(marble|metal|elevator|acoustic_felt|corkboard|pantry|server)/.test(key)) return 0.2;
+  if (/^(plant|curtain|mic|tripod|camera)/.test(key)) return 0;
+  return 0.16;
+}
+
 /** Paint the full atlas: one tile per TILE index, at atlas resolution. */
 export function paintAtlas(): HTMLCanvasElement {
   const [atlas, ctx] = makeCanvas(ATLAS_COLS * ATLAS_TILE_PX, ATLAS_ROWS * ATLAS_TILE_PX);
@@ -1491,7 +1530,7 @@ export function paintAtlas(): HTMLCanvasElement {
     // and transparent tiles start from a clean alpha=0 surface.
     const [tile, c] = makeCanvas(TILE_PX, TILE_PX);
     PAINTERS[name](c, mulberry32(t * 7919 + 17));
-    const finished = enrich(tile, c, t * 131 + 7, reliefFor(name));
+    const finished = enrich(tile, c, t * 131 + 7, reliefFor(name), grimeFor(name));
     ctx.drawImage(finished, atlasX(t), atlasY(t));
   }
   return atlas;
