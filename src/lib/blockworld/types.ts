@@ -61,6 +61,8 @@ export type Region = {
 
 /** Flat text rendered onto a wall by the engine (canvas texture on a plane). */
 export type TextSign = {
+  /** Database id when the sign came from the world; absent for a new draft. */
+  id?: string;
   text: string;
   /** Anchor block-space position of the sign's centre. */
   x: number;
