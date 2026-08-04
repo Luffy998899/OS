@@ -18,7 +18,6 @@ import {
 const CTX: CheckinContext = {
   userName: "Riya",
   tasksToday: ["Zen Salon reel", "Client CRM bugfix"],
-  currentSlot: "Scripting",
 };
 
 /** Build a transcript of n completed question/answer pairs. */

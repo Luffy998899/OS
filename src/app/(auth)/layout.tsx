@@ -7,6 +7,6 @@ export default async function AuthLayout({
   children: React.ReactNode;
 }) {
   const user = await getCurrentUser();
-  if (user) redirect("/workspace");
+  if (user) redirect("/my-work");
   return <>{children}</>;
 }

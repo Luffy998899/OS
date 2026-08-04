@@ -3,5 +3,5 @@ import { getCurrentUser } from "@/lib/auth/session";
 
 export default async function Home() {
   const user = await getCurrentUser();
-  redirect(user ? "/workspace" : "/sign-in");
+  redirect(user ? "/my-work" : "/sign-in");
 }

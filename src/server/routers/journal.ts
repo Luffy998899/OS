@@ -15,7 +15,6 @@ import {
   type CheckinContext,
   type Turn,
 } from "@/lib/ai/checkin";
-import { currentSlot, dateKey, minutesNow } from "@/lib/timetable";
 
 const turnSchema = z.object({
   role: z.enum(["assistant", "user"]),
@@ -170,19 +169,11 @@ async function checkinContext(
 ): Promise<CheckinContext> {
   const since = new Date();
   since.setHours(0, 0, 0, 0);
-  const [tasks, slots] = await Promise.all([
-    db.task.findMany({
-      where: { assigneeId: userId, updatedAt: { gte: since } },
-      select: { title: true },
-      take: 8,
-      orderBy: { updatedAt: "desc" },
-    }),
-    db.timetableSlot.findMany({ where: { userId, date: dateKey() } }),
-  ]);
-  const slot = currentSlot(slots, minutesNow());
-  return {
-    userName,
-    tasksToday: tasks.map((t) => t.title),
-    currentSlot: slot?.label ?? null,
-  };
+  const tasks = await db.task.findMany({
+    where: { assigneeId: userId, updatedAt: { gte: since } },
+    select: { title: true },
+    take: 8,
+    orderBy: { updatedAt: "desc" },
+  });
+  return { userName, tasksToday: tasks.map((t) => t.title) };
 }

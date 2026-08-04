@@ -3,7 +3,6 @@ import {
   FileText,
   Users2,
   Trophy,
-  Gamepad2,
   Sparkles,
   BarChart3,
   UserCog,
@@ -36,7 +35,6 @@ export type NavSection = {
 export const NAV: NavSection[] = [
   {
     items: [
-      { title: "Gamified Workspace", href: "/workspace", icon: Gamepad2 },
       { title: "My Work", href: "/my-work", icon: ListChecks },
       { title: "Chat", href: "/chat", icon: MessageSquare },
       { title: "Bounty Board", href: "/bounties", icon: ScrollText },

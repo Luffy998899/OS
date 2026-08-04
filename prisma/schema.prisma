@@ -34,7 +34,7 @@ model User {
   passwordHash String
   avatarUrl    String?
   title        String?
-  department   String? // maps to gamified rooms / verticals
+  department   String? // maps to a Room / vertical
   phone        String?   @unique
   status       String    @default("active") // active | suspended | invited
   timezone     String    @default("Asia/Kolkata")
@@ -48,9 +48,6 @@ model User {
   assignedTasks  Task[]             @relation("TaskAssignee")
   createdTasks   Task[]             @relation("TaskCreator")
   coAssignedTasks TaskCollaborator[]
-  editingJobs    VideoJob[]         @relation("VideoEditor")
-  approvalsRaised ApprovalRequest[] @relation("ApprovalRaisedBy")
-  timetableSlots TimetableSlot[]
   taskComments   TaskComment[]
   shifts         Shift[]
   dayReports     DayReport[]
@@ -91,11 +88,7 @@ model Client {
   outreach    OutreachLog[]
   timeEntries TimeEntry[]
   invoices    Invoice[]
-  rooms       Room[] // dedicated office area(s) for this client
-  projects    Project[]
-  videoJobs   VideoJob[]
-  creativeSpaces CreativeSpace[]
-  shoots      Shoot[]
+  rooms       Room[] // dedicated area(s) this client's work is filed under
   createdAt   DateTime      @default(now())
   updatedAt   DateTime      @updatedAt
 }
@@ -148,8 +141,6 @@ model Task {
   client      Client? @relation(fields: [clientId], references: [id])
   roomId      String?
   room        Room?   @relation(fields: [roomId], references: [id])
-  projectId   String?
-  project     Project? @relation(fields: [projectId], references: [id])
 
   comments      TaskComment[]
   activities    TaskActivity[]
@@ -266,7 +257,7 @@ model DocumentShare {
 }
 
 // ---------------------------------------------------------------------------
-// Gamified AI workspace — rooms, avatars, points & rewards
+// Departments, presence, XP & rewards
 // ---------------------------------------------------------------------------
 
 model Room {
@@ -399,114 +390,6 @@ model Setting {
   updatedAt DateTime @updatedAt
 }
 
-// ---------------------------------------------------------------------------
-// Campus rooms — developer city, video bay, conference, outreach, creative,
-// shoot planning and the timetable. Each model backs one themed room.
-// ---------------------------------------------------------------------------
-
-// A floor in the developer city. buildingKey decides which structure it lives
-// in: "pipeline" (in-progress tower), "complete" (finished tower, 10 floors,
-// AI-rearranged by niche), or "tools" (the internal-tools bungalow).
-model Project {
-  id          String    @id @default(cuid())
-  name        String
-  buildingKey String    @default("pipeline") // pipeline | complete | tools
-  floor       Int       @default(1)
-  niche       String?
-  status      String    @default("active") // active | complete | archived
-  deadline    DateTime?
-  repoUrl     String?
-  siteUrl     String?
-  auditStatus String    @default("unaudited") // unaudited | pass | warn | fail
-  auditNote   String?
-  // Public link a client uses to drop task requests straight onto the floor.
-  shareToken  String    @unique @default(cuid())
-  clientId    String?
-  client      Client?   @relation(fields: [clientId], references: [id])
-  // The floor's pinned data board: address, contacts, gmail, credentials refs…
-  dataBoard   String    @default("[]") // JSON [{label, value}]
-  toolDesc    String? // for bungalow entries
-  tasks       Task[]
-  requests    ClientRequest[]
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
-}
-
-// What a client typed into their floor's share page. Converting one creates a
-// real (pending-review) task on the floor.
-model ClientRequest {
-  id        String   @id @default(cuid())
-  projectId String
-  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  author    String
-  body      String
-  reply     String? // agent/AI acknowledgement shown back on the share page
-  status    String   @default("pending") // pending | converted | dismissed
-  taskId    String?
-  createdAt DateTime @default(now())
-}
-
-// The video bay queue. One job is "editing" at a time per editor; the rest wait
-// on the whiteboard in delivery order.
-model VideoJob {
-  id          String    @id @default(cuid())
-  title       String
-  clientId    String?
-  client      Client?   @relation(fields: [clientId], references: [id])
-  script      String?
-  status      String    @default("queued") // queued | editing | delivered
-  priority    String    @default("medium") // low | medium | high | urgent
-  deliverBy   DateTime?
-  position    Int       @default(0)
-  editorId    String?
-  editor      User?     @relation("VideoEditor", fields: [editorId], references: [id])
-  startedAt   DateTime?
-  deliveredAt DateTime?
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
-}
-
-// Conference hall feed: urgent meetings, disclosures, incentives and the weekly
-// do's & don'ts feedback round.
-model Announcement {
-  id          String    @id @default(cuid())
-  kind        String    @default("disclosure") // urgent_meeting | disclosure | incentive | feedback
-  title       String
-  body        String?
-  meetingAt   DateTime?
-  pinned      Boolean   @default(false)
-  createdById String
-  acks        AnnouncementAck[]
-  createdAt   DateTime  @default(now())
-}
-
-model AnnouncementAck {
-  id             String       @id @default(cuid())
-  announcementId String
-  announcement   Announcement @relation(fields: [announcementId], references: [id], onDelete: Cascade)
-  userId         String
-  createdAt      DateTime     @default(now())
-
-  @@unique([announcementId, userId])
-}
-
-// Managing-heads desk: leave applications, task approvals, any query.
-model ApprovalRequest {
-  id           String    @id @default(cuid())
-  userId       String
-  user         User      @relation("ApprovalRaisedBy", fields: [userId], references: [id], onDelete: Cascade)
-  kind         String    @default("query") // leave | approval | query
-  title        String
-  detail       String?
-  fromDate     String? // YYYY-MM-DD, leave only
-  toDate       String?
-  status       String    @default("pending") // pending | approved | rejected
-  decisionNote String?
-  decidedById  String?
-  decidedAt    DateTime?
-  createdAt    DateTime  @default(now())
-}
-
 // Outreach room: the pushed lead list, one sector assigned per agent per day.
 model OutreachTarget {
   id           String   @id @default(cuid())
@@ -532,81 +415,6 @@ model LeadOtp {
   verified  Boolean  @default(false)
   expiresAt DateTime
   createdAt DateTime @default(now())
-}
-
-// One creative space per client (plus one internal): brand kit pinned, the
-// infinite board, references, scripts, timeline and competitor research.
-model CreativeSpace {
-  id              String   @id @default(cuid())
-  key             String   @unique // client:<clientId> | internal
-  name            String
-  clientId        String?
-  client          Client?  @relation(fields: [clientId], references: [id])
-  boardDocId      String? // whiteboard Document for the infinite board
-  brandKit        String   @default("{}") // JSON {colors:[],fonts:[],links:[]}
-  competitorNotes String?
-  items           CreativeItem[]
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
-}
-
-model CreativeItem {
-  id          String        @id @default(cuid())
-  spaceId     String
-  space       CreativeSpace @relation(fields: [spaceId], references: [id], onDelete: Cascade)
-  kind        String // reference | reel | note | script | timeline
-  title       String
-  url         String?
-  content     String?
-  monthKey    String? // YYYY-MM, timeline entries
-  pinned      Boolean       @default(false)
-  createdById String?
-  createdAt   DateTime      @default(now())
-}
-
-// Shoot room: everything planned in front of a camera this day / week.
-model Shoot {
-  id        String   @id @default(cuid())
-  title     String
-  date      String // YYYY-MM-DD
-  timeNote  String? // "10:30 – 13:00"
-  location  String   @default("indoor") // indoor | outdoor
-  scope     String   @default("internal") // client | internal
-  clientId  String?
-  client    Client?  @relation(fields: [clientId], references: [id])
-  priority  String   @default("medium")
-  status    String   @default("planned") // planned | done | cancelled
-  notes     String?
-  createdAt DateTime @default(now())
-}
-
-// School-bell timetable: AI splits everyone's day into blocks; the bell rings
-// on every block change and after lunch the team logs back in.
-model TimetableSlot {
-  id        String   @id @default(cuid())
-  userId    String
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  date      String // YYYY-MM-DD
-  startMin  Int // minutes from midnight
-  endMin    Int
-  label     String
-  kind      String   @default("work") // work | planning | lunch | scripting | followup | journal | posting | outreach
-  clientId  String?
-  source    String   @default("ai") // ai | manual
-  createdAt DateTime @default(now())
-
-  @@index([userId, date])
-}
-
-// Post-lunch re-login + bell acknowledgements, so tracking has no gaps.
-model TimetableLog {
-  id        String   @id @default(cuid())
-  userId    String
-  date      String // YYYY-MM-DD
-  type      String // back_from_lunch | bell_ack
-  at        DateTime @default(now())
-
-  @@unique([userId, date, type])
 }
 
 // ---------------------------------------------------------------------------
@@ -678,107 +486,6 @@ model InvoiceItem {
   rate        Float   @default(0)
   amount      Float   @default(0)
   position    Int     @default(0)
-}
-
-// ---------------------------------------------------------------------------
-// The editable world — creative mode
-//
-// The voxel world is no longer generated behind the app's back: it IS these
-// tables. A row per placed block, plus the signs and the interactive spots
-// that wire a block to a tool panel. Anything not in here is air, over a
-// paved ground plane.
-// ---------------------------------------------------------------------------
-
-model WorldBlock {
-  x         Int
-  y         Int
-  z         Int
-  blockId   Int
-  updatedAt DateTime @updatedAt
-  updatedBy String?
-
-  @@id([x, y, z])
-  @@index([updatedAt])
-}
-
-// Flat text on a wall. Placed and worded by a builder, never generated.
-model WorldSign {
-  id        String   @id @default(cuid())
-  x         Float
-  y         Float
-  z         Float
-  face      String // n | s | e | w
-  text      String
-  size      Float    @default(0.9)
-  color     String?
-  bg        String?
-  updatedAt DateTime @updatedAt
-}
-
-// A block you can walk up to and press E on. `panel` names the overlay it
-// opens; `refId` points it at the room, project or client it belongs to.
-model WorldPoi {
-  id        String   @id @default(cuid())
-  x         Int
-  y         Int
-  z         Int
-  label     String
-  sublabel  String?
-  panel     String
-  refId     String?
-  adminOnly Boolean  @default(false)
-  updatedAt DateTime @updatedAt
-
-  @@unique([x, y, z])
-}
-
-// A named volume: what the HUD calls the place you're standing in, and which
-// database Room presence is attributed to.
-model WorldRegion {
-  id      String  @id @default(cuid())
-  key     String  @unique
-  label   String
-  roomId  String?
-  minX    Int
-  minY    Int
-  minZ    Int
-  maxX    Int
-  maxY    Int
-  maxZ    Int
-  lair    Boolean @default(false)
-}
-
-// Somebody standing in the world who is not a player: the editor at the timeline,
-// a receptionist, a client waiting at their booth. Placed by a district or by
-// hand; `key` is stable so re-stamping a district moves its people rather than
-// piling up duplicates.
-model WorldNpc {
-  id      String  @id @default(cuid())
-  key     String  @unique
-  name    String
-  role    String
-  kind    String  @default("staff") // staff | client
-  x       Float
-  y       Float
-  z       Float
-  yaw     Float   @default(0)
-  seated  Boolean @default(false)
-  hue     Int     @default(200)
-  /** For a client NPC: the point of interest that opens their work. */
-  poiRef    String?
-  updatedAt DateTime @updatedAt
-}
-
-// One row. Where new arrivals spawn, and a revision counter clients poll so
-// they can pull in everyone else's edits.
-model WorldMeta {
-  id        String   @id @default("world")
-  spawnX    Float    @default(38)
-  spawnY    Float    @default(1)
-  spawnZ    Float    @default(36)
-  spawnYaw  Float    @default(0)
-  revision  Int      @default(0)
-  updatedAt DateTime @updatedAt
 }
 
 // ---------------------------------------------------------------------------

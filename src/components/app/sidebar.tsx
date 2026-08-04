@@ -9,7 +9,7 @@ export function Sidebar({ user }: { user: CurrentUser }) {
   return (
     <div className="flex h-full w-[260px] flex-col border-r border-border bg-sidebar">
       <div className="flex h-16 shrink-0 items-center px-5">
-        <Link href="/workspace" aria-label="Auxa home">
+        <Link href="/my-work" aria-label="Auxa home">
           <Wordmark />
         </Link>
       </div>

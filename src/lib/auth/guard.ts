@@ -13,6 +13,6 @@ export async function requirePermission(
   key: PermissionKey,
 ): Promise<CurrentUser> {
   const user = await requireUser();
-  if (!hasPermission(user.permissions, key)) redirect("/workspace");
+  if (!hasPermission(user.permissions, key)) redirect("/my-work");
   return user;
 }

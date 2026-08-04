@@ -5,7 +5,6 @@ import { Sidebar } from "./sidebar";
 import { Topbar } from "./topbar";
 import { MobileNav } from "./mobile-nav";
 import { CurrentUserProvider } from "./user-context";
-import { ScareWatcher } from "@/components/workspace/scare-watcher";
 import type { CurrentUser } from "@/lib/auth/types";
 
 export function AppShell({
@@ -36,7 +35,6 @@ export function AppShell({
           onOpenChange={setMobileOpen}
           user={user}
         />
-        <ScareWatcher />
       </div>
     </CurrentUserProvider>
   );

@@ -4,8 +4,8 @@ Auxa is a **Work OS CRM** for small studios and teams. It opens straight to a
 **Sign In** screen (no public sign‑up — the admin creates accounts), then puts the
 whole team on one floor: missions instead of tickets, an AI senior manager that
 routes work, whiteboards for every idea, attendance with end‑of‑day reports, a
-CRM pipeline, and a gamified virtual office with points, rewards, and a
-leaderboard.
+CRM pipeline, and a bounty board where points, craft levels and a leaderboard
+turn open work into something worth claiming.
 
 The UI is a deliberate **monochrome ink‑on‑paper** system (inspired by the Ryven
 reference), not a generic dashboard template.
@@ -38,20 +38,17 @@ reference), not a generic dashboard template.
 - **Settings + WhatsApp** — message a task from WhatsApp → AI drafts it → it lands
   in the owner's review queue. Includes a webhook (Meta/Twilio) and an in‑app
   simulator so you can try the flow without credentials.
-- **Gamified Workspace** — a virtual office floor plan by department, avatars with
-  presence, click‑to‑enter rooms, an AI "floor manager" (memory of the day), and
-  per‑room missions.
+- **Bounty Board & craft levels** — unclaimed missions anyone eligible can grab.
+  Urgent work pays a bonus on top of its base XP, and your level in a craft
+  (design / dev / video / ops) decides what you are allowed to take.
 - **Leaderboard & Rewards** — ranked by points; redeem points for rewards.
 
-## The 5 work verticals & the rooms
+## The 5 work verticals
 
 Missions are classified into: **Website dev · Digital marketing · Roadmap & team ·
-Client outreach · Billing & data**. The virtual office has seven rooms:
-Developer, Creative, Video Editing, Managing Heads, Common Board, Client, and
-Creativity. (The brief flagged "Creative" vs "Creativity" as possible duplicates —
-they are kept distinct here: **Creative Room** is the design/marketing team's
-space, **Creativity Room** is a shared ideation/brainstorming lounge open to
-everyone.)
+Client outreach · Billing & data**. Each vertical files its work under a
+department — Engineering, Creative, Leadership, Client Success — so a mission
+always has a home even when nobody has been assigned yet.
 
 ---
 
@@ -264,7 +261,7 @@ Deploy the Next.js app to Vercel. For production:
   heuristics.
 - **E2E** (Playwright scripts in `scripts/`): auth + RBAC redirects, check‑in →
   day‑report → check‑out, AI draft → assign, WhatsApp simulate → review queue,
-  whiteboard edit + autosave persistence, reward redemption, room movement.
+  whiteboard edit + autosave persistence, reward redemption.
 
 Every phase was built and verified independently (build, typecheck, tests, and a
 screenshot/console pass at desktop + mobile).

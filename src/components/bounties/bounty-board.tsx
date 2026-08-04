@@ -4,8 +4,7 @@
 // grab. Urgent work carries a bonus so the fires get picked up first, and a
 // craft gate keeps people from claiming work they haven't levelled into yet.
 //
-// The same panel is used on /bounties, in the workspace lobby and inside the
-// first-person overlay, so there is exactly one board in the product.
+// One board in the product: /bounties renders this panel and nothing else does.
 
 import { useMemo, useState } from "react";
 import {

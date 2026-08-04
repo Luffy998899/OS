@@ -59,8 +59,6 @@ export type CheckinContext = {
   userName: string;
   /** Titles of tasks the person moved today. */
   tasksToday: string[];
-  /** Their timetable block right now, if any. */
-  currentSlot: string | null;
 };
 
 export function interviewSystemPrompt(ctx: CheckinContext): string {
@@ -80,7 +78,6 @@ export function interviewSystemPrompt(ctx: CheckinContext): string {
     "",
     "What the tracker already shows for them today:",
     tasks,
-    ctx.currentSlot ? `Their current timetable block: ${ctx.currentSlot}` : "",
   ]
     .filter(Boolean)
     .join("\n");
