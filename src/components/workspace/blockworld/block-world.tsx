@@ -43,7 +43,27 @@ import {
   type MoveInput,
   type PlayerState,
 } from "@/lib/blockworld/physics";
+import { poiIdAt } from "@/lib/blockworld/panels";
+import {
+  boxVolume,
+  clampBox,
+  faceFromNormal,
+  fillEdits,
+  inverseEdits,
+  normaliseBox,
+  type Box,
+  type Cell,
+  type FillMode,
+} from "@/lib/blockworld/build-ops";
 import { paintAtlas } from "./textures";
+import { WireDialog, type WireCell } from "./wire-dialog";
+import {
+  FillDialog,
+  RegionDialog,
+  SignDialog,
+  type RegionDraft,
+  type SignDraft,
+} from "./design-dialogs";
 import { createPlayerRig, type PlayerRig } from "./player-model";
 import { BountyBoardPanel } from "../bounty-board";
 import { SkillTreePanel } from "../skill-tree";
@@ -306,6 +326,15 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
   const [settings, setSettings] = useState<ViewSettings>(DEFAULT_SETTINGS);
   const overlayRef = useRef<Overlay>(null);
   overlayRef.current = overlay;
+  /**
+   * True while any modal surface owns the keyboard — an overlay, the block
+   * picker or the wiring dialog. Without it, typing in a search box also walks
+   * the player and Escape drops you out of the office entirely.
+   */
+  const modalRef = useRef(false);
+  const pickerRef = useRef(false);
+  const wiringRef = useRef(false);
+  const designRef = useRef(false);
 
   // Opening any overlay must free the mouse and hand the keyboard to the
   // panel — nobody should have to press Escape before they can type.
@@ -387,6 +416,8 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
     lastSpace: 0,
     held: 1,
     aimedVoxel: null as VoxelHit | null,
+    /** Set by the scene effect: draw the design selection box. */
+    drawSelection: null as ((a: Cell | null, b: Cell | null) => void) | null,
     /** Set by the scene effect: re-mesh the chunks a block edit dirties. */
     remesh: null as ((x: number, y: number, z: number) => void) | null,
     /** Edits made locally but not yet flushed to the server. */
@@ -406,8 +437,11 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
   // Debug/QA hook: lets tooling read position and steer deterministically.
   useEffect(() => {
     (window as unknown as { __bw?: unknown }).__bw = E;
+    // The block table, so tooling can name a material instead of guessing ids.
+    (window as unknown as { __bwBlocks?: unknown }).__bwBlocks = BLOCKS;
     return () => {
       delete (window as unknown as { __bw?: unknown }).__bw;
+      delete (window as unknown as { __bwBlocks?: unknown }).__bwBlocks;
     };
   }, [E]);
 
@@ -500,11 +534,53 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [aimLabel, setAimLabel] = useState<string | null>(null);
 
+  const [wiring, setWiring] = useState<WireCell | null>(null);
+  // ---- map design: a two-corner selection, and what you do with it ----
+  const [corners, setCorners] = useState<{ a: Cell | null; b: Cell | null }>({ a: null, b: null });
+  const [filling, setFilling] = useState<Box | null>(null);
+  const [signing, setSigning] = useState<SignDraft | null>(null);
+  const [naming, setNaming] = useState<RegionDraft | null>(null);
+  const designOpen = filling !== null || signing !== null || naming !== null;
+  /** The keyboard effect is built once per world; the selection changes often. */
+  const cornersRef = useRef(corners);
+  cornersRef.current = corners;
+  /** Drop a block into the live hotbar slot — used by the eyedropper. */
+  const pickBlock = useCallback(
+    (id: number) => {
+      setHotbar((h) => {
+        if (h[slot] === id) return h;
+        const next = [...h];
+        next[slot] = id;
+        return next;
+      });
+      toast(BLOCKS[id]?.label ?? "Block", { description: "Picked into your hand." });
+    },
+    [slot],
+  );
+  const pickBlockRef = useRef(pickBlock);
+  pickBlockRef.current = pickBlock;
+  useEffect(() => {
+    E.drawSelection?.(buildMode ? corners.a : null, buildMode ? corners.b : null);
+  }, [E, corners, buildMode, worldEpoch]);
+  pickerRef.current = pickerOpen;
+  wiringRef.current = wiring !== null;
+  designRef.current = designOpen;
+  modalRef.current = overlay !== null || pickerOpen || wiring !== null || designOpen;
+
   const placeMutation = trpc.world.place.useMutation();
-  const loadTemplate = trpc.world.loadTemplate.useMutation();
   const clearWorld = trpc.world.clear.useMutation();
   const setSpawn = trpc.world.setSpawn.useMutation();
+  const setPoi = trpc.world.setPoi.useMutation({ onError: (e) => toast.error(e.message) });
+  const deletePoi = trpc.world.deletePoi.useMutation({ onError: (e) => toast.error(e.message) });
+  const setSign = trpc.world.setSign.useMutation({ onError: (e) => toast.error(e.message) });
+  const deleteSign = trpc.world.deleteSign.useMutation({ onError: (e) => toast.error(e.message) });
+  const setRegion = trpc.world.setRegion.useMutation({ onError: (e) => toast.error(e.message) });
+  const deleteRegion = trpc.world.deleteRegion.useMutation({
+    onError: (e) => toast.error(e.message),
+  });
   const appliedRevision = useRef(0);
+  /** Batches applied this session, newest last, each stored as its inverse. */
+  const undoStack = useRef<{ label: string; edits: number[] }[]>([]);
   useEffect(() => {
     if (loaded.data) appliedRevision.current = loaded.data.revision;
   }, [loaded.data]);
@@ -522,6 +598,38 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
   E.build = buildMode;
   E.held = hotbar[slot] ?? 1;
 
+  /**
+   * Take a binding off a cell in the world we are holding. Breaking a block
+   * server-side already deletes the POI on it, so a bulk edit only needs this
+   * half; a deliberate unwire calls dropPoiAt below, which does both.
+   */
+  const dropPoiLocally = useCallback(
+    (x: number, y: number, z: number): boolean => {
+      const w = E.world;
+      if (!w) return false;
+      const at = w.pois.findIndex((p) => p.min.x === x && p.min.y === y && p.min.z === z);
+      if (at < 0) return false;
+      const [gone] = w.pois.splice(at, 1);
+      if (E.aimed?.id === gone.id) {
+        E.aimed = null;
+        setPrompt(null);
+      }
+      return true;
+    },
+    [E],
+  );
+
+  /** Forget a block's binding, locally and on the server. */
+  const dropPoiAt = useCallback(
+    (x: number, y: number, z: number) => {
+      if (!dropPoiLocally(x, y, z)) return;
+      deletePoi.mutate({ x, y, z });
+    },
+    // deletePoi is a stable handle.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [dropPoiLocally],
+  );
+
   /** Write one block locally, re-mesh what it touched, and queue the save. */
   const editBlock = useCallback(
     (x: number, y: number, z: number, id: number) => {
@@ -532,7 +640,128 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
       setBlock(w, x, y, z, id);
       E.remesh?.(x, y, z);
       E.edits.push(x, y, z, id);
+      // A binding belongs to the block, not the cell: break the block and the
+      // interaction goes with it, or the office keeps prompts for thin air.
+      if (id === 0) dropPoiAt(x, y, z);
     },
+    [E, dropPoiAt],
+  );
+
+  /**
+   * Apply a whole batch at once: write it locally, re-mesh what it touched,
+   * push it, and remember how to put it back. This is what the fill tool and
+   * undo both go through, so one code path owns bulk edits.
+   */
+  const applyBatch = useCallback(
+    (edits: number[], label: string, recordUndo = true) => {
+      const w = E.world;
+      if (!w || edits.length === 0) return 0;
+      const at = (x: number, y: number, z: number) => blockAt(w, x, y, z);
+      // Taken BEFORE the write, or the inverse would describe the new world.
+      if (recordUndo) {
+        undoStack.current.push({ label, edits: inverseEdits(edits, at) });
+        if (undoStack.current.length > 24) undoStack.current.shift();
+      }
+      for (let i = 0; i < edits.length; i += 4) {
+        const x = edits[i];
+        const y = edits[i + 1];
+        const z = edits[i + 2];
+        setBlock(w, x, y, z, edits[i + 3]);
+        E.remesh?.(x, y, z);
+        if (edits[i + 3] === 0) dropPoiLocally(x, y, z);
+      }
+      placeMutation.mutate(
+        { blocks: edits },
+        {
+          onSuccess: (res) => {
+            appliedRevision.current = res.revision;
+          },
+          onError: (err) => toast.error(err.message),
+        },
+      );
+      return edits.length / 4;
+    },
+    // placeMutation is a stable handle.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [E, dropPoiLocally],
+  );
+
+  /** Put the last batch back. */
+  const undoLast = useCallback(() => {
+    const last = undoStack.current.pop();
+    if (!last) {
+      toast("Nothing to undo.");
+      return;
+    }
+    const n = applyBatch(last.edits, last.label, false);
+    toast(`Undid ${last.label}`, { description: `${n.toLocaleString()} blocks restored.` });
+  }, [applyBatch]);
+
+  /** Build the selected box, then drop the selection so it can't fire twice. */
+  const runFill = useCallback(
+    (box: Box, mode: FillMode, id: number, raise = 0) => {
+      const w = E.world;
+      if (!w) return;
+      const grown = clampBox(
+        { min: box.min, max: { ...box.max, y: box.max.y + raise } },
+        w.sx,
+        w.sy,
+        w.sz,
+      );
+      const edits = fillEdits(grown, mode, id, (x, y, z) => blockAt(w, x, y, z));
+      setFilling(null);
+      setCorners({ a: null, b: null });
+      if (edits.length === 0) {
+        toast("Nothing to change there.");
+        return;
+      }
+      const n = applyBatch(edits, mode);
+      toast.success(`${n.toLocaleString()} blocks`, { description: "Z puts it back." });
+    },
+    [E, applyBatch],
+  );
+
+  /** Attach a Work OS panel to the block the builder is aiming at. */
+  const wireBlock = useCallback(
+    (poi: {
+      x: number;
+      y: number;
+      z: number;
+      panel: string;
+      refId: string | null;
+      label: string;
+      sublabel: string | null;
+      adminOnly: boolean;
+    }) => {
+      const w = E.world;
+      if (!w) return;
+      const at = w.pois.findIndex(
+        (p) => p.min.x === poi.x && p.min.y === poi.y && p.min.z === poi.z,
+      );
+      const next: Poi = {
+        id: poiIdAt(poi.x, poi.y, poi.z),
+        label: poi.label,
+        sublabel: poi.sublabel ?? undefined,
+        panel: poi.panel as Poi["panel"],
+        refId: poi.refId ?? undefined,
+        adminOnly: poi.adminOnly,
+        min: { x: poi.x, y: poi.y, z: poi.z },
+        max: { x: poi.x + 1, y: poi.y + 1, z: poi.z + 1 },
+      };
+      if (at >= 0) w.pois[at] = next;
+      else w.pois.push(next);
+      setPoi.mutate(poi, {
+        onSuccess: (res) => {
+          appliedRevision.current = res.revision;
+        },
+      });
+      setWiring(null);
+      toast.success(`${poi.label} is live`, {
+        description: "Walk up to it and press E.",
+      });
+    },
+    // setPoi is a stable handle.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [E],
   );
 
@@ -640,9 +869,15 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
 
     // Terrain meshes.
     const atlas = new THREE.CanvasTexture(paintAtlas());
+    // Crisp up close, filtered at distance. Point-sampling the whole range is
+    // what makes a floor shimmer into static when you look across it: every
+    // pixel picks one texel out of a material far finer than the pixel is.
+    // Mipmaps plus anisotropy sample the whole footprint instead, which is the
+    // difference between a floor and a field of noise.
     atlas.magFilter = THREE.NearestFilter;
-    atlas.minFilter = THREE.NearestFilter;
-    atlas.generateMipmaps = false;
+    atlas.minFilter = THREE.LinearMipmapLinearFilter;
+    atlas.generateMipmaps = true;
+    atlas.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
     atlas.colorSpace = THREE.SRGBColorSpace;
 
     const toGeometry = (m: MeshArrays) => {
@@ -744,18 +979,22 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
       });
       const mesh = new THREE.Mesh(geo, mat);
       const off = 0.03;
-      mesh.position.set(s.x, s.y, s.z);
+      // A sign names the block it is fixed to, so it hangs on that block's
+      // face — centred across it and pushed just clear of the surface. Placing
+      // it at the raw block coordinate would bury it in the corner, inside
+      // whatever stands next door.
+      mesh.position.set(s.x + 0.5, s.y + 0.5, s.z + 0.5);
       if (s.face === "n") {
         mesh.rotation.y = Math.PI;
-        mesh.position.z -= off;
+        mesh.position.z = s.z - off;
       } else if (s.face === "s") {
-        mesh.position.z += off;
+        mesh.position.z = s.z + 1 + off;
       } else if (s.face === "e") {
         mesh.rotation.y = Math.PI / 2;
-        mesh.position.x += off;
+        mesh.position.x = s.x + 1 + off;
       } else {
         mesh.rotation.y = -Math.PI / 2;
-        mesh.position.x -= off;
+        mesh.position.x = s.x - off;
       }
       scene.add(mesh);
       signMeshes.push(mesh);
@@ -825,6 +1064,33 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
     highlight.visible = false;
     scene.add(highlight);
 
+    // The design selection: a first-corner marker and, once both corners are
+    // down, the box a fill would write. Drawn so you can see what you marked
+    // from across the floorplate before committing to it.
+    const markMat = new THREE.LineBasicMaterial({ color: 0x7cc4ff });
+    const mark = new THREE.LineSegments(new THREE.EdgesGeometry(hlGeo), markMat);
+    mark.visible = false;
+    scene.add(mark);
+    const selMat = new THREE.LineBasicMaterial({ color: 0x7cc4ff });
+    const selection = new THREE.LineSegments(new THREE.EdgesGeometry(hlGeo), selMat);
+    selection.visible = false;
+    scene.add(selection);
+    E.drawSelection = (a, b) => {
+      mark.visible = Boolean(a) && !b;
+      if (a && !b) mark.position.set(a.x + 0.5, a.y + 0.5, a.z + 0.5);
+      selection.visible = Boolean(a && b);
+      if (a && b) {
+        const lo = { x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), z: Math.min(a.z, b.z) };
+        const hi = { x: Math.max(a.x, b.x), y: Math.max(a.y, b.y), z: Math.max(a.z, b.z) };
+        selection.scale.set(hi.x - lo.x + 1, hi.y - lo.y + 1, hi.z - lo.z + 1);
+        selection.position.set(
+          (lo.x + hi.x + 1) / 2,
+          (lo.y + hi.y + 1) / 2,
+          (lo.z + hi.z + 1) / 2,
+        );
+      }
+    };
+
     // ---- input ----
     const dom = renderer.domElement;
     const onLockChange = () => setLocked(document.pointerLockElement === dom);
@@ -865,9 +1131,17 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
     const stopHold = () => window.clearInterval(holdTimer);
 
     const onPointerDown = (e: PointerEvent) => {
-      if (overlayRef.current) return;
+      if (modalRef.current) return;
       if (E.build && document.pointerLockElement === dom) {
         e.preventDefault();
+        // Middle click is the eyedropper: take the block you are looking at
+        // instead of hunting for it in the picker.
+        if (e.button === 1) {
+          const hit = E.aimedVoxel;
+          const id = hit && E.world ? blockAt(E.world, hit.x, hit.y, hit.z) : 0;
+          if (id) pickBlockRef.current(id);
+          return;
+        }
         startHold(e.button);
         return;
       }
@@ -880,7 +1154,7 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
     };
     const onPointerUp = () => {
       stopHold();
-      if (overlayRef.current) {
+      if (modalRef.current) {
         dragging = false;
         return;
       }
@@ -936,7 +1210,7 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
       // single 50ms step per frame, so a machine rendering at 5fps moved at a
       // quarter speed — "sprint feels slow" was really "your GPU is slow".
       // Accumulating real time and running whole fixed steps decouples the two.
-      if (!overlayRef.current) {
+      if (!modalRef.current) {
         const k = E.keys;
         const crouch = k.has("ShiftLeft") || k.has("ShiftRight");
         const input: MoveInput = {
@@ -1217,7 +1491,20 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
   useEffect(() => {
     const down = (e: KeyboardEvent) => {
       if (e.code === "Escape") {
-        if (overlayRef.current) {
+        // Close whatever is open, innermost first. Leaving the office is the
+        // last resort, never a side effect of dismissing a dialog.
+        if (designRef.current) {
+          setFilling(null);
+          setSigning(null);
+          setNaming(null);
+          e.preventDefault();
+        } else if (wiringRef.current) {
+          setWiring(null);
+          e.preventDefault();
+        } else if (pickerRef.current) {
+          setPickerOpen(false);
+          e.preventDefault();
+        } else if (overlayRef.current) {
           setOverlay(null);
           e.preventDefault();
         } else if (document.pointerLockElement) {
@@ -1227,7 +1514,7 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
         }
         return;
       }
-      if (overlayRef.current) return;
+      if (modalRef.current) return;
       if (["Space", "Tab", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.code)) {
         e.preventDefault();
       }
@@ -1279,6 +1566,126 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
           }
           if (e.code === "KeyE") openInteraction(E.aimed);
           return;
+        case "KeyR":
+          // Wire the block under the crosshair to a Work OS panel.
+          if (E.build) {
+            e.preventDefault();
+            const hit = E.aimedVoxel;
+            if (!hit) {
+              toast("Aim at a block first.", { description: "Then press R to wire it up." });
+              return;
+            }
+            const id = E.world ? blockAt(E.world, hit.x, hit.y, hit.z) : 0;
+            setWiring({ x: hit.x, y: hit.y, z: hit.z, blockId: id });
+            if (document.pointerLockElement) document.exitPointerLock();
+          }
+          return;
+        case "KeyV": {
+          // Mark the corners of a box. Two marks and the fill panel opens.
+          if (!E.build) return;
+          e.preventDefault();
+          const hit = E.aimedVoxel;
+          if (!hit) {
+            toast("Aim at a block to mark a corner.");
+            return;
+          }
+          const cell: Cell = { x: hit.x, y: hit.y, z: hit.z };
+          setCorners((c) => {
+            // A finished box plus another V starts over here, so moving the
+            // first corner never means hunting for a clear button.
+            if (!c.a || c.b) {
+              toast("Corner 1 marked", { description: "Aim at the far corner and press V." });
+              return { a: cell, b: null };
+            }
+            const box = clampBox(
+              normaliseBox(c.a, cell),
+              E.world?.sx ?? 0,
+              E.world?.sy ?? 0,
+              E.world?.sz ?? 0,
+            );
+            setFilling(box);
+            if (document.pointerLockElement) document.exitPointerLock();
+            return { a: c.a, b: cell };
+          });
+          return;
+        }
+        case "KeyZ":
+          if (E.build) {
+            e.preventDefault();
+            undoLast();
+          }
+          return;
+        case "KeyX": {
+          // Letter the wall you are aiming at.
+          if (!E.build) return;
+          e.preventDefault();
+          const hit = E.aimedVoxel;
+          if (!hit) {
+            toast("Aim at a wall to letter it.");
+            return;
+          }
+          const here = E.world?.signs.find(
+            (sg) => sg.x === hit.x && sg.y === hit.y && sg.z === hit.z,
+          );
+          setSigning({
+            id: here?.id,
+            x: hit.x,
+            y: hit.y,
+            z: hit.z,
+            // px/py/pz is the empty cell in front of the face that was struck,
+            // so the difference is the way a reader looks at it.
+            face: here?.face ?? faceFromNormal(hit.px - hit.x, hit.pz - hit.z),
+            text: here?.text ?? "",
+            size: here?.size ?? 0.9,
+            color: here?.color ?? null,
+            bg: here?.bg ?? null,
+          });
+          if (document.pointerLockElement) document.exitPointerLock();
+          return;
+        }
+        case "KeyN": {
+          // Name the selected volume — or the room you are standing in.
+          if (!E.build) return;
+          e.preventDefault();
+          const w = E.world;
+          if (!w) return;
+          const here = regionAt(
+            w,
+            Math.floor(E.st.pos.x),
+            Math.floor(E.st.pos.y),
+            Math.floor(E.st.pos.z),
+          );
+          const sel = cornersRef.current;
+          if (!sel.a || !sel.b) {
+            if (!here) {
+              toast("Mark a box with V first.", {
+                description: "Two corners, then N names what's inside.",
+              });
+              return;
+            }
+            setNaming({
+              key: here.key,
+              label: here.label,
+              roomId: here.roomId ?? null,
+              lair: here.lair ?? false,
+              min: here.min,
+              max: here.max,
+            });
+          } else {
+            const box = clampBox(normaliseBox(sel.a, sel.b), w.sx, w.sy, w.sz);
+            setNaming({
+              key: "",
+              label: "",
+              roomId: null,
+              lair: false,
+              // Region volumes are max-exclusive; a marked box is inclusive.
+              min: box.min,
+              max: { x: box.max.x + 1, y: box.max.y + 1, z: box.max.z + 1 },
+            });
+          }
+          if (document.pointerLockElement) document.exitPointerLock();
+          return;
+        }
         case "KeyB":
           openOverlay({ kind: "bounties" });
           return;
@@ -1318,13 +1725,13 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
       window.removeEventListener("keyup", up);
       window.removeEventListener("blur", blur);
     };
-  }, [E, onExit, openInteraction, openOverlay, container, canBuild]);
+  }, [E, onExit, openInteraction, openOverlay, container, canBuild, undoLast]);
 
   // Scrolling the wheel walks the hotbar, like every block game.
   useEffect(() => {
     if (!buildMode) return;
     const onWheel = (e: WheelEvent) => {
-      if (overlayRef.current || pickerOpen) return;
+      if (modalRef.current) return;
       setSlot((s) => (s + (e.deltaY > 0 ? 1 : -1) + 9) % 9);
     };
     window.addEventListener("wheel", onWheel, { passive: true });
@@ -1486,7 +1893,11 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
             </button>
           </div>
           <p className="rounded-full bg-black/45 px-3 py-1 font-mono text-[0.6rem] tracking-wide text-white/60">
-            L-click break · R-click place · 1-9 / wheel slot · E all blocks · double-Space fly · G exit build
+            L-click break · R-click place · M-click pick · 1-9 / wheel slot · E all blocks ·
+            double-Space fly · G exit build
+          </p>
+          <p className="rounded-full bg-black/45 px-3 py-1 font-mono text-[0.6rem] tracking-wide text-[#7cc4ff]">
+            V mark corners → fill · Z undo · X sign · N name the space · R wire to the Work OS
           </p>
         </div>
       ) : null}
@@ -1517,29 +1928,33 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
         </div>
       ) : null}
 
+      {/* Selection readout */}
+      {buildMode && !overlay && corners.a ? (
+        <div className="absolute top-1/2 left-3 -translate-y-1/2 rounded-lg border border-[#7cc4ff]/40 bg-black/65 px-3 py-2 backdrop-blur-sm">
+          <p className="font-mono text-[0.6rem] tracking-widest text-[#7cc4ff] uppercase">
+            Selection
+          </p>
+          <p className="mt-0.5 font-mono text-[0.68rem] text-white/85">
+            {corners.b
+              ? (() => {
+                  const b = normaliseBox(corners.a, corners.b);
+                  const v = boxVolume(b);
+                  return `${b.max.x - b.min.x + 1}x${b.max.y - b.min.y + 1}x${b.max.z - b.min.z + 1} · ${v.toLocaleString()}`;
+                })()
+              : `corner 1 at ${corners.a.x},${corners.a.y},${corners.a.z}`}
+          </p>
+          <button
+            onClick={() => setCorners({ a: null, b: null })}
+            className="mt-1 font-mono text-[0.6rem] text-white/50 hover:text-white/90"
+          >
+            clear
+          </button>
+        </div>
+      ) : null}
+
       {/* World management — the destructive bits live behind build mode */}
       {buildMode && !overlay ? (
         <div className="absolute top-24 right-3 flex w-44 flex-col gap-1.5">
-          <button
-            onClick={() => {
-              if (!confirm("Stamp the office template over the world? This replaces everything currently built.")) return;
-              loadTemplate.mutate(
-                { replace: true },
-                {
-                  onSuccess: (res) => {
-                    appliedRevision.current = res.revision;
-                    void loaded.refetch().then(() => setWorldEpoch((n) => n + 1));
-                    toast.success(`Office template loaded — ${res.blocks.toLocaleString()} blocks.`);
-                  },
-                  onError: (e) => toast.error(e.message),
-                },
-              );
-            }}
-            disabled={loadTemplate.isPending}
-            className="rounded-lg bg-black/60 px-3 py-1.5 text-xs font-medium text-white/90 backdrop-blur-sm transition-colors hover:bg-black/80 disabled:opacity-50"
-          >
-            {loadTemplate.isPending ? "Loading…" : "Load office template"}
-          </button>
           <button
             onClick={() => {
               if (!confirm("Delete every block, sign and interactive spot? This cannot be undone.")) return;
@@ -1621,6 +2036,104 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
         />
       ) : null}
 
+      {/* Wire a block to the Work OS */}
+      {wiring && world ? (
+        <WireDialog
+          cell={wiring}
+          existing={
+            world.pois.find(
+              (p) => p.min.x === wiring.x && p.min.y === wiring.y && p.min.z === wiring.z,
+            ) ?? null
+          }
+          saving={setPoi.isPending || deletePoi.isPending}
+          onClose={() => setWiring(null)}
+          onSave={wireBlock}
+          onUnwire={() => {
+            dropPoiAt(wiring.x, wiring.y, wiring.z);
+            setWiring(null);
+            toast("Unwired", { description: "It's just a block again." });
+          }}
+        />
+      ) : null}
+
+      {/* Fill the marked box */}
+      {filling ? (
+        <FillDialog
+          box={filling}
+          blockId={hotbar[slot] ?? 1}
+          onClose={() => setFilling(null)}
+          onFill={(mode, id, raise) => runFill(filling, mode, id, raise)}
+        />
+      ) : null}
+
+      {/* Letter a wall */}
+      {signing ? (
+        <SignDialog
+          draft={signing}
+          saving={setSign.isPending || deleteSign.isPending}
+          onClose={() => setSigning(null)}
+          onSave={(sg) => {
+            setSign.mutate(sg, {
+              onSuccess: (res) => {
+                appliedRevision.current = res.revision;
+                void loaded.refetch().then(() => setWorldEpoch((n) => n + 1));
+                toast.success("Sign is up.");
+              },
+            });
+            setSigning(null);
+          }}
+          onDelete={() => {
+            if (signing.id) {
+              deleteSign.mutate(
+                { id: signing.id },
+                {
+                  onSuccess: (res) => {
+                    appliedRevision.current = res.revision;
+                    void loaded.refetch().then(() => setWorldEpoch((n) => n + 1));
+                    toast("Sign removed.");
+                  },
+                },
+              );
+            }
+            setSigning(null);
+          }}
+        />
+      ) : null}
+
+      {/* Name a space */}
+      {naming ? (
+        <RegionDialog
+          draft={naming}
+          existing={world?.regions ?? []}
+          saving={setRegion.isPending || deleteRegion.isPending}
+          onClose={() => setNaming(null)}
+          onSave={(r) => {
+            setRegion.mutate(r, {
+              onSuccess: (res) => {
+                appliedRevision.current = res.revision;
+                void loaded.refetch().then(() => setWorldEpoch((n) => n + 1));
+                toast.success(`“${r.label}” is on the map.`);
+              },
+            });
+            setNaming(null);
+            setCorners({ a: null, b: null });
+          }}
+          onDelete={(key) => {
+            deleteRegion.mutate(
+              { key },
+              {
+                onSuccess: (res) => {
+                  appliedRevision.current = res.revision;
+                  void loaded.refetch().then(() => setWorldEpoch((n) => n + 1));
+                  toast("Space removed.");
+                },
+              },
+            );
+            setNaming(null);
+          }}
+        />
+      ) : null}
+
       {/* Hint line */}
       {!overlay && !locked ? (
         <p className="absolute bottom-24 left-1/2 -translate-x-1/2 rounded-full bg-black/45 px-3 py-1 font-mono text-[0.62rem] tracking-wide text-white/60">
@@ -1695,7 +2208,7 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
                   me={{ x: E.st.pos.x, y: E.st.pos.y, z: E.st.pos.z, yaw: E.yaw }}
                 />
               ) : null}
-              {overlay.kind === "help" ? <HelpPanel /> : null}
+              {overlay.kind === "help" ? <HelpPanel canBuild={canBuild} /> : null}
               {overlay.kind === "settings" ? (
                 <SettingsPanel settings={settings} onChange={applySettings} />
               ) : null}
@@ -2030,35 +2543,53 @@ function CampusMap({
 // Help + settings
 // ---------------------------------------------------------------------------
 
-function HelpPanel() {
-  const rows: [string, string][] = [
+function HelpPanel({ canBuild }: { canBuild: boolean }) {
+  const walking: [string, string][] = [
     ["W A S D", "Walk the office · Shift to hurry"],
     ["Space", "Step up · hop"],
     ["Mouse", "Look (click the view to capture the mouse)"],
-    ["E / Click", "Sit down at a computer, use a board, call a lift"],
+    ["E / Click", "Use the thing you are looking at"],
     ["C", "Chat — servers and channels, like Slack"],
     ["B / T / M", "Bounties · Skill tree · Floor plan"],
     ["Tab / H / O", "Crew · Help · View settings"],
     ["F", "Fullscreen"],
     ["Esc", "Close panel → release mouse → leave"],
   ];
+  const building: [string, string][] = [
+    ["G", "Enter and leave build mode"],
+    ["L / R click", "Break · place — hold to keep going"],
+    ["M click", "Eyedropper: take the block you are aiming at"],
+    ["1-9 / wheel", "Choose a hotbar slot"],
+    ["E or Q", "Every block, searchable"],
+    ["Space Space", "Fly"],
+    ["V", "Mark a corner — mark two and the fill panel opens"],
+    ["Z", "Undo the last fill or batch"],
+    ["X", "Letter the wall you are aiming at"],
+    ["N", "Name the marked space, and link it to a room"],
+    ["R", "Wire a block to a Work OS panel"],
+  ];
+  const Row = ([key, label]: [string, string]) => (
+    <div key={key} className="flex items-center gap-3 rounded-lg bg-muted/60 px-3 py-2 text-sm">
+      <kbd className="min-w-20 rounded border border-border bg-background px-1.5 py-0.5 text-center font-mono text-[0.65rem]">
+        {key}
+      </kbd>
+      <span className="text-muted-foreground">{label}</span>
+    </div>
+  );
   return (
     <div className="space-y-4">
       <p className="text-sm text-muted-foreground">
-        This is the office. Walk the corridor, go through a door, sit at a computer — every
-        workstation opens the real tool it belongs to, and every room has its own board of open
-        work. The lifts in the Dev Wing run both project towers, a floor per project.
+        Nothing here was generated. The office is whatever your team has built, block by block —
+        and any block can be wired to the tool it stands for, so walking up to it and pressing E
+        opens the real thing.
       </p>
-      <div className="grid gap-1.5 sm:grid-cols-2">
-        {rows.map(([key, label]) => (
-          <div key={key} className="flex items-center gap-3 rounded-lg bg-muted/60 px-3 py-2 text-sm">
-            <kbd className="min-w-16 rounded border border-border bg-background px-1.5 py-0.5 text-center font-mono text-[0.65rem]">
-              {key}
-            </kbd>
-            <span className="text-muted-foreground">{label}</span>
-          </div>
-        ))}
-      </div>
+      <div className="grid gap-1.5 sm:grid-cols-2">{walking.map(Row)}</div>
+      {canBuild ? (
+        <>
+          <h3 className="font-heading text-sm font-semibold">Designing the map</h3>
+          <div className="grid gap-1.5 sm:grid-cols-2">{building.map(Row)}</div>
+        </>
+      ) : null}
     </div>
   );
 }

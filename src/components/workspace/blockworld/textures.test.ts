@@ -82,12 +82,17 @@ class Ctx2D {
     }
   }
 
-  drawImage(src: FakeCanvas, dx: number, dy: number): void {
+  /** Nearest-neighbour blit, optionally scaled — the atlas upscales tiles. */
+  drawImage(src: FakeCanvas, dx: number, dy: number, dw?: number, dh?: number): void {
     const from = src.ctx;
     if (!from) throw new Error("drawImage from an unpainted canvas");
-    for (let y = 0; y < from.h; y++) {
-      for (let x = 0; x < from.w; x++) {
-        const i = (y * from.w + x) * 4;
+    const w = dw ?? from.w;
+    const h = dh ?? from.h;
+    for (let y = 0; y < h; y++) {
+      const sy = Math.min(from.h - 1, Math.floor((y * from.h) / h));
+      for (let x = 0; x < w; x++) {
+        const sx = Math.min(from.w - 1, Math.floor((x * from.w) / w));
+        const i = (sy * from.w + sx) * 4;
         this.blend(dx + x, dy + y, {
           r: from.buf[i],
           g: from.buf[i + 1],
@@ -97,6 +102,49 @@ class Ctx2D {
       }
     }
   }
+
+  createImageData(w: number, h: number): FakeImageData {
+    return new FakeImageData(new Uint8ClampedArray(w * h * 4), w, h);
+  }
+
+  getImageData(x: number, y: number, w: number, h: number): FakeImageData {
+    const data = new Uint8ClampedArray(w * h * 4);
+    for (let py = 0; py < h; py++) {
+      for (let pxx = 0; pxx < w; pxx++) {
+        const si = ((y + py) * this.w + (x + pxx)) * 4;
+        const di = (py * w + pxx) * 4;
+        data[di] = this.buf[si];
+        data[di + 1] = this.buf[si + 1];
+        data[di + 2] = this.buf[si + 2];
+        data[di + 3] = Math.round(this.buf[si + 3] * 255);
+      }
+    }
+    return new FakeImageData(data, w, h);
+  }
+
+  putImageData(img: FakeImageData, x: number, y: number): void {
+    for (let py = 0; py < img.height; py++) {
+      for (let pxx = 0; pxx < img.width; pxx++) {
+        const si = (py * img.width + pxx) * 4;
+        const tx = x + pxx;
+        const ty = y + py;
+        if (tx < 0 || ty < 0 || tx >= this.w || ty >= this.h) continue;
+        const di = (ty * this.w + tx) * 4;
+        this.buf[di] = img.data[si];
+        this.buf[di + 1] = img.data[si + 1];
+        this.buf[di + 2] = img.data[si + 2];
+        this.buf[di + 3] = img.data[si + 3] / 255;
+      }
+    }
+  }
+}
+
+class FakeImageData {
+  constructor(
+    readonly data: Uint8ClampedArray,
+    readonly width: number,
+    readonly height: number,
+  ) {}
 }
 
 class FakeCanvas {
@@ -291,7 +339,7 @@ describe("paintAtlas", () => {
   it("gives each carpet tile a darker seam on two edges", () => {
     for (const name of ["CARPET_GRAY", "CARPET_BLUE", "CARPET_GREEN", "CARPET_RED"] as const) {
       const pixels = cell(atlas, TILE[name]);
-      const field = rowOf(pixels, 8);
+      const field = rowAt(pixels, 0.5);
       const left = pixels.filter((_, i) => i % TILE_PX === 0);
       expect(meanLum(rowOf(pixels, 0)), `${name} top seam`).toBeLessThan(meanLum(field) - 4);
       expect(meanLum(left), `${name} left seam`).toBeLessThan(meanLum(field) - 4);
@@ -312,13 +360,16 @@ describe("paintAtlas", () => {
   it("paints an acoustic ceiling tile with a grid edge and a lit LED panel", () => {
     const ceil = cell(atlas, TILE.CEILING_TILE);
     expect(meanLum(ceil)).toBeGreaterThan(215);
-    expect(meanLum(rowOf(ceil, 0))).toBeLessThan(meanLum(rowOf(ceil, 8)) - 8);
+    expect(meanLum(rowOf(ceil, 0))).toBeLessThan(meanLum(rowAt(ceil, 0.5)) - 8);
 
     const light = cell(atlas, TILE.CEILING_LIGHT);
+    // The lit panel is the middle third of the tile, whatever the resolution.
+    const lo = TILE_PX * 0.36;
+    const hi = TILE_PX * 0.64;
     const centre = light.filter((_, i) => {
       const x = i % TILE_PX;
       const y = (i / TILE_PX) | 0;
-      return x > 5 && x < 10 && y > 5 && y < 10;
+      return x > lo && x < hi && y > lo && y < hi;
     });
     expect(meanLum(centre)).toBeGreaterThan(250);
     expect(meanLum(rowOf(light, 0))).toBeLessThan(meanLum(centre) - 20);

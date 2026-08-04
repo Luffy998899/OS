@@ -80,6 +80,7 @@ export function worldFromData(data: WorldData): World {
   }));
 
   const signs: TextSign[] = data.signs.map((s) => ({
+    id: s.id,
     text: s.text,
     x: s.x,
     y: s.y,

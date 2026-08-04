@@ -21,6 +21,7 @@ export type PanelKind =
   | "skills"
   | "client"
   | "missions"
+  | "chat"
   | "rift";
 
 /**
@@ -60,6 +61,8 @@ export type Region = {
 
 /** Flat text rendered onto a wall by the engine (canvas texture on a plane). */
 export type TextSign = {
+  /** Database id when the sign came from the world; absent for a new draft. */
+  id?: string;
   text: string;
   /** Anchor block-space position of the sign's centre. */
   x: number;
@@ -121,6 +124,10 @@ export const idx = (w: { sx: number; sz: number }, x: number, y: number, z: numb
 export const OUT_OF_WORLD = 3;
 
 export function blockAt(w: World, x: number, y: number, z: number): number {
+  // NaN fails every comparison below and would index the array with NaN,
+  // handing callers `undefined` where they expect a block id. Treat it as
+  // solid so a stray NaN stops the player instead of crashing the renderer.
+  if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return OUT_OF_WORLD;
   if (y >= w.sy) return 0;
   if (y < 0) return OUT_OF_WORLD;
   if (x < 0 || z < 0 || x >= w.sx || z >= w.sz) return OUT_OF_WORLD;

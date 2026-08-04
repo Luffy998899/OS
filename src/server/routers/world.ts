@@ -2,7 +2,7 @@ import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 import { router, protectedProcedure } from "../trpc";
 import { BLOCKS } from "@/lib/blockworld/blocks";
-import { WORLD_SIZE, buildEmptyWorld, buildWorld } from "@/lib/blockworld/world";
+import { WORLD_SIZE, buildStarterPad } from "@/lib/blockworld/world";
 import { hasPermission, PERMISSIONS } from "@/lib/auth/permissions";
 
 // The world is data in the database, not something the app generates for you.
@@ -74,7 +74,7 @@ async function ensureWorld(db: typeof import("@/lib/db").db): Promise<void> {
   const meta = await db.worldMeta.findUnique({ where: { id: "world" } });
   if (meta) return;
 
-  const empty = buildEmptyWorld();
+  const empty = buildStarterPad();
   const rows: { x: number; y: number; z: number; blockId: number }[] = [];
   for (let y = 0; y < empty.sy; y++)
     for (let z = 0; z < empty.sz; z++)
@@ -218,105 +218,6 @@ export const worldRouter = router({
     return { revision: await bump(ctx.db) };
   }),
 
-  /**
-   * Stamp the old generated office into the world as a starting point. It is a
-   * template now — nothing regenerates it, and you can edit or wipe it freely.
-   */
-  loadTemplate: protectedProcedure
-    .input(z.object({ replace: z.boolean().default(true) }))
-    .mutation(async ({ ctx, input }) => {
-      assertBuilder(ctx.user);
-      const [rooms, projects] = await Promise.all([
-        ctx.db.room.findMany({ select: { id: true, key: true, name: true, kind: true } }),
-        ctx.db.project.findMany({
-          select: { id: true, name: true, floor: true, buildingKey: true },
-        }),
-      ]);
-      const world = buildWorld({ rooms, projects });
-
-      if (input.replace) {
-        await ctx.db.$transaction([
-          ctx.db.worldBlock.deleteMany({}),
-          ctx.db.worldSign.deleteMany({}),
-          ctx.db.worldPoi.deleteMany({}),
-          ctx.db.worldRegion.deleteMany({}),
-        ]);
-      }
-
-      // Only non-air cells become rows: the template is mostly solid, so this
-      // is written in chunks rather than one enormous statement.
-      const rows: { x: number; y: number; z: number; blockId: number }[] = [];
-      for (let y = 0; y < world.sy; y++)
-        for (let z = 0; z < world.sz; z++)
-          for (let x = 0; x < world.sx; x++) {
-            const id = world.blocks[(y * world.sz + z) * world.sx + x];
-            if (id !== 0) rows.push({ x, y, z, blockId: id });
-          }
-      for (let i = 0; i < rows.length; i += 5000) {
-        await ctx.db.worldBlock.createMany({ data: rows.slice(i, i + 5000) });
-      }
-
-      await ctx.db.worldSign.createMany({
-        data: world.signs.map((s) => ({
-          x: s.x,
-          y: s.y,
-          z: s.z,
-          face: s.face,
-          text: s.text,
-          size: s.size ?? 0.9,
-          color: s.color ?? null,
-          bg: s.bg ?? null,
-        })),
-      });
-      await ctx.db.worldPoi.createMany({
-        data: world.pois
-          // Lifts and rifts teleport rather than open a panel; those are not
-          // expressible as a placed block yet, so the template drops them.
-          .filter((p) => p.panel !== "rift")
-          .map((p) => ({
-            x: Math.floor(p.min.x),
-            y: Math.floor(p.min.y),
-            z: Math.floor(p.min.z),
-            label: p.label,
-            sublabel: p.sublabel ?? null,
-            panel: p.panel,
-            refId: p.refId ?? null,
-            adminOnly: p.adminOnly ?? false,
-          })),
-      });
-      await ctx.db.worldRegion.createMany({
-        data: world.regions.map((r) => ({
-          key: r.key,
-          label: r.label,
-          roomId: r.roomId ?? null,
-          minX: r.min.x,
-          minY: r.min.y,
-          minZ: r.min.z,
-          maxX: r.max.x,
-          maxY: r.max.y,
-          maxZ: r.max.z,
-          lair: r.lair ?? false,
-        })),
-      });
-      await ctx.db.worldMeta.upsert({
-        where: { id: "world" },
-        create: {
-          id: "world",
-          spawnX: world.spawn.x,
-          spawnY: world.spawn.y,
-          spawnZ: world.spawn.z,
-          spawnYaw: world.spawnYaw,
-        },
-        update: {
-          spawnX: world.spawn.x,
-          spawnY: world.spawn.y,
-          spawnZ: world.spawn.z,
-          spawnYaw: world.spawnYaw,
-        },
-      });
-      return { revision: await bump(ctx.db), blocks: rows.length };
-    }),
-
   // ---- signs --------------------------------------------------------------
 
   setSign: protectedProcedure.input(signInput).mutation(async ({ ctx, input }) => {
@@ -438,4 +339,25 @@ export const worldRouter = router({
       });
       return { revision: await bump(ctx.db) };
     }),
+
+  /**
+   * What a wired block can point at. The wiring dialog offers these instead of
+   * free text, so a block can never open a room or client that isn't there.
+   */
+  targets: protectedProcedure.query(async ({ ctx }) => {
+    assertBuilder(ctx.user);
+    const [rooms, clients, projects] = await Promise.all([
+      ctx.db.room.findMany({ select: { id: true, name: true }, orderBy: { name: "asc" } }),
+      ctx.db.client.findMany({
+        select: { id: true, companyName: true },
+        orderBy: { companyName: "asc" },
+      }),
+      ctx.db.project.findMany({ select: { id: true, name: true }, orderBy: { name: "asc" } }),
+    ]);
+    return {
+      rooms,
+      clients: clients.map((c) => ({ id: c.id, name: c.companyName })),
+      projects,
+    };
+  }),
 });
