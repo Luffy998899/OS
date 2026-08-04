@@ -70,19 +70,6 @@ function storey(p: Plot, spec: TowerSpec, n: number): void {
     spec.key === "pipeline" ? B.carpet_blue : B.carpet_green,
   );
 
-  // --- the stair core, north-east corner, climbing south
-  const sx = spec.x0 + TOWER - 4;
-  const sz = spec.z0 + 2;
-  if (n < FLOORS) p.stair(sx, sz, y + 1, STOREY * 2, 1, 2);
-  // A hole in the slab above so the flight actually arrives somewhere.
-  if (n < FLOORS) {
-    p.fill(
-      box(sx, y + STOREY, sz + STOREY * 2 - 3, sx + 1, y + STOREY, sz + STOREY * 2 - 1),
-      "solid",
-      0,
-    );
-  }
-
   // --- the working wall: desk, boards, terminal
   const dx = spec.x0 + 3;
   const dz = spec.z0 + TOWER - 3;
@@ -125,8 +112,34 @@ function storey(p: Plot, spec: TowerSpec, n: number): void {
   });
 }
 
+/** The stairwell, north-east corner, each flight climbing south. */
+function stairCore(p: Plot, spec: TowerSpec, n: number): void {
+  const y = GROUND + (n - 1) * STOREY;
+  const sx = spec.x0 + TOWER - 4;
+  const sz = spec.z0 + 2;
+  const run = STOREY * 2;
+
+  // Open the slab the flight arrives through first, then lay the treads back
+  // into the void — the last two land at the arrival floor's own level.
+  p.fill(box(sx, y + STOREY, sz, sx + 1, y + STOREY, sz + run - 1), "solid", 0);
+
+  // And open the ceiling over the foot of the flight. A storey is four blocks
+  // — slab, two of air, ceiling — which leaves a 1.8 player 0.2 of clearance.
+  // Rising half a block onto the first tread puts their head in the ceiling
+  // tile of the cell they are stepping FROM, and the engine refuses the climb.
+  // The tread columns are cleared by stair(); this is the landing they stand on.
+  p.fill(box(sx - 1, y + STOREY - 1, sz - 1, sx + 2, y + STOREY - 1, sz), "solid", 0);
+
+  p.stair(sx, sz, y + 1, run, 1, 2);
+}
+
 function tower(p: Plot, spec: TowerSpec): void {
   for (let n = 1; n <= FLOORS; n++) storey(p, spec, n);
+  // The flights go in after every slab is down, not alongside their own storey.
+  // A storey paves its floor edge to edge, so a flight built with the storey
+  // below gets buried by the one above — which is why the towers were
+  // climbable to floor 1 and no further.
+  for (let n = 1; n < FLOORS; n++) stairCore(p, spec, n);
 
   const top = GROUND + FLOORS * STOREY;
   const shell = box(spec.x0, top, spec.z0, spec.x0 + TOWER - 1, top, spec.z0 + TOWER - 1);
@@ -138,9 +151,16 @@ function tower(p: Plot, spec: TowerSpec): void {
     spec.accent,
   );
 
-  // Doorway on the plaza side.
+  // Doorway on the plaza side, with the step up to it. The buildings stand a
+  // whole block proud of the paving; without a threshold you have to jump to
+  // get through your own front door.
   const doorX = spec.x0 + Math.floor(TOWER / 2);
   p.fill(box(doorX - 1, GROUND + 1, spec.z0, doorX + 1, GROUND + 2, spec.z0), "solid", 0);
+  p.fill(
+    box(doorX - 1, GROUND, spec.z0 - 1, doorX + 1, GROUND, spec.z0 - 1),
+    "solid",
+    B.step_marble,
+  );
 
   p.region({
     key: `devcity-${spec.key}`,
@@ -173,9 +193,10 @@ function bungalow(p: Plot, x0: number, z0: number): void {
     p.set(x, GROUND + 4, z0 + 5, B.ceiling_light);
   }
 
-  // Doorway, plaza side.
+  // Doorway, plaza side, with the same step up to it the towers get.
   const doorX = x0 + Math.floor(w / 2);
   p.fill(box(doorX - 1, GROUND + 1, z0, doorX + 1, GROUND + 2, z0), "solid", 0);
+  p.fill(box(doorX - 1, GROUND, z0 - 1, doorX + 1, GROUND, z0 - 1), "solid", B.step_marble);
 
   // A bay per tool: bookshelf, a desk with a terminal, a plant.
   const tools = ["Sync AI", "Prompt Library", "Portfolio Site", "Niche Research"];

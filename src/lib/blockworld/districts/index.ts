@@ -5,13 +5,19 @@
 // stamped district is ordinary blocks you can edit, move or delete afterwards.
 
 import { DEV_CITY } from "./dev-city";
-import { MANAGING_HEADS, VIDEO_BAY } from "./rooms";
+import { BOARD_ROOM, MANAGING_HEADS, TASK_HALL, VIDEO_BAY } from "./rooms";
 import type { District } from "./kit";
 
 export type { District, DistrictPlan, NpcDraft, PoiDraft } from "./kit";
 export { Plot, box } from "./kit";
 
-export const DISTRICTS: District[] = [DEV_CITY, VIDEO_BAY, MANAGING_HEADS];
+export const DISTRICTS: District[] = [
+  DEV_CITY,
+  VIDEO_BAY,
+  MANAGING_HEADS,
+  BOARD_ROOM,
+  TASK_HALL,
+];
 
 export function getDistrict(key: string): District | null {
   return DISTRICTS.find((d) => d.key === key) ?? null;

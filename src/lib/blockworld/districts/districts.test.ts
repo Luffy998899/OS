@@ -1,8 +1,23 @@
 import { describe, expect, it } from "vitest";
 import { BLOCKS } from "../blocks";
 import { isBindablePanel } from "../panels";
+import { EYE_HEIGHT } from "../physics";
 import { WORLD_SIZE } from "../world";
-import { box, DISTRICTS, getDistrict, Plot } from "./index";
+import { box, DISTRICTS, getDistrict, Plot, type DistrictPlan } from "./index";
+import { Walkable } from "./walkable";
+
+/** What block-world.tsx aims with. A POI further than this cannot be opened. */
+const INTERACT_RANGE = 4.4;
+
+/** Every spot a player could stand in and open each of a district's POIs. */
+function approaches(plan: DistrictPlan) {
+  const walk = new Walkable(plan);
+  const spots = walk.allSpots();
+  return plan.pois.map((poi) => ({
+    poi,
+    spots: spots.filter((s) => walk.reach(s, EYE_HEIGHT, poi) < INTERACT_RANGE),
+  }));
+}
 
 const ORIGIN = { x: 10, y: 0, z: 10 };
 const built = DISTRICTS.map((d) => ({ d, plan: d.build(ORIGIN) }));
@@ -121,6 +136,28 @@ describe("every district", () => {
     }
   });
 
+  it.each(built)("$d.label puts every point of interest within reach", ({ plan }) => {
+    // A board you cannot get in front of is scenery. This walks the district's
+    // own blocks and checks each POI is openable from somewhere you can stand.
+    for (const { poi, spots } of approaches(plan)) {
+      expect(spots.length, `nowhere to stand and open ${poi.label}`).toBeGreaterThan(0);
+    }
+  });
+
+  it.each(built)("$d.label connects everything it wires up", ({ plan }) => {
+    // And you must be able to walk between them: a door bricked up by a sofa,
+    // a floor with no stair to it, a board sealed in a cupboard all show up
+    // here as a point of interest stranded on its own island.
+    const walk = new Walkable(plan);
+    const found = approaches(plan);
+    if (found.length < 2) return;
+    const island = walk.flood(found[0].spots[0]);
+    for (const { poi, spots } of found) {
+      const joined = spots.some((s) => island.has(`${s.x},${s.y},${s.z}`));
+      expect(joined, `${poi.label} cannot be walked to from ${found[0].poi.label}`).toBe(true);
+    }
+  });
+
   it.each(built)("$d.label is placed relative to its origin", ({ d }) => {
     // Stamped somewhere else, the same district must come out the same shape.
     const a = d.build({ x: 0, y: 0, z: 0 }).blocks;
@@ -167,6 +204,24 @@ describe("Dev City", () => {
     }
   });
 
+  it("can be climbed from the plaza to the top floor", () => {
+    // A storey paves its own slab edge to edge, so the flights have to go in
+    // after all ten are down or each one is buried by the floor above it. This
+    // starts on the paving outside the pipeline tower and walks up.
+    const walk = new Walkable(plan);
+    const island = [...walk.flood({ x: ORIGIN.x + 7, y: ORIGIN.y + 1, z: ORIGIN.z + 12 })].map(
+      (k) => {
+        const [x, y, z] = k.split(",").map(Number);
+        return { x, y, z };
+      },
+    );
+    for (const n of [1, 5, 10]) {
+      const desk = plan.pois.find((p) => p.refId === `pipeline:${n}`)!;
+      const arrived = island.some((s) => walk.reach(s, EYE_HEIGHT, desk) < INTERACT_RANGE);
+      expect(arrived, `floor ${n} cannot be walked to from the plaza`).toBe(true);
+    }
+  });
+
   it("leaves a way in at ground level", () => {
     const solid = new Set<string>();
     for (let i = 0; i < plan.blocks.length; i += 4) {
@@ -205,5 +260,64 @@ describe("the rooms", () => {
   it("gives managing heads the approvals counter", () => {
     const plan = getDistrict("managing-heads")!.build(ORIGIN);
     expect(plan.pois.some((p) => p.panel === "approvals")).toBe(true);
+  });
+});
+
+/** What each cell of a plan ended up holding, by block key. */
+function blockKeys(plan: DistrictPlan): Map<string, string> {
+  const out = new Map<string, string>();
+  for (let i = 0; i < plan.blocks.length; i += 4) {
+    const [x, y, z, id] = plan.blocks.slice(i, i + 4);
+    out.set(`${x},${y},${z}`, BLOCKS[id].key);
+  }
+  return out;
+}
+
+describe("the board room", () => {
+  const plan = getDistrict("board-room")!.build(ORIGIN);
+
+  it("seats the whole team", () => {
+    const seats = [...blockKeys(plan).values()].filter(
+      (k) => k === "chair" || k === "sofa",
+    ).length;
+    expect(seats).toBeGreaterThanOrEqual(30);
+  });
+
+  it("has a board to read from a seat and a lectern to speak from", () => {
+    const conf = plan.pois.filter((p) => p.panel === "conference");
+    expect(conf).toHaveLength(2);
+    // ConferencePanel opens its composer on refId "compose" — the lectern is
+    // for the person calling the meeting, the board is for everyone else.
+    expect(conf.filter((p) => p.refId === "compose")).toHaveLength(1);
+  });
+
+  it("keeps the door lane clear of the sofa run", () => {
+    const walk = new Walkable(plan);
+    // Door, rug, the gap in the sofas, and the chair at the head of the table.
+    for (let z = ORIGIN.z + 13; z <= ORIGIN.z + 16; z++) {
+      expect(walk.stands(ORIGIN.x + 11, ORIGIN.y + 2, z), `blocked at z ${z}`).toBe(true);
+    }
+  });
+});
+
+describe("the task hall", () => {
+  const plan = getDistrict("task-hall")!.build(ORIGIN);
+  const booths = plan.pois.filter((p) => p.label === "Your task wall");
+
+  it("gives every booth its own board, and the squad one of its own", () => {
+    expect(booths).toHaveLength(6);
+    expect(new Set(booths.map((p) => `${p.x},${p.y},${p.z}`)).size).toBe(6);
+    expect(plan.pois.filter((p) => p.label === "Squad board")).toHaveLength(1);
+    for (const p of plan.pois) expect(p.panel).toBe("tasks");
+  });
+
+  it("puts a desk and a seat at every booth", () => {
+    const keys = blockKeys(plan);
+    for (const wall of booths) {
+      const inward = wall.x === ORIGIN.x ? 1 : -1;
+      const foot = ORIGIN.y + 2;
+      expect(keys.get(`${wall.x + inward},${foot},${wall.z}`), "no desk").toBe("desk");
+      expect(keys.get(`${wall.x + inward * 3},${foot},${wall.z}`), "no chair").toBe("chair");
+    }
   });
 });
