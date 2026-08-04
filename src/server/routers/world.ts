@@ -3,6 +3,7 @@ import { TRPCError } from "@trpc/server";
 import { router, protectedProcedure } from "../trpc";
 import { BLOCKS } from "@/lib/blockworld/blocks";
 import { WORLD_SIZE, buildStarterPad } from "@/lib/blockworld/world";
+import { DISTRICTS, getDistrict } from "@/lib/blockworld/districts";
 import { hasPermission, PERMISSIONS } from "@/lib/auth/permissions";
 
 // The world is data in the database, not something the app generates for you.
@@ -101,11 +102,12 @@ export const worldRouter = router({
   /** Everything needed to render the world, in one call. */
   load: protectedProcedure.query(async ({ ctx }) => {
     await ensureWorld(ctx.db);
-    const [blocks, signs, pois, regions, meta] = await Promise.all([
+    const [blocks, signs, pois, regions, npcs, meta] = await Promise.all([
       ctx.db.worldBlock.findMany({ select: { x: true, y: true, z: true, blockId: true } }),
       ctx.db.worldSign.findMany(),
       ctx.db.worldPoi.findMany(),
       ctx.db.worldRegion.findMany(),
+      ctx.db.worldNpc.findMany(),
       ctx.db.worldMeta.findUnique({ where: { id: "world" } }),
     ]);
 
@@ -149,6 +151,20 @@ export const worldRouter = router({
         min: { x: r.minX, y: r.minY, z: r.minZ },
         max: { x: r.maxX, y: r.maxY, z: r.maxZ },
         lair: r.lair,
+      })),
+      npcs: npcs.map((n) => ({
+        id: n.id,
+        key: n.key,
+        name: n.name,
+        role: n.role,
+        kind: n.kind as "staff" | "client",
+        x: n.x,
+        y: n.y,
+        z: n.z,
+        yaw: n.yaw,
+        seated: n.seated,
+        hue: n.hue,
+        poiRef: n.poiRef,
       })),
       spawn: {
         x: meta?.spawnX ?? WORLD_SIZE.sx / 2,
@@ -217,6 +233,162 @@ export const worldRouter = router({
     ]);
     return { revision: await bump(ctx.db) };
   }),
+
+  /** The districts an admin can drop into the world. */
+  districts: protectedProcedure.query(async ({ ctx }) => {
+    assertBuilder(ctx.user);
+    return DISTRICTS.map((d) => ({
+      key: d.key,
+      label: d.label,
+      blurb: d.blurb,
+      size: d.size,
+    }));
+  }),
+
+  /**
+   * Place a whole district in one write.
+   *
+   * Deliberately NOT built on `place`. That path upserts one row at a time
+   * inside a transaction, which is right for a click but would be thousands of
+   * sequential round trips for a building. This clears the footprint and then
+   * `createMany`s in slices, the way the first-run bootstrap does, and bumps the
+   * revision exactly once so every other client rebuilds its scene one time
+   * rather than once per slice.
+   */
+  stampDistrict: protectedProcedure
+    .input(
+      z.object({
+        key: z.string().min(1).max(48),
+        origin: z.object({
+          x: z.number().int(),
+          y: z.number().int(),
+          z: z.number().int(),
+        }),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      assertBuilder(ctx.user);
+      const district = getDistrict(input.key);
+      if (!district) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "No such district." });
+      }
+      const { origin } = input;
+      const far = {
+        x: origin.x + district.size.w,
+        y: origin.y + district.size.h,
+        z: origin.z + district.size.d,
+      };
+      if (
+        !inBounds(origin.x, origin.y, origin.z) ||
+        far.x > WORLD_SIZE.sx ||
+        far.y > WORLD_SIZE.sy ||
+        far.z > WORLD_SIZE.sz
+      ) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: `${district.label} needs ${district.size.w}x${district.size.h}x${district.size.d} and would fall off the map here.`,
+        });
+      }
+
+      const plan = district.build(origin);
+      const rows: { x: number; y: number; z: number; blockId: number }[] = [];
+      for (let i = 0; i < plan.blocks.length; i += 4) {
+        const [x, y, z, blockId] = plan.blocks.slice(i, i + 4);
+        if (inBounds(x, y, z) && validBlock(blockId) && blockId !== 0) {
+          rows.push({ x, y, z, blockId });
+        }
+      }
+
+      const within = {
+        x: { gte: origin.x, lt: far.x },
+        y: { gte: origin.y, lt: far.y },
+        z: { gte: origin.z, lt: far.z },
+      };
+
+      // Re-stamping replaces what was there rather than layering on top of it,
+      // so a district always looks the way it was authored.
+      await ctx.db.$transaction([
+        ctx.db.worldBlock.deleteMany({ where: within }),
+        ctx.db.worldPoi.deleteMany({ where: within }),
+        ctx.db.worldSign.deleteMany({ where: within }),
+        ctx.db.worldRegion.deleteMany({
+          where: { key: { in: plan.regions.map((r) => r.key) } },
+        }),
+        ctx.db.worldNpc.deleteMany({ where: { key: { in: plan.npcs.map((n) => n.key) } } }),
+      ]);
+
+      for (let i = 0; i < rows.length; i += 5000) {
+        await ctx.db.worldBlock.createMany({ data: rows.slice(i, i + 5000) });
+      }
+      if (plan.signs.length > 0) {
+        await ctx.db.worldSign.createMany({
+          data: plan.signs.map((s) => ({
+            x: s.x,
+            y: s.y,
+            z: s.z,
+            face: s.face,
+            text: s.text,
+            size: s.size ?? 0.9,
+            color: s.color ?? null,
+            bg: s.bg ?? null,
+          })),
+        });
+      }
+      if (plan.pois.length > 0) {
+        await ctx.db.worldPoi.createMany({
+          data: plan.pois.map((p) => ({
+            x: p.x,
+            y: p.y,
+            z: p.z,
+            label: p.label,
+            sublabel: p.sublabel ?? null,
+            panel: p.panel,
+            refId: p.refId ?? null,
+            adminOnly: p.adminOnly ?? false,
+          })),
+        });
+      }
+      if (plan.regions.length > 0) {
+        await ctx.db.worldRegion.createMany({
+          data: plan.regions.map((r) => ({
+            key: r.key,
+            label: r.label,
+            roomId: r.roomId ?? null,
+            minX: r.min.x,
+            minY: r.min.y,
+            minZ: r.min.z,
+            maxX: r.max.x,
+            maxY: r.max.y,
+            maxZ: r.max.z,
+            lair: r.lair ?? false,
+          })),
+        });
+      }
+      if (plan.npcs.length > 0) {
+        await ctx.db.worldNpc.createMany({
+          data: plan.npcs.map((n) => ({
+            key: n.key,
+            name: n.name,
+            role: n.role,
+            kind: n.kind,
+            x: n.x,
+            y: n.y,
+            z: n.z,
+            yaw: n.yaw,
+            seated: n.seated ?? false,
+            hue: n.hue,
+          })),
+        });
+      }
+
+      return {
+        revision: await bump(ctx.db),
+        blocks: rows.length,
+        pois: plan.pois.length,
+        npcs: plan.npcs.length,
+        label: district.label,
+      };
+    }),
 
   // ---- signs --------------------------------------------------------------
 
