@@ -22,6 +22,12 @@
       "url": "https://github.com/Nolram12345/DevTextures",
       "licence": "CC0-1.0",
       "credit": "Nolram12345"
+    },
+    {
+      "name": "minetest-mods/computer",
+      "url": "https://github.com/minetest-mods/computer",
+      "licence": "WTFPL",
+      "credit": "Diego Martinez (kaeza) \u2014 decorative computers for Luanti"
     }
   ],
   "tiles": [
@@ -63,6 +69,20 @@
       "kind": "luminance",
       "note": "A stain mask, overlaid on the materials that have no photographic source so they stop reading as flat hand-drawn colour.",
       "url": "https://raw.githubusercontent.com/Nolram12345/DevTextures/master/Surface%20Imperfections/SurfaceImperfection_Stain01-Roughness.png"
+    },
+    {
+      "tile": "SCREEN_ON",
+      "kind": "rgb",
+      "url": "https://raw.githubusercontent.com/minetest-mods/computer/master/textures/computer_monitor_f_desktop.png",
+      "flat": false,
+      "note": "A real desktop on a real LCD. Screens are lit, so the bake leaves their own brightness alone."
+    },
+    {
+      "tile": "RACK",
+      "kind": "rgb",
+      "url": "https://raw.githubusercontent.com/minetest-mods/computer/master/textures/computer_server_f_on.png",
+      "flat": false,
+      "note": "Server rack front, lit status LEDs and all."
     }
   ]
 }
