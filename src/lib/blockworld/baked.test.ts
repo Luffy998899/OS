@@ -7,6 +7,8 @@ import { BAKED, BAKED_SIZE, bakedBytes } from "@/components/workspace/blockworld
 
 const NAMES = Object.keys(BAKED);
 const isNormal = (n: string) => n.endsWith("_N");
+/** Photographs of objects rather than of surfaces — these never tile. */
+const PROP_FACES = new Set(["SCREEN_ON", "RACK"]);
 
 const at = (b: Uint8Array, ch: number, x: number, y: number, k: number) =>
   b[((y % BAKED_SIZE) * BAKED_SIZE + (x % BAKED_SIZE)) * ch + k];
@@ -83,6 +85,7 @@ describe("the baked textures", () => {
         }
       }
       if (inner < BAKED_SIZE * ch) continue; // a flat map has no seam to find
+      if (PROP_FACES.has(name)) continue; // a monitor is not laid edge to edge
       expect(wrap / inner, `${name} shows its seam`).toBeLessThan(1.6);
     }
   });
@@ -92,7 +95,10 @@ describe("the baked textures", () => {
     // repeats the bright patch on every single block — a grid, drawn by the
     // camera rather than by us. The bake flattens it out; this proves it ran.
     for (const name of NAMES) {
-      if (isNormal(name)) continue;
+      // A prop's face is a picture, not a tiling surface: a screen's gradient
+      // IS its content, and flattening it would wash the desktop off the
+      // monitor. Only the materials that repeat across a floor are held flat.
+      if (isNormal(name) || PROP_FACES.has(name)) continue;
       const bytes = bakedBytes(name)!;
       const ch = BAKED[name].channels;
       const q = [0, 0, 0, 0];

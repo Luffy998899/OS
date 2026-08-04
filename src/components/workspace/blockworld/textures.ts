@@ -1238,11 +1238,26 @@ type BakedTile = {
   /** Mean luminance of the source, so tinting preserves the tint's brightness. */
   pivot?: number;
   /**
+   * Wrap-shift the source before sampling. Materials that share a photograph
+   * would otherwise share its every mark, and a street where the paving, the
+   * kerb and the tower all carry the same blemish in the same place is worse
+   * than one where none of them carry any.
+   */
+  offset?: [number, number];
+  /**
    * Drawn over the photograph, in the 32px design space, with alpha. This is
    * how a real surface keeps the parts of the design that are structure rather
    * than material — a suspended ceiling really does have a T-bar every tile.
    */
   overlay?: Painter;
+  /**
+   * Inset the photograph into the middle of the tile and let the drawn painter
+   * provide the surround. A photographed monitor on its own loses the bezel,
+   * the chin and the stand that make it read as a monitor at all — but the part
+   * inside the frame is exactly where a drawing cannot compete. This puts the
+   * real screen behind the real frame.
+   */
+  inset?: number;
 };
 
 /**
@@ -1258,6 +1273,70 @@ const BAKED_TILES: Partial<Record<keyof typeof TILE, BakedTile>> = {
   CARPET_GREEN: { src: "CARPET", tint: "#6c9076", pivot: 119 },
   CARPET_RED: { src: "CARPET", tint: "#9d6a68", pivot: 119 },
   DRYWALL: { src: "WALL", tint: "#cfd0cd", pivot: 142 },
+
+  // The hard surfaces the city is actually made of. These were drawn, and next
+  // to a photographed wall they read as speckled paper — a tower facade with no
+  // panel joint and no depth is the single most visible thing in the skyline.
+  // They borrow the plaster grain, because that is what poured concrete and a
+  // precast panel look like close up, and take their character from the tint and
+  // the joint drawn over the top.
+  CONCRETE: { src: "CEILING", tint: "#9d9d9a", pivot: 221, offset: [0, 0] },
+  STONE: { src: "CEILING", tint: "#8d8d86", pivot: 221, offset: [23, 41] },
+  ROOF: { src: "CEILING", tint: "#5c626b", pivot: 221, offset: [11, 7] },
+  FACADE: {
+    src: "CEILING",
+    tint: "#a9adb2",
+    pivot: 221,
+    offset: [37, 19],
+    overlay: (c) => {
+      // A precast panel: a recessed reveal down one side and along the top, so
+      // a wall of them reads as cladding rather than one poured mass.
+      px(c, 0, 0, TILE_PX, U, "rgba(0,0,0,0.20)");
+      px(c, 0, U, TILE_PX, 1, "rgba(255,255,255,0.16)");
+      px(c, 0, 0, U, TILE_PX, "rgba(0,0,0,0.14)");
+      px(c, U, 0, 1, TILE_PX, "rgba(255,255,255,0.10)");
+    },
+  },
+  PAVING: {
+    src: "CEILING",
+    tint: "#a5a29a",
+    pivot: 221,
+    offset: [51, 29],
+    overlay: (c) => {
+      // A slab joint on two edges — paving really is laid in slabs, so unlike a
+      // carpet's bound edge this grid is the material rather than a mistake.
+      px(c, 0, 0, TILE_PX, 1, "rgba(0,0,0,0.28)");
+      px(c, 0, 0, 1, TILE_PX, "rgba(0,0,0,0.28)");
+      px(c, 0, 1, TILE_PX, 1, "rgba(255,255,255,0.10)");
+      px(c, 1, 0, 1, TILE_PX, "rgba(255,255,255,0.10)");
+    },
+  },
+  MARBLE: {
+    src: "CEILING",
+    tint: "#e6e5e1",
+    pivot: 221,
+    offset: [5, 47],
+    overlay: (c, r) => {
+      // Veining, drawn over a real fine-grained surface rather than over a wash.
+      for (let v = 0; v < 3; v++) {
+        let y = Math.floor(r() * TILE_PX);
+        const a = 0.13 + r() * 0.12;
+        for (let x = 0; x < TILE_PX; x++) {
+          if (r() < 0.35) y += r() < 0.5 ? 1 : -1;
+          if (y < 0 || y >= TILE_PX) continue;
+          px(c, x, y, 1, 1, `rgba(140,136,128,${a})`);
+        }
+      }
+    },
+  },
+  // Acoustic felt is a fibre surface, so it takes the carpet's fibre.
+  ACOUSTIC_FELT: { src: "CARPET", tint: "#8b8884", pivot: 119 },
+
+  // Office tech, photographed. A monitor is the thing you are nose-to-nose with
+  // at every desk in the building, so a drawn approximation of one is the first
+  // thing that gives the room away.
+  MONITOR_ON: { src: "SCREEN_ON", inset: 0.16 },
+  SERVER_RACK: { src: "RACK", inset: 0.1 },
   CEILING_TILE: {
     src: "CEILING",
     tint: "#eceae6",
@@ -1282,8 +1361,15 @@ const BAKED_NORMALS: Partial<Record<keyof typeof TILE, string>> = {
   CARPET_BLUE: "CARPET_N",
   CARPET_GREEN: "CARPET_N",
   CARPET_RED: "CARPET_N",
+  ACOUSTIC_FELT: "CARPET_N",
   DRYWALL: "WALL_N",
+  CONCRETE: "CEILING_N",
+  STONE: "CEILING_N",
+  FACADE: "CEILING_N",
+  PAVING: "CEILING_N",
+  ROOF: "CEILING_N",
   CEILING_TILE: "CEILING_N",
+  MARBLE: "CEILING_N",
 };
 
 /**
@@ -1300,11 +1386,20 @@ function blitBaked(c: Ctx, spec: BakedTile): boolean {
   const img = c.createImageData(BAKED_SIZE, BAKED_SIZE);
   const d = img.data;
 
+  const [ox, oy] = spec.offset ?? [0, 0];
+  const src = (i: number): number => {
+    if (ox === 0 && oy === 0) return i;
+    const x = (i % BAKED_SIZE) + ox;
+    const y = ((i / BAKED_SIZE) | 0) + oy;
+    return (((y % BAKED_SIZE) + BAKED_SIZE) % BAKED_SIZE) * BAKED_SIZE +
+      (((x % BAKED_SIZE) + BAKED_SIZE) % BAKED_SIZE);
+  };
+
   if (channels === 1) {
     const [tr, tg, tb] = parseHex(spec.tint ?? "#ffffff");
     const pivot = spec.pivot ?? 128;
     for (let i = 0; i < n; i++) {
-      const k = bytes[i] / pivot;
+      const k = bytes[src(i)] / pivot;
       d[i * 4] = clamp255(tr * k);
       d[i * 4 + 1] = clamp255(tg * k);
       d[i * 4 + 2] = clamp255(tb * k);
@@ -1312,9 +1407,10 @@ function blitBaked(c: Ctx, spec: BakedTile): boolean {
     }
   } else {
     for (let i = 0; i < n; i++) {
-      d[i * 4] = bytes[i * 3];
-      d[i * 4 + 1] = bytes[i * 3 + 1];
-      d[i * 4 + 2] = bytes[i * 3 + 2];
+      const j = src(i) * 3;
+      d[i * 4] = bytes[j];
+      d[i * 4 + 1] = bytes[j + 1];
+      d[i * 4 + 2] = bytes[j + 2];
       d[i * 4 + 3] = 255;
     }
   }
@@ -1511,6 +1607,21 @@ export function paintAtlas(): HTMLCanvasElement {
     // A photographed material goes straight in at atlas resolution: it has
     // nothing to gain from being drawn at 32px and scaled back up.
     const baked = BAKED_TILES[name];
+    if (baked?.inset) {
+      // Frame drawn, screen photographed.
+      const [design, dc] = makeCanvas(TILE_PX, TILE_PX);
+      PAINTERS[name](dc, mulberry32(t * 7919 + 17));
+      const framed = enrich(design, dc, t * 131 + 7, reliefFor(name), 0);
+      const [tile, c] = makeCanvas(ATLAS_TILE_PX, ATLAS_TILE_PX);
+      c.drawImage(framed, 0, 0);
+      const [photo, pc] = makeCanvas(ATLAS_TILE_PX, ATLAS_TILE_PX);
+      if (blitBaked(pc, baked)) {
+        const m = Math.round(ATLAS_TILE_PX * baked.inset);
+        c.drawImage(photo, m, m, ATLAS_TILE_PX - m * 2, ATLAS_TILE_PX - m * 2);
+      }
+      ctx.drawImage(tile, atlasX(t), atlasY(t));
+      continue;
+    }
     if (baked) {
       const [tile, c] = makeCanvas(ATLAS_TILE_PX, ATLAS_TILE_PX);
       if (blitBaked(c, baked)) {

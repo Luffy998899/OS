@@ -57,6 +57,7 @@ import {
 } from "@/lib/blockworld/build-ops";
 import { paintAtlas, paintNormalAtlas } from "./textures";
 import { WireDialog, type WireCell } from "./wire-dialog";
+import { DistrictPicker } from "./district-picker";
 import {
   FillDialog,
   RegionDialog,
@@ -537,12 +538,13 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
   const [aimLabel, setAimLabel] = useState<string | null>(null);
 
   const [wiring, setWiring] = useState<WireCell | null>(null);
+  const [placing, setPlacing] = useState(false);
   // ---- map design: a two-corner selection, and what you do with it ----
   const [corners, setCorners] = useState<{ a: Cell | null; b: Cell | null }>({ a: null, b: null });
   const [filling, setFilling] = useState<Box | null>(null);
   const [signing, setSigning] = useState<SignDraft | null>(null);
   const [naming, setNaming] = useState<RegionDraft | null>(null);
-  const designOpen = filling !== null || signing !== null || naming !== null;
+  const designOpen = filling !== null || signing !== null || naming !== null || placing;
   /** The keyboard effect is built once per world; the selection changes often. */
   const cornersRef = useRef(corners);
   cornersRef.current = corners;
@@ -572,6 +574,8 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
   const placeMutation = trpc.world.place.useMutation();
   const clearWorld = trpc.world.clear.useMutation();
   const setSpawn = trpc.world.setSpawn.useMutation();
+  const districts = trpc.world.districts.useQuery(undefined, { enabled: canBuild });
+  const stamp = trpc.world.stampDistrict.useMutation({ onError: (e) => toast.error(e.message) });
   const setPoi = trpc.world.setPoi.useMutation({ onError: (e) => toast.error(e.message) });
   const deletePoi = trpc.world.deletePoi.useMutation({ onError: (e) => toast.error(e.message) });
   const setSign = trpc.world.setSign.useMutation({ onError: (e) => toast.error(e.message) });
@@ -1068,7 +1072,7 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
 
     // The people. Staff are scenery that makes the floor feel worked-in;
     // client NPCs stand at their booth so the interaction has a face.
-    const npcRigs: PlayerRig[] = [];
+    const npcRigs: { rig: PlayerRig; seated: boolean }[] = [];
     for (const person of world.npcs) {
       const rig = createPlayerRig({
         name: person.kind === "client" ? `${person.name} · client` : person.name,
@@ -1081,7 +1085,7 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
       rig.setSeated(!!person.seated);
       rig.setStatus(person.kind === "client" ? "busy" : "online");
       scene.add(rig.group);
-      npcRigs.push(rig);
+      npcRigs.push({ rig, seated: !!person.seated });
     }
 
     // POI highlight box.
@@ -1411,6 +1415,14 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
         entry.rig.setPose(entry.phase, isMoving, dt);
         entry.rig.setHeading(entry.tyaw);
       }
+      // The people who live here. Rigs used to be built once and left frozen,
+      // which reads worse than an empty room — somebody at a desk who never
+      // moves is unmistakably a prop.
+      for (const person of npcRigs) {
+        if (person.seated) person.rig.setWorking(now / 1000);
+        else person.rig.setPose(0, false, dt);
+      }
+
       for (const [id, entry] of E.rigs) {
         if (!seen.has(id)) {
           scene.remove(entry.rig.group);
@@ -1481,9 +1493,9 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
         entry.rig.dispose();
       }
       E.rigs.clear();
-      for (const rig of npcRigs) {
-        scene.remove(rig.group);
-        rig.dispose();
+      for (const person of npcRigs) {
+        scene.remove(person.rig.group);
+        person.rig.dispose();
       }
       E.remesh = null;
       for (const [, made] of chunkMeshes) {
@@ -1526,6 +1538,7 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
           setFilling(null);
           setSigning(null);
           setNaming(null);
+          setPlacing(false);
           e.preventDefault();
         } else if (wiringRef.current) {
           setWiring(null);
@@ -1719,6 +1732,10 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
           openOverlay({ kind: "bounties" });
           return;
         case "KeyT":
+          // The day the owner set for you, wherever you are standing.
+          openOverlay({ kind: "timetable" });
+          return;
+        case "KeyK":
           openOverlay({ kind: "skills" });
           return;
         case "KeyM":
@@ -1790,13 +1807,27 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
   );
   const online = state.data?.online ?? 0;
 
-  const cityBuildingFor = (refId: string | undefined): "pipeline" | "complete" | "tools" => {
-    if (!refId || refId === "tools") return "tools";
+  /**
+   * Which building and storey a project desk opens.
+   *
+   * A district's floor carries `building:storey` — the tower is built once and
+   * stands still, while the projects inside it are delivered and restacked, so
+   * binding to a position keeps the desk meaningful. A hand-wired desk can still
+   * carry a project id, and that resolves to wherever that project currently is.
+   */
+  const cityTargetFor = (
+    refId: string | undefined,
+  ): { building: "pipeline" | "complete" | "tools"; floor?: number } => {
+    const asBuilding = (key: string): "pipeline" | "complete" | "tools" =>
+      key.includes("tool") ? "tools" : key.includes("complete") ? "complete" : "pipeline";
+    if (!refId) return { building: "tools" };
+    const slot = /^(pipeline|complete|tools):(\d+)$/.exec(refId);
+    if (slot) {
+      return { building: slot[1] as "pipeline" | "complete" | "tools", floor: Number(slot[2]) };
+    }
+    if (refId === "tools") return { building: "tools" };
     const p = projects?.find((pr) => pr.id === refId);
-    const key = p?.buildingKey ?? "";
-    if (key.includes("tool")) return "tools";
-    if (key.includes("complete")) return "complete";
-    return "pipeline";
+    return { building: asBuilding(p?.buildingKey ?? ""), floor: p?.floor };
   };
 
   return (
@@ -1938,7 +1969,8 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
             [
               ["C", "Chat", "chat"],
               ["B", "Bounties", "bounties"],
-              ["T", "Skills", "skills"],
+              ["T", "Day", "timetable"],
+              ["K", "Skills", "skills"],
               ["M", "Map", "map"],
               ["Tab", "Crew", "roster"],
               ["O", "View", "settings"],
@@ -1984,6 +2016,12 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
       {/* World management — the destructive bits live behind build mode */}
       {buildMode && !overlay ? (
         <div className="absolute top-24 right-3 flex w-44 flex-col gap-1.5">
+          <button
+            onClick={() => setPlacing(true)}
+            className="rounded-lg bg-black/60 px-3 py-1.5 text-xs font-medium text-[#7cc4ff] backdrop-blur-sm transition-colors hover:bg-black/80"
+          >
+            Place a district…
+          </button>
           <button
             onClick={() => {
               if (!confirm("Delete every block, sign and interactive spot? This cannot be undone.")) return;
@@ -2163,6 +2201,35 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
         />
       ) : null}
 
+      {/* Place a whole district */}
+      {placing ? (
+        <DistrictPicker
+          districts={districts.data ?? []}
+          busy={stamp.isPending}
+          at={{
+            x: Math.floor(E.st.pos.x),
+            y: 0,
+            z: Math.floor(E.st.pos.z),
+          }}
+          onClose={() => setPlacing(false)}
+          onPlace={(key, origin) => {
+            stamp.mutate(
+              { key, origin },
+              {
+                onSuccess: (res) => {
+                  appliedRevision.current = res.revision;
+                  void loaded.refetch().then(() => setWorldEpoch((n) => n + 1));
+                  toast.success(`${res.label} is up`, {
+                    description: `${res.blocks.toLocaleString()} blocks, ${res.pois} things to walk up to.`,
+                  });
+                  setPlacing(false);
+                },
+              },
+            );
+          }}
+        />
+      ) : null}
+
       {/* Hint line */}
       {!overlay && !locked ? (
         <p className="absolute bottom-24 left-1/2 -translate-x-1/2 rounded-full bg-black/45 px-3 py-1 font-mono text-[0.62rem] tracking-wide text-white/60">
@@ -2212,7 +2279,10 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
               ) : null}
               {overlay.kind === "video" ? <VideoBayPanel /> : null}
               {overlay.kind === "city" ? (
-                <DevCityPanel initialBuilding={cityBuildingFor(overlay.refId)} />
+                <DevCityPanel
+                  initialBuilding={cityTargetFor(overlay.refId).building}
+                  initialFloor={cityTargetFor(overlay.refId).floor}
+                />
               ) : null}
               {overlay.kind === "conference" ? (
                 <ConferencePanel initialCompose={overlay.refId === "compose"} />
@@ -2579,7 +2649,8 @@ function HelpPanel({ canBuild }: { canBuild: boolean }) {
     ["Mouse", "Look (click the view to capture the mouse)"],
     ["E / Click", "Use the thing you are looking at"],
     ["C", "Chat — servers and channels, like Slack"],
-    ["B / T / M", "Bounties · Skill tree · Floor plan"],
+    ["B / T", "Bounties · Your day, as the owner set it"],
+    ["K / M", "Skill tree · Floor plan"],
     ["Tab / H / O", "Crew · Help · View settings"],
     ["F", "Fullscreen"],
     ["Esc", "Close panel → release mouse → leave"],

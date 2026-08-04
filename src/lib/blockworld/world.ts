@@ -11,9 +11,12 @@
 import { B } from "./blocks";
 import type { World } from "./types";
 
-const SX = 76;
-const SY = 76;
-const SZ = 72;
+// Room for a city. The buffer is one byte per cell, so this is 2.4 MB in memory
+// and costs nothing on the wire — `load` only ever sends blocks somebody placed.
+// Empty chunks produce no meshes, so the extra volume is a loop, not geometry.
+const SX = 160;
+const SY = 96;
+const SZ = 160;
 
 /** Dimensions of the editable world, for callers that need them up front. */
 export const WORLD_SIZE = { sx: SX, sy: SY, sz: SZ } as const;

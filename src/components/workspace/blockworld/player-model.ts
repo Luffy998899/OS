@@ -11,6 +11,12 @@ export type PlayerRig = {
   setPose(walkPhase: number, moving: boolean, dt: number): void;
   /** Sit the rig down: thighs forward, shins down, arms resting on the desk. */
   setSeated(seated: boolean): void;
+  /**
+   * Keep a seated figure working. `t` is elapsed seconds; the arms tap and the
+   * head shifts, which is the whole difference between somebody editing and a
+   * mannequin propped at a desk.
+   */
+  setWorking(t: number): void;
   setHeading(yaw: number): void;
   setStatus(status: string): void;
   dispose(): void;
@@ -308,6 +314,17 @@ export function createPlayerRig(opts: {
         const k = Math.min(1, dt / EASE_S);
         for (const limb of limbs) limb.rotation.x -= limb.rotation.x * k;
       }
+    },
+
+    setWorking(t) {
+      if (!seated) return;
+      // Two hands at slightly different rates so it reads as typing rather
+      // than a metronome, plus a slow lean toward the screen.
+      const rest = -Math.PI / 3;
+      armL.rotation.x = rest + Math.sin(t * 9.0) * 0.10;
+      armR.rotation.x = rest + Math.sin(t * 11.3 + 1.1) * 0.10;
+      head.rotation.x = Math.sin(t * 0.7) * 0.05 + 0.08;
+      head.rotation.y = Math.sin(t * 0.31) * 0.12;
     },
 
     setSeated(next) {

@@ -748,6 +748,27 @@ model WorldRegion {
   lair    Boolean @default(false)
 }
 
+// Somebody standing in the world who is not a player: the editor at the timeline,
+// a receptionist, a client waiting at their booth. Placed by a district or by
+// hand; `key` is stable so re-stamping a district moves its people rather than
+// piling up duplicates.
+model WorldNpc {
+  id      String  @id @default(cuid())
+  key     String  @unique
+  name    String
+  role    String
+  kind    String  @default("staff") // staff | client
+  x       Float
+  y       Float
+  z       Float
+  yaw     Float   @default(0)
+  seated  Boolean @default(false)
+  hue     Int     @default(200)
+  /** For a client NPC: the point of interest that opens their work. */
+  poiRef    String?
+  updatedAt DateTime @updatedAt
+}
+
 // One row. Where new arrivals spawn, and a revision counter clients poll so
 // they can pull in everyone else's edits.
 model WorldMeta {

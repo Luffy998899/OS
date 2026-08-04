@@ -6,7 +6,7 @@
 // bungalow lists the internal tools. Each floor carries a client share link and
 // an interactive data board for the site's facts.
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ArrowLeft,
   Building2,
@@ -73,13 +73,34 @@ const AUDIT_STYLE: Record<string, string> = {
   unaudited: "bg-muted text-muted-foreground",
 };
 
-export function DevCityPanel({ initialBuilding = "pipeline" }: { initialBuilding?: BuildingKey }) {
+export function DevCityPanel({
+  initialBuilding = "pipeline",
+  initialFloor,
+}: {
+  initialBuilding?: BuildingKey;
+  /**
+   * Open straight onto this storey. A desk in the world is bound to a position
+   * in the tower, so walking up to floor 7 should open floor 7 — not the list
+   * of everything in the building and a hunt for the right row.
+   */
+  initialFloor?: number;
+}) {
   const currentUser = useCurrentUser();
   const canManage = hasPermission(currentUser.permissions, PERMISSIONS.TASKS_ASSIGN);
   const utils = trpc.useUtils();
   const city = trpc.project.city.useQuery();
   const [building, setBuilding] = useState<BuildingKey>(initialBuilding);
   const [floorId, setFloorId] = useState<string | null>(null);
+  // Resolve the storey a desk asked for once its building has loaded. Done in
+  // an effect rather than initial state because the city arrives asynchronously,
+  // and only once — after that the panel is the user's to navigate.
+  const jumped = useRef(false);
+  useEffect(() => {
+    if (jumped.current || initialFloor === undefined || !city.data) return;
+    jumped.current = true;
+    const match = city.data[initialBuilding]?.find((f) => f.floor === initialFloor);
+    if (match) setFloorId(match.id);
+  }, [city.data, initialBuilding, initialFloor]);
   const [createOpen, setCreateOpen] = useState(false);
 
   const refresh = () => utils.project.city.invalidate();

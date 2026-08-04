@@ -33,6 +33,20 @@ export type WorldData = {
     y: number;
     z: number;
   }[];
+  npcs: {
+    id: string;
+    key: string;
+    name: string;
+    role: string;
+    kind: "staff" | "client";
+    x: number;
+    y: number;
+    z: number;
+    yaw: number;
+    seated: boolean;
+    hue: number;
+    poiRef: string | null;
+  }[];
   regions: {
     key: string;
     label: string;
@@ -101,7 +115,19 @@ export function worldFromData(data: WorldData): World {
     pois,
     regions,
     signs,
-    npcs: [],
+    npcs: data.npcs.map((n) => ({
+      id: n.id,
+      name: n.name,
+      role: n.role,
+      kind: n.kind,
+      x: n.x,
+      y: n.y,
+      z: n.z,
+      yaw: n.yaw,
+      seated: n.seated,
+      hue: n.hue,
+      poiId: n.poiRef ?? undefined,
+    })),
     // Nothing generates a lair any more; keep the volume off the map so the
     // ambience never triggers on a world nobody built one in.
     lair: { min: { x: -1, y: -1, z: -1 }, max: { x: -1, y: -1, z: -1 } },

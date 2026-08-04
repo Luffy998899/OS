@@ -18,6 +18,7 @@ const emptyData = (over: Partial<WorldData> = {}): WorldData => ({
   blocks: [],
   signs: [],
   pois: [],
+  npcs: [],
   regions: [],
   spawn: { x: 8, y: 1, z: 8, yaw: 0 },
   revision: 0,
