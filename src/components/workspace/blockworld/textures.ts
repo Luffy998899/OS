@@ -25,6 +25,7 @@ import {
   TILE,
   TILE_PX as ATLAS_TILE_PX,
 } from "@/lib/blockworld/blocks";
+import { BAKED_SIZE, bakedBytes } from "./baked-textures";
 
 /**
  * Painters address a 32-pixel design space. The atlas tile is larger than that
@@ -133,6 +134,29 @@ function vgrad(c: Ctx, top: string, bottom: string): void {
   }
 }
 
+/**
+ * The same two tones as a gradient, but with no direction to them.
+ *
+ * A top-to-bottom gradient is right on an object — it reads as the thing being
+ * lit from above. On a material that tiles it is a trap: every block boundary
+ * becomes a hard step from the dark bottom of one tile to the light top of the
+ * next, and a floor turns into a grid. Field materials get soft, directionless
+ * mottling instead, which is what a large surface actually looks like.
+ */
+function field(c: Ctx, a: string, b: string, seed: Rand): void {
+  fill(c, mix(a, b, 0.5));
+  for (let y = 0; y < TILE_PX; y++) {
+    for (let x = 0; x < TILE_PX; x++) {
+      // Wrapping cosines: gentle patches that continue across the tile edge.
+      const n =
+        Math.cos((x / TILE_PX) * Math.PI * 2) * Math.cos((y / TILE_PX) * Math.PI * 2) * 0.5 +
+        Math.cos((x / TILE_PX) * Math.PI * 4 + 1.7) * Math.cos((y / TILE_PX) * Math.PI * 2 + 0.9) * 0.5;
+      px(c, x, y, 1, 1, n > 0 ? withAlpha(a, n * 0.5) : withAlpha(b, -n * 0.5));
+    }
+  }
+  seed();
+}
+
 /** A horizontal gradient across the whole tile. */
 function hgrad(c: Ctx, left: string, right: string): void {
   for (let x = 0; x < TILE_PX; x++) {
@@ -232,43 +256,31 @@ function crack(c: Ctx, r: Rand, color: string): void {
  * mat. Laid out over a floor these read as mat tiles rather than broadloom.
  */
 function carpet(c: Ctx, r: Rand, base: string, flecks: string[]): void {
-  vgrad(c, shade(base, 7), shade(base, -7));
-
-  // The slats: a fine repeating run with a darker gap between each pair.
-  for (let y = 0; y < TILE_PX; y++) {
-    const inGap = y % 3 === 0;
-    px(c, 0, y, TILE_PX, 1, inGap ? "rgba(0,0,0,0.16)" : "rgba(255,255,255,0.05)");
-  }
-  // Warp threads crossing the slats, so the weave reads in both directions.
-  for (let x = 0; x < TILE_PX; x += 4) {
-    px(c, x, 0, 1, TILE_PX, "rgba(0,0,0,0.07)");
-    px(c, x + 1, 0, 1, TILE_PX, "rgba(255,255,255,0.05)");
-  }
-  speckle(c, r, flecks, 0.1);
-  grain(c, r, 7, 0.4);
-
-  // The bound edge: a dark border all the way round, like the reference mat.
-  const band = shade(base, -74);
-  border(c, band, U);
-  px(c, U, U, TILE_PX - U * 2, 1, "rgba(0,0,0,0.22)");
-  px(c, 0, 0, TILE_PX, 1, shade(band, 14));
+  // Fallback only: the carpets in the office are photographs (see BAKED_TILES).
+  // This runs if the baked data is ever missing, so it must not reintroduce the
+  // bug that made a carpeted floor read as a grid of bath mats — no bound edge
+  // and no corner-to-corner gradient. Both of those are invisible on one tile
+  // and unmistakable once a hundred of them are laid side by side.
+  fill(c, base);
+  speckle(c, r, flecks, 0.35);
+  speckle(c, r, [shade(base, -18), shade(base, 16)], 0.3);
+  grain(c, r, 22, 0.9);
 }
 
 /** Flat painted plaster: soft vertical wash, roller texture, corner bevel. */
 function paintedWall(c: Ctx, r: Rand, base: string): void {
-  vgrad(c, shade(base, 8), shade(base, -8));
+  field(c, shade(base, 8), shade(base, -8), r);
   grain(c, r, 7, 0.7);
   // Faint roller streaks.
   for (let i = 0; i < 4; i++) {
     const x = Math.floor(r() * TILE_PX);
     px(c, x, 0, 1, TILE_PX, `rgba(255,255,255,0.05)`);
   }
-  bevel(c, shade(base, 16), shade(base, -20), 1);
 }
 
 /** Wood veneer with a run of grain lines along one axis. */
 function veneer(c: Ctx, r: Rand, base: string, dark: string, light: string): void {
-  vgrad(c, shade(base, 8), shade(base, -8));
+  field(c, shade(base, 8), shade(base, -8), r);
   // Long grain, drifting slightly so it never looks like a barcode.
   for (let g = 0; g < 7; g++) {
     let y = Math.floor(r() * TILE_PX);
@@ -280,10 +292,11 @@ function veneer(c: Ctx, r: Rand, base: string, dark: string, light: string): voi
       px(c, x, y, 1, 1, withAlpha(tone, a));
     }
   }
-  // Board seam across the plank, and the lit edge.
-  px(c, 0, 0, TILE_PX, 1, shade(base, -26));
+  // No board seam either. One dark line along the top of every tile sounds
+  // like a plank joint, but laid out it is a grid of plank ends in perfect
+  // rows, which no floor has — real boards stagger. The grain carries the
+  // material on its own.
   grain(c, r, 6, 0.4);
-  bevel(c, shade(base, 14), shade(base, -18), 1);
 }
 
 /** Brushed metal: a directional sheen plus fine scratches. */
@@ -434,7 +447,7 @@ const PAINTERS: Record<keyof typeof TILE, Painter> = {
   },
 
   // ---- timber + hard floors ----
-  WOOD_VENEER: (c, r) => veneer(c, r, "#b98d55", "#8d6539", "#d3ab73"),
+  WOOD_VENEER: (c, r) => veneer(c, r, "#b0906b", "#8b7150", "#c8ac86"),
 
   WOOD_DARK: (c, r) => {
     // The executive desk's pedestal from the reference: dark mahogany with a
@@ -456,15 +469,14 @@ const PAINTERS: Record<keyof typeof TILE, Painter> = {
   },
 
   CONCRETE: (c, r) => {
-    vgrad(c, "#a4a4a1", "#918f8c");
+    field(c, "#a4a4a1", "#918f8c", r);
     speckle(c, r, ["#8e8c89", "#adaba7", "#999794"], 0.35);
     grain(c, r, 9, 0.7);
     crack(c, r, "rgba(90,90,88,0.5)");
-    bevel(c, "#b6b6b3", "#75736f", 1);
   },
 
   MARBLE: (c, r) => {
-    vgrad(c, "#eeeae1", "#ded9cf");
+    field(c, "#eeeae1", "#ded9cf", r);
     // Veining: pale grey rivers wandering across the slab.
     for (let v = 0; v < 3; v++) {
       let y = Math.floor(r() * TILE_PX);
@@ -477,7 +489,6 @@ const PAINTERS: Record<keyof typeof TILE, Painter> = {
       }
     }
     grain(c, r, 5, 0.4);
-    bevel(c, "#ffffff", "#bcb7ac", 1);
   },
 
   PAVING: (c, r) => {
@@ -835,26 +846,24 @@ const PAINTERS: Record<keyof typeof TILE, Painter> = {
 
   ROOF: (c, r) => {
     // Single-ply membrane with welded seams and ballast grit.
-    vgrad(c, "#525860", "#414750");
+    field(c, "#525860", "#414750", r);
     speckle(c, r, ["#474d55", "#5b6169", "#3c424a"], 0.4);
     grain(c, r, 8, 0.6);
     px(c, 0, Math.floor(TILE_PX * 0.5), TILE_PX, 1, "#333940");
     px(c, 0, Math.floor(TILE_PX * 0.5) + 1, TILE_PX, 1, "#5f656d");
-    bevel(c, "#646a72", "#31363d", 1);
   },
 
   STONE: (c, r) => {
-    vgrad(c, "#95958f", "#7e7e79");
+    field(c, "#95958f", "#7e7e79", r);
     speckle(c, r, ["#8a8a85", "#a0a09a", "#767671"], 0.45);
     grain(c, r, 10, 0.7);
     crack(c, r, "rgba(70,70,66,0.55)");
     crack(c, r, "rgba(70,70,66,0.4)");
-    bevel(c, "#a6a6a0", "#65655f", 1);
   },
 
   // ---- the Upside Down ----
   LAIR_STONE: (c, r) => {
-    vgrad(c, "#2b2130", "#1c1521");
+    field(c, "#2b2130", "#1c1521", r);
     speckle(c, r, ["#241c29", "#332639", "#191320"], 0.45);
     grain(c, r, 8, 0.6);
     // Wet, veined surface.
@@ -1208,6 +1217,112 @@ const PAINTERS: Record<keyof typeof TILE, Painter> = {
 };
 
 // ---------------------------------------------------------------------------
+// Real materials
+//
+// Some surfaces are not drawn at all — they are photographs of the real thing,
+// reduced to atlas tiles by scripts/bake-textures.mjs and compiled in. A hand
+// drawn carpet was never going to read as carpet: measured against a real one
+// it had a third of the tonal variation, arranged in regular stripes instead of
+// fibre. These tiles skip the painter entirely.
+//
+// The four carpet colours share one photographed fibre channel and differ only
+// by tint, which is how a real texture pack does recolours — it keeps the
+// variants consistent and stores one tile instead of four.
+// ---------------------------------------------------------------------------
+
+type BakedTile = {
+  /** Key in the generated BAKED table. */
+  src: string;
+  /** Applied to a single-channel source to colour it. */
+  tint?: string;
+  /** Mean luminance of the source, so tinting preserves the tint's brightness. */
+  pivot?: number;
+  /**
+   * Drawn over the photograph, in the 32px design space, with alpha. This is
+   * how a real surface keeps the parts of the design that are structure rather
+   * than material — a suspended ceiling really does have a T-bar every tile.
+   */
+  overlay?: Painter;
+};
+
+/**
+ * Every source here is photographed at a deliberately yellowed, grimy value —
+ * they were made for a horror game. The grain and the relief are exactly what
+ * an office floor and wall look like; the colour is not. So all of them are
+ * carried as a luminance channel and tinted, which takes the material and
+ * leaves the mood behind.
+ */
+const BAKED_TILES: Partial<Record<keyof typeof TILE, BakedTile>> = {
+  CARPET_GRAY: { src: "CARPET", tint: "#8f9195", pivot: 119 },
+  CARPET_BLUE: { src: "CARPET", tint: "#61789e", pivot: 119 },
+  CARPET_GREEN: { src: "CARPET", tint: "#6c9076", pivot: 119 },
+  CARPET_RED: { src: "CARPET", tint: "#9d6a68", pivot: 119 },
+  DRYWALL: { src: "WALL", tint: "#cfd0cd", pivot: 142 },
+  CEILING_TILE: {
+    src: "CEILING",
+    tint: "#eceae6",
+    pivot: 221,
+    overlay: (c) => {
+      // The T-bar the tile sits in: a dark channel along two edges with a lit
+      // face below it. Unlike a carpet's bound edge this grid is real — it is
+      // what a suspended ceiling looks like from underneath.
+      px(c, 0, 0, TILE_PX, U, "#c3c1ba");
+      px(c, 0, 0, U, TILE_PX, "#c3c1ba");
+      px(c, 0, 0, TILE_PX, 1, "#a9a7a0");
+      px(c, 0, 0, 1, TILE_PX, "#a9a7a0");
+      px(c, 0, U, TILE_PX, 1, "#fbfaf6");
+      px(c, U, 0, 1, TILE_PX, "#fbfaf6");
+    },
+  },
+};
+
+/** The photographed normal maps, keyed the same way. */
+const BAKED_NORMALS: Partial<Record<keyof typeof TILE, string>> = {
+  CARPET_GRAY: "CARPET_N",
+  CARPET_BLUE: "CARPET_N",
+  CARPET_GREEN: "CARPET_N",
+  CARPET_RED: "CARPET_N",
+  DRYWALL: "WALL_N",
+  CEILING_TILE: "CEILING_N",
+};
+
+/**
+ * Write a baked texture into a tile canvas at atlas resolution. Single-channel
+ * sources are tinted: the luminance is taken as a multiplier around the
+ * source's own mean, so the tint keeps its colour and the photograph keeps its
+ * contrast.
+ */
+function blitBaked(c: Ctx, spec: BakedTile): boolean {
+  const bytes = bakedBytes(spec.src);
+  if (!bytes || BAKED_SIZE !== ATLAS_TILE_PX) return false;
+  const n = BAKED_SIZE * BAKED_SIZE;
+  const channels = bytes.length / n;
+  const img = c.createImageData(BAKED_SIZE, BAKED_SIZE);
+  const d = img.data;
+
+  if (channels === 1) {
+    const [tr, tg, tb] = parseHex(spec.tint ?? "#ffffff");
+    const pivot = spec.pivot ?? 128;
+    for (let i = 0; i < n; i++) {
+      const k = bytes[i] / pivot;
+      d[i * 4] = clamp255(tr * k);
+      d[i * 4 + 1] = clamp255(tg * k);
+      d[i * 4 + 2] = clamp255(tb * k);
+      d[i * 4 + 3] = 255;
+    }
+  } else {
+    for (let i = 0; i < n; i++) {
+      d[i * 4] = bytes[i * 3];
+      d[i * 4 + 1] = bytes[i * 3 + 1];
+      d[i * 4 + 2] = bytes[i * 3 + 2];
+      d[i * 4 + 3] = 255;
+    }
+  }
+  c.putImageData(img, 0, 0);
+  return true;
+}
+
+// ---------------------------------------------------------------------------
 // Detail pass: turning a 32px design into a real material
 //
 // A texture pack looks photographic for two reasons that have nothing to do
@@ -1344,22 +1459,73 @@ function reliefFor(name: string): number {
   return 0.45;
 }
 
+const atlasX = (t: number): number => (t % ATLAS_COLS) * ATLAS_TILE_PX;
+const atlasY = (t: number): number => ((t / ATLAS_COLS) | 0) * ATLAS_TILE_PX;
+
 /** Paint the full atlas: one tile per TILE index, at atlas resolution. */
 export function paintAtlas(): HTMLCanvasElement {
   const [atlas, ctx] = makeCanvas(ATLAS_COLS * ATLAS_TILE_PX, ATLAS_ROWS * ATLAS_TILE_PX);
   ctx.imageSmoothingEnabled = false;
   for (const name of Object.keys(TILE) as (keyof typeof TILE)[]) {
     const t = TILE[name];
+
+    // A photographed material goes straight in at atlas resolution: it has
+    // nothing to gain from being drawn at 32px and scaled back up.
+    const baked = BAKED_TILES[name];
+    if (baked) {
+      const [tile, c] = makeCanvas(ATLAS_TILE_PX, ATLAS_TILE_PX);
+      if (blitBaked(c, baked)) {
+        ctx.drawImage(tile, atlasX(t), atlasY(t));
+        if (baked.overlay) {
+          // Drawn at design scale onto a clear canvas, then composited up — the
+          // alpha is what putImageData cannot do, hence the second pass.
+          const [over, oc] = makeCanvas(TILE_PX, TILE_PX);
+          baked.overlay(oc, mulberry32(t * 7919 + 17));
+          ctx.drawImage(over, atlasX(t), atlasY(t), ATLAS_TILE_PX, ATLAS_TILE_PX);
+        }
+        continue;
+      }
+    }
+
     // Each tile paints on its own canvas so speckle never bleeds across tiles
     // and transparent tiles start from a clean alpha=0 surface.
     const [tile, c] = makeCanvas(TILE_PX, TILE_PX);
     PAINTERS[name](c, mulberry32(t * 7919 + 17));
     const finished = enrich(tile, c, t * 131 + 7, reliefFor(name));
-    ctx.drawImage(
-      finished,
-      (t % ATLAS_COLS) * ATLAS_TILE_PX,
-      ((t / ATLAS_COLS) | 0) * ATLAS_TILE_PX,
-    );
+    ctx.drawImage(finished, atlasX(t), atlasY(t));
+  }
+  return atlas;
+}
+
+/**
+ * The companion normal atlas: same layout, one tile per TILE index.
+ *
+ * Only the photographed materials carry real relief. Everything else is filled
+ * flat — (128,128,255) is "straight out of the surface", which leaves those
+ * faces lit exactly as they were before.
+ */
+export function paintNormalAtlas(): HTMLCanvasElement {
+  const [atlas, ctx] = makeCanvas(ATLAS_COLS * ATLAS_TILE_PX, ATLAS_ROWS * ATLAS_TILE_PX);
+  ctx.imageSmoothingEnabled = false;
+  ctx.fillStyle = "rgb(128,128,255)";
+  ctx.fillRect(0, 0, ATLAS_COLS * ATLAS_TILE_PX, ATLAS_ROWS * ATLAS_TILE_PX);
+
+  for (const name of Object.keys(TILE) as (keyof typeof TILE)[]) {
+    const src = BAKED_NORMALS[name];
+    if (!src) continue;
+    const bytes = bakedBytes(src);
+    if (!bytes || BAKED_SIZE !== ATLAS_TILE_PX) continue;
+    const [tile, c] = makeCanvas(ATLAS_TILE_PX, ATLAS_TILE_PX);
+    const n = BAKED_SIZE * BAKED_SIZE;
+    const img = c.createImageData(BAKED_SIZE, BAKED_SIZE);
+    for (let i = 0; i < n; i++) {
+      img.data[i * 4] = bytes[i * 3];
+      img.data[i * 4 + 1] = bytes[i * 3 + 1];
+      img.data[i * 4 + 2] = bytes[i * 3 + 2];
+      img.data[i * 4 + 3] = 255;
+    }
+    c.putImageData(img, 0, 0);
+    ctx.drawImage(tile, atlasX(TILE[name]), atlasY(TILE[name]));
   }
   return atlas;
 }

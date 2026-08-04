@@ -13,10 +13,12 @@ export type MeshArrays = {
   indices: Uint32Array;
 };
 
-// Tiles are packed edge to edge, so a mipmapped face would drag its neighbour
-// in at the seam. Two texels of inset keeps the early mip levels — the ones
-// you actually see — sampling inside the tile they belong to.
-const UV_INSET = 2 / (TILE_PX * ATLAS_COLS);
+// Half a texel. Tiles are packed edge to edge, so sampling has to stop inside
+// the tile or a face drags its neighbour in at the seam. Half a texel lands on
+// the centre of the edge texel: every one of the 64 texels then appears at the
+// same width across a face, where a wider inset would visibly squeeze the ones
+// at the edges and throw away 6% of a tile that only has 64 texels to give.
+const UV_INSET = 0.5 / (TILE_PX * ATLAS_COLS);
 const AO_LEVELS = [1.0, 0.85, 0.72, 0.6];
 const CUTOUT_KEYS = new Set([
   "glass",
@@ -187,6 +189,13 @@ function cornerAO(w: World, x: number, y: number, z: number, f: Face, du: number
   return AO_LEVELS[occ];
 }
 
+/** Deterministic 0..1 from a block position. Same cell, same value, always. */
+function hash3(x: number, y: number, z: number): number {
+  let h = (x * 374761393 + y * 668265263 + z * 1274126177) | 0;
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+}
+
 const CORNER_UV: ReadonlyArray<readonly [number, number]> = [
   [0, 0],
   [1, 0],
@@ -194,7 +203,24 @@ const CORNER_UV: ReadonlyArray<readonly [number, number]> = [
   [0, 1],
 ];
 
-function emitFace(b: Builder, w: World, x: number, y: number, z: number, def: BlockDef, f: Face): void {
+/**
+ * @param unlit  The emissive bucket renders with MeshBasicMaterial, which does
+ *   no lighting at all — there, `f.shade` is the only thing that stops a glowing
+ *   cube looking like a flat sprite, so it stays. Everywhere else the material
+ *   computes N·L per fragment already, and multiplying by `f.shade` on top of
+ *   that applies the sun twice. That doubled contrast is a large part of why
+ *   surfaces never looked lit so much as painted.
+ */
+function emitFace(
+  b: Builder,
+  w: World,
+  x: number,
+  y: number,
+  z: number,
+  def: BlockDef,
+  f: Face,
+  unlit: boolean,
+): void {
   const t = def.tiles[f.tile];
   const col = t % ATLAS_COLS;
   const row = (t / ATLAS_COLS) | 0;
@@ -204,6 +230,12 @@ function emitFace(b: Builder, w: World, x: number, y: number, z: number, def: Bl
   const v1 = 1 - row / ATLAS_ROWS - UV_INSET;
   const [tr, tg, tb] = tintOf(def);
   const e = def.emissive ?? 0;
+  // Every block of a kind is otherwise byte-identical, which is what makes a
+  // large wall read as wallpaper. A few percent of brightness, keyed to the
+  // cell so all six faces of one cube agree, breaks that up without anybody
+  // being able to point at what changed. Emissive panels keep out of it — a
+  // bank of monitors at slightly different brightnesses looks broken.
+  const jitter = unlit ? 1 : 0.97 + hash3(x, y, z) * 0.06;
   const corners = f.corners(x, y, z, def.height);
   const base = b.positions.length / 3;
   const ao: number[] = [];
@@ -215,7 +247,7 @@ function emitFace(b: Builder, w: World, x: number, y: number, z: number, def: Bl
     b.uvs.push(cu ? u1 : u0, cv ? v1 : v0);
     const a = cornerAO(w, x, y, z, f, cu ? 1 : -1, cv ? 1 : -1);
     ao.push(a);
-    const s = f.shade * a;
+    const s = (unlit ? f.shade : 1) * a * jitter;
     b.colors.push(Math.max(tr * s, e), Math.max(tg * s, e), Math.max(tb * s, e));
   }
   // Standard AO seam fix: flip the diagonal when the 00-11 pair is darker.
@@ -326,7 +358,7 @@ function meshRange(
             // Sides stay visible against shorter opaque neighbors (exposed strip).
             if (f.tile === "side" ? nDef.height >= def.height : nDef.height === 1) continue;
           }
-          emitFace(target, world, x, y, z, def, f);
+          emitFace(target, world, x, y, z, def, f, target === emissive);
         }
       }
     }

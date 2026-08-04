@@ -1,13 +1,13 @@
 // The material registry for the office. Array order IS the block id — never
 // reorder, only append. Tiles index into the 8x8 texture atlas painted by
-// src/components/workspace/blockworld/textures.ts (32px tiles, 256x256).
+// src/components/workspace/blockworld/textures.ts (64px tiles, 512x512).
 //
 // This is an OFFICE, not a landscape: carpet tiles, ceiling grid, glass
 // partitions, desks, monitors. No grass, no dirt, no cobblestone.
 
 export const ATLAS_COLS = 8;
 export const ATLAS_ROWS = 8;
-export const TILE_PX = 128;
+export const TILE_PX = 64;
 
 /** Atlas tile indexes (col + row * ATLAS_COLS). Keep in sync with textures.ts. */
 export const TILE = {
