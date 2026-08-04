@@ -159,7 +159,36 @@ describe("buildMeshData", () => {
     };
     const bright = topAt(buildMeshData(lone).opaque, 1, 1);
     const dark = topAt(buildMeshData(shadowed).opaque, 1, 1);
-    expect(bright.color[0]).toBe(1);
-    expect(dark.color[0]).toBeLessThan(bright.color[0]);
+    // Not exactly 1: lit faces carry a few percent of per-block variation so a
+    // wall of one material is not one flat colour. AO still has to dominate it.
+    expect(bright.color[0]).toBeGreaterThan(0.96);
+    expect(bright.color[0]).toBeLessThanOrEqual(1);
+    expect(dark.color[0]).toBeLessThan(bright.color[0] - 0.1);
+  });
+
+  it("stops baking a second sun into lit faces, but keeps one on emissive ones", () => {
+    // The lit materials are shaded by the renderer, which already applies the
+    // sun. Multiplying by a per-face constant on top of that applied it twice.
+    const world = makeWorld();
+    set(world, 1, 1, 1, B.stone);
+    const lit = verts(buildMeshData(world).opaque);
+    const top = lit.find((v) => v.normal[1] === 1);
+    const side = lit.find((v) => v.normal[2] === 1);
+    expect(top).toBeDefined();
+    expect(side).toBeDefined();
+    // Same block, unoccluded: the two faces differ only by the jitter, which is
+    // per-block, so they are identical.
+    expect((side as Vert).color[0]).toBeCloseTo((top as Vert).color[0], 5);
+
+    // The emissive bucket is drawn unlit, so there the face term is the only
+    // shading there is and must survive.
+    const glow = makeWorld();
+    set(glow, 1, 1, 1, B.lamp);
+    const em = verts(buildMeshData(glow).emissive);
+    const emTop = em.find((v) => v.normal[1] === 1);
+    const emSide = em.find((v) => v.normal[2] === 1);
+    expect(emTop).toBeDefined();
+    expect(emSide).toBeDefined();
+    expect((emSide as Vert).color[0]).toBeLessThan((emTop as Vert).color[0]);
   });
 });

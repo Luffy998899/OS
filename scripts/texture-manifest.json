@@ -1,0 +1,68 @@
+{
+  "$comment": [
+    "Where the office's real materials come from, and how each one is reduced to a",
+    "64px atlas tile. Run `node scripts/bake-textures.mjs` to refresh the baked output.",
+    "",
+    "Every source here must be public domain or permissively licensed, and the licence",
+    "must be recorded below \u2014 the baked pixels ship in the repository.",
+    "",
+    "To add your own texture: drop a PNG anywhere reachable, add an entry with its URL",
+    "(or a `file` path relative to the repo root), and re-run the script. Nothing else",
+    "needs to change."
+  ],
+  "sources": [
+    {
+      "name": "backrooms-textures",
+      "url": "https://github.com/amini-allight/backrooms-textures",
+      "licence": "CC0-1.0",
+      "credit": "Amini Allight; carpet derived from Seamless Pixels with permission"
+    },
+    {
+      "name": "DevTextures",
+      "url": "https://github.com/Nolram12345/DevTextures",
+      "licence": "CC0-1.0",
+      "credit": "Nolram12345"
+    }
+  ],
+  "tiles": [
+    {
+      "tile": "CARPET",
+      "kind": "luminance",
+      "note": "One shared fibre channel; the four carpet colours tint it. Storing luminance rather than four RGB copies keeps the variants consistent and the payload small.",
+      "url": "https://raw.githubusercontent.com/amini-allight/backrooms-textures/master/img/backrooms-carpet-diffuse.png"
+    },
+    {
+      "tile": "CARPET_N",
+      "kind": "normal",
+      "url": "https://raw.githubusercontent.com/amini-allight/backrooms-textures/master/img/backrooms-carpet-normal.png"
+    },
+    {
+      "tile": "WALL",
+      "kind": "luminance",
+      "url": "https://raw.githubusercontent.com/amini-allight/backrooms-textures/master/img/backrooms-wall-diffuse.png",
+      "note": "Kept as a luminance channel and tinted to an office colour. The source is a deliberately yellowed horror-game surface; its grain and relief are exactly right, its colour is not."
+    },
+    {
+      "tile": "WALL_N",
+      "kind": "normal",
+      "url": "https://raw.githubusercontent.com/amini-allight/backrooms-textures/master/img/backrooms-wall-normal.png"
+    },
+    {
+      "tile": "CEILING",
+      "kind": "luminance",
+      "url": "https://raw.githubusercontent.com/amini-allight/backrooms-textures/master/img/backrooms-ceiling-tile-diffuse.png",
+      "note": "Kept as a luminance channel and tinted to an office colour. The source is a deliberately yellowed horror-game surface; its grain and relief are exactly right, its colour is not."
+    },
+    {
+      "tile": "CEILING_N",
+      "kind": "normal",
+      "url": "https://raw.githubusercontent.com/amini-allight/backrooms-textures/master/img/backrooms-ceiling-tile-normal.png"
+    },
+    {
+      "tile": "GRUNGE",
+      "kind": "luminance",
+      "note": "A stain mask, overlaid on the materials that have no photographic source so they stop reading as flat hand-drawn colour.",
+      "url": "https://raw.githubusercontent.com/Nolram12345/DevTextures/master/Surface%20Imperfections/SurfaceImperfection_Stain01-Roughness.png"
+    }
+  ]
+}

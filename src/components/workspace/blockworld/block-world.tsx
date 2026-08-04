@@ -55,7 +55,7 @@ import {
   type Cell,
   type FillMode,
 } from "@/lib/blockworld/build-ops";
-import { paintAtlas } from "./textures";
+import { paintAtlas, paintNormalAtlas } from "./textures";
 import { WireDialog, type WireCell } from "./wire-dialog";
 import {
   FillDialog,
@@ -409,6 +409,8 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
       isMe: boolean;
     }[],
     scene: null as THREE.Scene | null,
+    /** QA hook: sweep normalScale, or prove the normal map is not a no-op. */
+    debugTex: null as { atlas: THREE.Texture; normalAtlas: THREE.Texture } | null,
     lairT: 0,
     // ---- creative mode ----
     build: false,
@@ -859,9 +861,12 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
     camera.rotation.order = "YXZ";
 
     // Light: sun + sky bounce; the lair dims these live.
-    const hemi = new THREE.HemisphereLight(0xdfeaff, 0x8a7f6a, 0.9);
+    // Dimmer than they used to be, deliberately. The mesher used to bake a
+    // second copy of the sun into vertex colours; with that gone the same
+    // lights land about a quarter brighter, so they come down to match.
+    const hemi = new THREE.HemisphereLight(0xdfeaff, 0x8a7f6a, 0.66);
     scene.add(hemi);
-    const sun = new THREE.DirectionalLight(0xfff3d8, 1.15);
+    const sun = new THREE.DirectionalLight(0xfff3d8, 1.0);
     sun.position.set(0.6, 1, 0.35).multiplyScalar(120);
     scene.add(sun);
     const lairLight = new THREE.PointLight(0xff4030, 0, 18, 1.8);
@@ -880,6 +885,20 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
     atlas.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
     atlas.colorSpace = THREE.SRGBColorSpace;
 
+    // The surface itself. Where a material was photographed we have its real
+    // relief; everywhere else this is flat and changes nothing. Linear rather
+    // than Nearest on purpose — point-sampled normals light in visible facets,
+    // and the crisp pixel edges come from the albedo anyway. NoColorSpace
+    // because a normal map is a direction, not a colour: sRGB-decoding it would
+    // bend every vector.
+    const normalAtlas = new THREE.CanvasTexture(paintNormalAtlas());
+    normalAtlas.magFilter = THREE.LinearFilter;
+    normalAtlas.minFilter = THREE.LinearMipmapLinearFilter;
+    normalAtlas.generateMipmaps = true;
+    normalAtlas.anisotropy = atlas.anisotropy;
+    normalAtlas.colorSpace = THREE.NoColorSpace;
+    E.debugTex = { atlas, normalAtlas };
+
     const toGeometry = (m: MeshArrays) => {
       const g = new THREE.BufferGeometry();
       g.setAttribute("position", new THREE.BufferAttribute(m.positions, 3));
@@ -889,7 +908,16 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
       g.setIndex(new THREE.BufferAttribute(m.indices, 1));
       return g;
     };
-    const matOpaque = new THREE.MeshLambertMaterial({ map: atlas, vertexColors: true });
+    // MeshLambertMaterial takes a normalMap and shades per fragment, so there
+    // is no reason to pay for Standard or Phong here. Cut-outs stay flat: thin
+    // double-sided cards with derived tangents are where normal-map artifacts
+    // live, and a leaf gains nothing from relief.
+    const matOpaque = new THREE.MeshLambertMaterial({
+      map: atlas,
+      normalMap: normalAtlas,
+      normalScale: new THREE.Vector2(0.85, 0.85),
+      vertexColors: true,
+    });
     const matCutout = new THREE.MeshLambertMaterial({
       map: atlas,
       vertexColors: true,
@@ -1333,8 +1361,8 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
       fog.color.copy(new THREE.Color("#c9dcee")).lerp(new THREE.Color("#2a080f"), lt);
       fog.near = 60 - 56 * lt;
       fog.far = 160 - 132 * lt;
-      hemi.intensity = 0.9 - 0.72 * lt;
-      sun.intensity = 1.15 - 1.0 * lt;
+      hemi.intensity = 0.66 - 0.53 * lt;
+      sun.intensity = 1.0 - 0.87 * lt;
       const flicker = lt > 0.5 ? 1 + Math.max(0, Math.sin(now / 90) * Math.sin(now / 251) - 0.72) * 5 : 1;
       lairLight.intensity = 2.4 * lt * flicker;
       lairLight.position.set(E.st.pos.x, E.st.pos.y + 2.2, E.st.pos.z);
@@ -1469,6 +1497,7 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
       matCutout.dispose();
       matEmissive.dispose();
       atlas.dispose();
+      normalAtlas.dispose();
       for (const s of signMeshes) {
         s.geometry.dispose();
         (s.material as THREE.MeshBasicMaterial).map?.dispose();

@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { ATLAS_COLS, TILE, TILE_PX } from "@/lib/blockworld/blocks";
-import { paintAtlas, paintSkinFace } from "./textures";
+import { paintAtlas, paintNormalAtlas, paintSkinFace } from "./textures";
 
 // The node test environment has no canvas backend, so this file ships a tiny
 // software rasteriser: enough of the 2d context for the painters (fillRect,
@@ -336,20 +336,104 @@ describe("paintAtlas", () => {
     }
   });
 
-  it("gives each carpet tile a darker seam on two edges", () => {
-    for (const name of ["CARPET_GRAY", "CARPET_BLUE", "CARPET_GREEN", "CARPET_RED"] as const) {
+  // This used to assert the opposite — that every carpet tile carried a darker
+  // bound edge. On one tile that looks like a rug. Tiled across a floor it
+  // draws a grid, which is exactly why the carpet never read as carpet. The
+  // frame is gone, and this now guards against it coming back.
+  it("lays field materials with no per-tile frame", () => {
+    const FRAMELESS = [
+      "CARPET_GRAY",
+      "CARPET_BLUE",
+      "CARPET_GREEN",
+      "CARPET_RED",
+      "DRYWALL",
+      "CONCRETE",
+      "MARBLE",
+      "STONE",
+      "ROOF",
+      "WOOD_VENEER",
+    ] as const;
+    for (const name of FRAMELESS) {
       const pixels = cell(atlas, TILE[name]);
-      const field = rowAt(pixels, 0.5);
-      const left = pixels.filter((_, i) => i % TILE_PX === 0);
-      expect(meanLum(rowOf(pixels, 0)), `${name} top seam`).toBeLessThan(meanLum(field) - 4);
-      expect(meanLum(left), `${name} left seam`).toBeLessThan(meanLum(field) - 4);
+      const column = (x: number) => pixels.filter((_, i) => i % TILE_PX === x);
+      // A photographed material has real variation from line to line, so a
+      // fixed threshold cannot tell a drawn frame from ordinary grain. What
+      // marks a frame is the edge being MORE extreme than anything inside the
+      // tile — so the interior sets the bar, and the edges have to clear it.
+      const mid = meanLum(pixels);
+      const inner: number[] = [];
+      for (let i = 2; i < TILE_PX - 2; i++) {
+        inner.push(Math.abs(meanLum(rowOf(pixels, i)) - mid));
+        inner.push(Math.abs(meanLum(column(i)) - mid));
+      }
+      const worstInner = Math.max(...inner);
+      const edges: [string, number][] = [
+        ["top", meanLum(rowOf(pixels, 0))],
+        ["bottom", meanLum(rowOf(pixels, TILE_PX - 1))],
+        ["left", meanLum(column(0))],
+        ["right", meanLum(column(TILE_PX - 1))],
+      ];
+      for (const [side, lum] of edges) {
+        expect(
+          Math.abs(lum - mid),
+          `${name} ${side} edge is a frame, not grain`,
+        ).toBeLessThan(Math.max(6, worstInner * 1.25));
+      }
+    }
+  });
+
+  // Relief shading is a difference between neighbouring texels, so it scales
+  // with how far apart they are. Halving the tile size once doubled it, and
+  // four materials came out at sigma 45+ against a photograph's 20 — visibly
+  // static rather than surface. This keeps every material in one family.
+  it("holds every material to a believable amount of texture", () => {
+    const sigmaOf = (name: keyof typeof TILE) => {
+      const lums = cell(atlas, TILE[name]).map(lum);
+      const mean = lums.reduce((a, b) => a + b, 0) / lums.length;
+      return Math.sqrt(lums.reduce((a, b) => a + (b - mean) ** 2, 0) / lums.length);
+    };
+    // The photographed surfaces set the reference; nothing drawn should be
+    // more than half again as noisy as the roughest real one.
+    const reference = Math.max(sigmaOf("CARPET_GRAY"), sigmaOf("DRYWALL"), sigmaOf("CEILING_TILE"));
+    for (const name of [
+      "CONCRETE",
+      "PAVING",
+      "STONE",
+      "MARBLE",
+      "METAL",
+      "ACOUSTIC_FELT",
+      "WOOD_VENEER",
+      "ROOF",
+    ] as const) {
+      expect(sigmaOf(name), `${name} is static, not a surface`).toBeLessThan(reference * 1.5);
+    }
+  });
+
+  // A photograph is not automatically better than a drawing: reduced the naive
+  // way it comes out smoother than the hand-drawn tile it replaced. Measured on
+  // the source, real office carpet has a luminance sigma near 19; a flat 16x16
+  // box downsample of it lands at 8, which is what the old painted tile scored.
+  it("keeps the fibre detail of the real carpet", () => {
+    for (const name of ["CARPET_GRAY", "CARPET_BLUE", "CARPET_GREEN", "CARPET_RED"] as const) {
+      const lums = cell(atlas, TILE[name]).map(lum);
+      const mean = lums.reduce((a, b) => a + b, 0) / lums.length;
+      const sigma = Math.sqrt(lums.reduce((a, b) => a + (b - mean) ** 2, 0) / lums.length);
+      expect(sigma, `${name} is too smooth to read as carpet`).toBeGreaterThan(12);
     }
   });
 
   it("colours the four carpets apart from one another", () => {
-    const mids = ["CARPET_GRAY", "CARPET_BLUE", "CARPET_GREEN", "CARPET_RED"].map((n) =>
-      at(atlas, (TILE[n as keyof typeof TILE] % ATLAS_COLS) * TILE_PX + 8, 8),
-    );
+    // Averaged over the tile rather than sampled at one pixel: these are
+    // photographs now, and a single fleck landing on the probe would decide it.
+    const mids = ["CARPET_GRAY", "CARPET_BLUE", "CARPET_GREEN", "CARPET_RED"].map((n) => {
+      const px = cell(atlas, TILE[n as keyof typeof TILE]);
+      return {
+        r: px.reduce((a, p) => a + p.r, 0) / px.length,
+        g: px.reduce((a, p) => a + p.g, 0) / px.length,
+        b: px.reduce((a, p) => a + p.b, 0) / px.length,
+        a: 1,
+      };
+    });
     const [gray, blue, green, red] = mids;
     expect(Math.abs(gray.r - gray.b)).toBeLessThan(14);
     expect(blue.b).toBeGreaterThan(blue.r + 20);
@@ -445,6 +529,51 @@ describe("paintAtlas", () => {
     expect(mid.r).toBeGreaterThan(mid.b + 30);
     expect(meanLum(cell(atlas, TILE.LAIR_STONE))).toBeLessThan(60);
     expect(meanLum(cell(atlas, TILE.LAIR_GLOW))).toBeGreaterThan(70);
+  });
+});
+
+describe("paintNormalAtlas", () => {
+  // A normal map that silently does nothing — wrong colour space, never
+  // uploaded, all flat — looks exactly like a normal map that works, until you
+  // notice nothing responds to light. These are the checks that catch that.
+  let normals: Ctx2D;
+  beforeAll(() => {
+    normals = ctxOf(paintNormalAtlas());
+  });
+
+  it("matches the albedo atlas, tile for tile", () => {
+    expect(normals.w).toBe(ATLAS_COLS * TILE_PX);
+    expect(normals.h).toBe(ATLAS_COLS * TILE_PX);
+  });
+
+  it("is flat where nothing was photographed, so those faces light as before", () => {
+    for (const name of ["MONITOR_ON", "GLASS_CLEAR", "SIGN_STRIP", "BOOKS"] as const) {
+      const px = cell(normals, TILE[name]);
+      for (const p of px.slice(0, 64)) {
+        expect(p.r, `${name} is not flat`).toBeCloseTo(128, -1);
+        expect(p.g, `${name} is not flat`).toBeCloseTo(128, -1);
+        expect(p.b, `${name} is not flat`).toBeGreaterThan(250);
+      }
+    }
+  });
+
+  it("carries real relief where the material was photographed", () => {
+    const carpet = cell(normals, TILE.CARPET_BLUE);
+    const spread = (k: "r" | "g") => {
+      const vals = carpet.map((p) => p[k]);
+      const mean = vals.reduce((a, b) => a + b, 0) / vals.length;
+      return Math.sqrt(vals.reduce((a, b) => a + (b - mean) ** 2, 0) / vals.length);
+    };
+    // A flat map would score 0 here — this is the assertion that proves the
+    // carpet's normals actually reached the atlas.
+    expect(spread("r")).toBeGreaterThan(8);
+    expect(spread("g")).toBeGreaterThan(8);
+    expect(meanLum(carpet)).toBeGreaterThan(60);
+  });
+
+  it("paints the same bytes every time", () => {
+    const again = ctxOf(paintNormalAtlas());
+    expect(Array.from(again.buf.slice(0, 4096))).toEqual(Array.from(normals.buf.slice(0, 4096)));
   });
 });
 
