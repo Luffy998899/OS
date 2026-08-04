@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { B } from "./blocks";
+import { B, BLOCKS } from "./blocks";
 import { blockAt } from "./types";
 import type { World } from "./types";
 import {
@@ -185,5 +185,31 @@ describe("the creative palette", () => {
     for (const group of BLOCK_GROUPS)
       for (const key of group.keys)
         expect(known.has(key), `${group.name} lists unknown block ${key}`).toBe(true);
+  });
+});
+
+describe("blockAt guards", () => {
+  it("never hands back undefined for a NaN coordinate", () => {
+    const w = floorWorld();
+    // NaN slips past every range check and would index the typed array with
+    // NaN, which crashed the minimap when a teleport left a coordinate unset.
+    for (const c of [
+      [NaN, 1, 1],
+      [1, NaN, 1],
+      [1, 1, NaN],
+      [Infinity, 1, 1],
+      [1, 1, -Infinity],
+    ] as const) {
+      const id = blockAt(w, c[0], c[1], c[2]);
+      expect(Number.isInteger(id)).toBe(true);
+      expect(BLOCKS[id]).toBeDefined();
+    }
+  });
+
+  it("returns a known block for every cell in and around the world", () => {
+    const w = floorWorld();
+    for (let y = -1; y <= 16; y++)
+      for (let z = -1; z <= 16; z++)
+        for (let x = -1; x <= 16; x++) expect(BLOCKS[blockAt(w, x, y, z)]).toBeDefined();
   });
 });

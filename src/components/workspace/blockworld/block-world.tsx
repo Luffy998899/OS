@@ -43,7 +43,9 @@ import {
   type MoveInput,
   type PlayerState,
 } from "@/lib/blockworld/physics";
+import { poiIdAt } from "@/lib/blockworld/panels";
 import { paintAtlas } from "./textures";
+import { WireDialog, type WireCell } from "./wire-dialog";
 import { createPlayerRig, type PlayerRig } from "./player-model";
 import { BountyBoardPanel } from "../bounty-board";
 import { SkillTreePanel } from "../skill-tree";
@@ -306,6 +308,14 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
   const [settings, setSettings] = useState<ViewSettings>(DEFAULT_SETTINGS);
   const overlayRef = useRef<Overlay>(null);
   overlayRef.current = overlay;
+  /**
+   * True while any modal surface owns the keyboard — an overlay, the block
+   * picker or the wiring dialog. Without it, typing in a search box also walks
+   * the player and Escape drops you out of the office entirely.
+   */
+  const modalRef = useRef(false);
+  const pickerRef = useRef(false);
+  const wiringRef = useRef(false);
 
   // Opening any overlay must free the mouse and hand the keyboard to the
   // panel — nobody should have to press Escape before they can type.
@@ -406,8 +416,11 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
   // Debug/QA hook: lets tooling read position and steer deterministically.
   useEffect(() => {
     (window as unknown as { __bw?: unknown }).__bw = E;
+    // The block table, so tooling can name a material instead of guessing ids.
+    (window as unknown as { __bwBlocks?: unknown }).__bwBlocks = BLOCKS;
     return () => {
       delete (window as unknown as { __bw?: unknown }).__bw;
+      delete (window as unknown as { __bwBlocks?: unknown }).__bwBlocks;
     };
   }, [E]);
 
@@ -500,10 +513,17 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [aimLabel, setAimLabel] = useState<string | null>(null);
 
+  const [wiring, setWiring] = useState<WireCell | null>(null);
+  pickerRef.current = pickerOpen;
+  wiringRef.current = wiring !== null;
+  modalRef.current = overlay !== null || pickerOpen || wiring !== null;
+
   const placeMutation = trpc.world.place.useMutation();
   const loadTemplate = trpc.world.loadTemplate.useMutation();
   const clearWorld = trpc.world.clear.useMutation();
   const setSpawn = trpc.world.setSpawn.useMutation();
+  const setPoi = trpc.world.setPoi.useMutation({ onError: (e) => toast.error(e.message) });
+  const deletePoi = trpc.world.deletePoi.useMutation({ onError: (e) => toast.error(e.message) });
   const appliedRevision = useRef(0);
   useEffect(() => {
     if (loaded.data) appliedRevision.current = loaded.data.revision;
@@ -522,6 +542,25 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
   E.build = buildMode;
   E.held = hotbar[slot] ?? 1;
 
+  /** Forget a block's binding, locally and on the server. */
+  const dropPoiAt = useCallback(
+    (x: number, y: number, z: number) => {
+      const w = E.world;
+      if (!w) return;
+      const at = w.pois.findIndex((p) => p.min.x === x && p.min.y === y && p.min.z === z);
+      if (at < 0) return;
+      const [gone] = w.pois.splice(at, 1);
+      if (E.aimed?.id === gone.id) {
+        E.aimed = null;
+        setPrompt(null);
+      }
+      deletePoi.mutate({ x, y, z });
+    },
+    // deletePoi is a stable handle.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [E],
+  );
+
   /** Write one block locally, re-mesh what it touched, and queue the save. */
   const editBlock = useCallback(
     (x: number, y: number, z: number, id: number) => {
@@ -532,7 +571,54 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
       setBlock(w, x, y, z, id);
       E.remesh?.(x, y, z);
       E.edits.push(x, y, z, id);
+      // A binding belongs to the block, not the cell: break the block and the
+      // interaction goes with it, or the office keeps prompts for thin air.
+      if (id === 0) dropPoiAt(x, y, z);
     },
+    [E, dropPoiAt],
+  );
+
+  /** Attach a Work OS panel to the block the builder is aiming at. */
+  const wireBlock = useCallback(
+    (poi: {
+      x: number;
+      y: number;
+      z: number;
+      panel: string;
+      refId: string | null;
+      label: string;
+      sublabel: string | null;
+      adminOnly: boolean;
+    }) => {
+      const w = E.world;
+      if (!w) return;
+      const at = w.pois.findIndex(
+        (p) => p.min.x === poi.x && p.min.y === poi.y && p.min.z === poi.z,
+      );
+      const next: Poi = {
+        id: poiIdAt(poi.x, poi.y, poi.z),
+        label: poi.label,
+        sublabel: poi.sublabel ?? undefined,
+        panel: poi.panel as Poi["panel"],
+        refId: poi.refId ?? undefined,
+        adminOnly: poi.adminOnly,
+        min: { x: poi.x, y: poi.y, z: poi.z },
+        max: { x: poi.x + 1, y: poi.y + 1, z: poi.z + 1 },
+      };
+      if (at >= 0) w.pois[at] = next;
+      else w.pois.push(next);
+      setPoi.mutate(poi, {
+        onSuccess: (res) => {
+          appliedRevision.current = res.revision;
+        },
+      });
+      setWiring(null);
+      toast.success(`${poi.label} is live`, {
+        description: "Walk up to it and press E.",
+      });
+    },
+    // setPoi is a stable handle.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [E],
   );
 
@@ -640,9 +726,15 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
 
     // Terrain meshes.
     const atlas = new THREE.CanvasTexture(paintAtlas());
+    // Crisp up close, filtered at distance. Point-sampling the whole range is
+    // what makes a floor shimmer into static when you look across it: every
+    // pixel picks one texel out of a material far finer than the pixel is.
+    // Mipmaps plus anisotropy sample the whole footprint instead, which is the
+    // difference between a floor and a field of noise.
     atlas.magFilter = THREE.NearestFilter;
-    atlas.minFilter = THREE.NearestFilter;
-    atlas.generateMipmaps = false;
+    atlas.minFilter = THREE.LinearMipmapLinearFilter;
+    atlas.generateMipmaps = true;
+    atlas.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
     atlas.colorSpace = THREE.SRGBColorSpace;
 
     const toGeometry = (m: MeshArrays) => {
@@ -865,7 +957,7 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
     const stopHold = () => window.clearInterval(holdTimer);
 
     const onPointerDown = (e: PointerEvent) => {
-      if (overlayRef.current) return;
+      if (modalRef.current) return;
       if (E.build && document.pointerLockElement === dom) {
         e.preventDefault();
         startHold(e.button);
@@ -880,7 +972,7 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
     };
     const onPointerUp = () => {
       stopHold();
-      if (overlayRef.current) {
+      if (modalRef.current) {
         dragging = false;
         return;
       }
@@ -936,7 +1028,7 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
       // single 50ms step per frame, so a machine rendering at 5fps moved at a
       // quarter speed — "sprint feels slow" was really "your GPU is slow".
       // Accumulating real time and running whole fixed steps decouples the two.
-      if (!overlayRef.current) {
+      if (!modalRef.current) {
         const k = E.keys;
         const crouch = k.has("ShiftLeft") || k.has("ShiftRight");
         const input: MoveInput = {
@@ -1217,7 +1309,15 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
   useEffect(() => {
     const down = (e: KeyboardEvent) => {
       if (e.code === "Escape") {
-        if (overlayRef.current) {
+        // Close whatever is open, innermost first. Leaving the office is the
+        // last resort, never a side effect of dismissing a dialog.
+        if (wiringRef.current) {
+          setWiring(null);
+          e.preventDefault();
+        } else if (pickerRef.current) {
+          setPickerOpen(false);
+          e.preventDefault();
+        } else if (overlayRef.current) {
           setOverlay(null);
           e.preventDefault();
         } else if (document.pointerLockElement) {
@@ -1227,7 +1327,7 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
         }
         return;
       }
-      if (overlayRef.current) return;
+      if (modalRef.current) return;
       if (["Space", "Tab", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.code)) {
         e.preventDefault();
       }
@@ -1279,6 +1379,20 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
           }
           if (e.code === "KeyE") openInteraction(E.aimed);
           return;
+        case "KeyR":
+          // Wire the block under the crosshair to a Work OS panel.
+          if (E.build) {
+            e.preventDefault();
+            const hit = E.aimedVoxel;
+            if (!hit) {
+              toast("Aim at a block first.", { description: "Then press R to wire it up." });
+              return;
+            }
+            const id = E.world ? blockAt(E.world, hit.x, hit.y, hit.z) : 0;
+            setWiring({ x: hit.x, y: hit.y, z: hit.z, blockId: id });
+            if (document.pointerLockElement) document.exitPointerLock();
+          }
+          return;
         case "KeyB":
           openOverlay({ kind: "bounties" });
           return;
@@ -1324,7 +1438,7 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
   useEffect(() => {
     if (!buildMode) return;
     const onWheel = (e: WheelEvent) => {
-      if (overlayRef.current || pickerOpen) return;
+      if (modalRef.current) return;
       setSlot((s) => (s + (e.deltaY > 0 ? 1 : -1) + 9) % 9);
     };
     window.addEventListener("wheel", onWheel, { passive: true });
@@ -1617,6 +1731,26 @@ export function BlockWorld({ onExit }: { onExit: () => void }) {
               return next;
             });
             setPickerOpen(false);
+          }}
+        />
+      ) : null}
+
+      {/* Wire a block to the Work OS */}
+      {wiring && world ? (
+        <WireDialog
+          cell={wiring}
+          existing={
+            world.pois.find(
+              (p) => p.min.x === wiring.x && p.min.y === wiring.y && p.min.z === wiring.z,
+            ) ?? null
+          }
+          saving={setPoi.isPending || deletePoi.isPending}
+          onClose={() => setWiring(null)}
+          onSave={wireBlock}
+          onUnwire={() => {
+            dropPoiAt(wiring.x, wiring.y, wiring.z);
+            setWiring(null);
+            toast("Unwired", { description: "It's just a block again." });
           }}
         />
       ) : null}

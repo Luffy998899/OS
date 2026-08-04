@@ -438,4 +438,25 @@ export const worldRouter = router({
       });
       return { revision: await bump(ctx.db) };
     }),
+
+  /**
+   * What a wired block can point at. The wiring dialog offers these instead of
+   * free text, so a block can never open a room or client that isn't there.
+   */
+  targets: protectedProcedure.query(async ({ ctx }) => {
+    assertBuilder(ctx.user);
+    const [rooms, clients, projects] = await Promise.all([
+      ctx.db.room.findMany({ select: { id: true, name: true }, orderBy: { name: "asc" } }),
+      ctx.db.client.findMany({
+        select: { id: true, companyName: true },
+        orderBy: { companyName: "asc" },
+      }),
+      ctx.db.project.findMany({ select: { id: true, name: true }, orderBy: { name: "asc" } }),
+    ]);
+    return {
+      rooms,
+      clients: clients.map((c) => ({ id: c.id, name: c.companyName })),
+      projects,
+    };
+  }),
 });

@@ -2,7 +2,7 @@
 // emits indexed quads for exposed faces and sorts them into three buckets
 // (opaque / cutout / emissive) that the renderer maps to separate materials.
 
-import { ATLAS_COLS, ATLAS_ROWS, BLOCKS, type BlockDef } from "./blocks";
+import { ATLAS_COLS, ATLAS_ROWS, BLOCKS, TILE_PX, type BlockDef } from "./blocks";
 import { blockAt, type World } from "./types";
 
 export type MeshArrays = {
@@ -13,7 +13,10 @@ export type MeshArrays = {
   indices: Uint32Array;
 };
 
-const UV_INSET = 0.001;
+// Tiles are packed edge to edge, so a mipmapped face would drag its neighbour
+// in at the seam. Two texels of inset keeps the early mip levels — the ones
+// you actually see — sampling inside the tile they belong to.
+const UV_INSET = 2 / (TILE_PX * ATLAS_COLS);
 const AO_LEVELS = [1.0, 0.85, 0.72, 0.6];
 const CUTOUT_KEYS = new Set([
   "glass",

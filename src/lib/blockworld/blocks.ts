@@ -7,7 +7,7 @@
 
 export const ATLAS_COLS = 8;
 export const ATLAS_ROWS = 8;
-export const TILE_PX = 32;
+export const TILE_PX = 128;
 
 /** Atlas tile indexes (col + row * ATLAS_COLS). Keep in sync with textures.ts. */
 export const TILE = {

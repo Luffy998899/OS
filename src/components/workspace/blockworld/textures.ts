@@ -19,7 +19,24 @@
 // rasterise these painters in Node with a software canvas that implements
 // exactly that much.
 
-import { ATLAS_COLS, ATLAS_ROWS, TILE, TILE_PX } from "@/lib/blockworld/blocks";
+import {
+  ATLAS_COLS,
+  ATLAS_ROWS,
+  TILE,
+  TILE_PX as ATLAS_TILE_PX,
+} from "@/lib/blockworld/blocks";
+
+/**
+ * Painters address a 32-pixel design space. The atlas tile is larger than that
+ * (see DETAIL): the design is drawn at 32, scaled up crisply, and then given
+ * real material detail — micro-grain and relief lighting — at full resolution.
+ * Keeping the two apart means raising the atlas resolution never turns a 3px
+ * carpet weave into moire, and never thins a bevel into nothing.
+ */
+const TILE_PX = 32;
+
+/** How many atlas texels one design pixel becomes. */
+const DETAIL = Math.max(1, Math.round(ATLAS_TILE_PX / TILE_PX));
 
 type Ctx = CanvasRenderingContext2D;
 type Rand = () => number;
@@ -123,12 +140,20 @@ function hgrad(c: Ctx, left: string, right: string): void {
   }
 }
 
-/** Per-pixel luminance noise over whatever is already painted. */
+/**
+ * Per-pixel luminance noise over whatever is already painted.
+ *
+ * A design pixel becomes a DETAIL-sized block in the atlas, so grain drawn here
+ * lands DETAIL times coarser than it was written for — the difference between
+ * a plastered wall and a rock face. It is damped accordingly, and the fine
+ * per-texel tooth is added back at full resolution in enrich().
+ */
 function grain(c: Ctx, r: Rand, amount: number, chance = 1): void {
+  const amp = amount / DETAIL;
   for (let y = 0; y < TILE_PX; y++) {
     for (let x = 0; x < TILE_PX; x++) {
       if (r() > chance) continue;
-      const n = (r() - 0.5) * 2 * amount;
+      const n = (r() - 0.5) * 2 * amp;
       px(c, x, y, 1, 1, `rgba(${n > 0 ? 255 : 0},${n > 0 ? 255 : 0},${n > 0 ? 255 : 0},${Math.abs(n) / 255})`);
     }
   }
@@ -1182,16 +1207,159 @@ const PAINTERS: Record<keyof typeof TILE, Painter> = {
   },
 };
 
-/** Paint the full atlas: one TILE_PX tile per TILE index. */
+// ---------------------------------------------------------------------------
+// Detail pass: turning a 32px design into a real material
+//
+// A texture pack looks photographic for two reasons that have nothing to do
+// with its resolution: surfaces have depth, and no two square inches of them
+// are identical. The painters above give a tile its design — the weave, the
+// panel lines, the screen. This pass gives it a surface: a value-noise height
+// field lit from the top-left so it actually has relief, plus micro-grain so
+// a flat wall stops reading as a flat colour.
+//
+// It runs on the upscaled tile, so the detail is at atlas resolution while the
+// design stays exactly as drawn.
+// ---------------------------------------------------------------------------
+
+/** Deterministic value noise on an integer lattice. */
+function lattice(seed: number, x: number, y: number): number {
+  let h = (x * 374761393 + y * 668265263 + seed * 1274126177) | 0;
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+}
+
+const smooth = (t: number): number => t * t * (3 - 2 * t);
+
+/** Value noise that wraps every `period` samples, so tiles stay seamless. */
+function tileNoise(seed: number, x: number, y: number, period: number): number {
+  const xi = Math.floor(x);
+  const yi = Math.floor(y);
+  const tx = smooth(x - xi);
+  const ty = smooth(y - yi);
+  const wrap = (v: number): number => ((v % period) + period) % period;
+  const x0 = wrap(xi);
+  const y0 = wrap(yi);
+  const x1 = wrap(xi + 1);
+  const y1 = wrap(yi + 1);
+  const a = lattice(seed, x0, y0);
+  const b = lattice(seed, x1, y0);
+  const cc = lattice(seed, x0, y1);
+  const d = lattice(seed, x1, y1);
+  return (a + (b - a) * tx) * (1 - ty) + (cc + (d - cc) * tx) * ty;
+}
+
+/** Fractal noise: several octaves of tileNoise, each finer and fainter. */
+function fbm(seed: number, x: number, y: number, cells: number, octaves = 4): number {
+  let sum = 0;
+  let amp = 1;
+  let norm = 0;
+  let period = cells;
+  for (let o = 0; o < octaves; o++) {
+    sum += tileNoise(seed + o * 977, x * period, y * period, period) * amp;
+    norm += amp;
+    amp *= 0.5;
+    period *= 2;
+  }
+  return sum / norm;
+}
+
+/**
+ * Fully transparent tiles (leaves, glass cut-outs) must keep their exact alpha
+ * or the cut-out silhouette softens; relief is applied to colour only.
+ */
+function enrich(
+  src: HTMLCanvasElement,
+  ctx: Ctx,
+  seed: number,
+  strength: number,
+): HTMLCanvasElement {
+  const size = ATLAS_TILE_PX;
+  const [out, oc] = makeCanvas(size, size);
+  oc.imageSmoothingEnabled = false;
+  oc.drawImage(src, 0, 0, size, size);
+  if (DETAIL <= 1 || strength <= 0) return out;
+
+  const img = oc.getImageData(0, 0, size, size);
+  const d = img.data;
+  // Height field: coarse undulation plus a fine tooth. 6 cells across the tile
+  // is roughly a centimetre of real surface at office scale.
+  const inv = 1 / size;
+  const h = new Float32Array(size * size);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      h[y * size + x] =
+        fbm(seed, x * inv, y * inv, 6) * 0.7 + fbm(seed + 4099, x * inv, y * inv, 24, 2) * 0.3;
+    }
+  }
+  // Light it from the top-left, the same direction the painters bevel from, so
+  // the relief agrees with the design instead of fighting it.
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const i = y * size + x;
+      const o = i * 4;
+      if (d[o + 3] === 0) continue;
+      const hx = h[i] - h[y * size + (x === 0 ? size - 1 : x - 1)];
+      const hy = h[i] - h[(y === 0 ? size - 1 : y - 1) * size + x];
+      // Shading multiplies albedo, the way light actually does. Adding a flat
+      // amount would brighten a mid-tone into a more saturated colour and
+      // quietly restyle every material it touched.
+      // The slope term is the relief you want; the flat height term is a broad
+      // stain that reads as blotchy plaster if you lean on it, so it stays low.
+      // Per-texel tooth: the fine grain the design can no longer carry itself.
+      const tooth = (lattice(seed + 7919, x, y) - 0.5) * 0.06;
+      const gain = 1 + ((hx + hy) * 5.5 + (h[i] - 0.5) * 0.14 + tooth) * strength;
+      d[o] = Math.max(0, Math.min(255, d[o] * gain));
+      d[o + 1] = Math.max(0, Math.min(255, d[o + 1] * gain));
+      d[o + 2] = Math.max(0, Math.min(255, d[o + 2] * gain));
+    }
+  }
+  oc.putImageData(img, 0, 0);
+  ctx.imageSmoothingEnabled = false;
+  return out;
+}
+
+/**
+ * How much relief each material gets. Screens, signs and glass are meant to be
+ * flat and legible; carpet, plaster and stone are not.
+ */
+function reliefFor(name: string): number {
+  // TILE keys are SCREAMING_CASE; match them as they are written.
+  const key = name.toLowerCase();
+  if (
+    /^(monitor|tv|screen|whiteboard|clock|sign|exit|glass|water|lair_glow|ceiling_light|softbox|led|display|corkboard_note)/.test(
+      key,
+    )
+  ) {
+    return 0;
+  }
+  if (/^(carpet|rug|stone|paving|concrete|acoustic_felt|corkboard|roof|lair|vecna|obsidian)/.test(key)) {
+    return 0.85;
+  }
+  // Paint, veneer and sheet metal are smooth by definition: a little tooth,
+  // never the mottling that turns a plastered wall into a rock face.
+  if (/^(drywall|trim|ceiling|metal|elevator|marble|facade|desk|table|chair|pantry|printer|cooler|server)/.test(key)) {
+    return 0.22;
+  }
+  if (/^(plant|curtain|mic|tripod|camera|foliage)/.test(key)) return 0.3;
+  return 0.45;
+}
+
+/** Paint the full atlas: one tile per TILE index, at atlas resolution. */
 export function paintAtlas(): HTMLCanvasElement {
-  const [atlas, ctx] = makeCanvas(ATLAS_COLS * TILE_PX, ATLAS_ROWS * TILE_PX);
+  const [atlas, ctx] = makeCanvas(ATLAS_COLS * ATLAS_TILE_PX, ATLAS_ROWS * ATLAS_TILE_PX);
+  ctx.imageSmoothingEnabled = false;
   for (const name of Object.keys(TILE) as (keyof typeof TILE)[]) {
     const t = TILE[name];
     // Each tile paints on its own canvas so speckle never bleeds across tiles
     // and transparent tiles start from a clean alpha=0 surface.
     const [tile, c] = makeCanvas(TILE_PX, TILE_PX);
     PAINTERS[name](c, mulberry32(t * 7919 + 17));
-    ctx.drawImage(tile, (t % ATLAS_COLS) * TILE_PX, ((t / ATLAS_COLS) | 0) * TILE_PX);
+    const finished = enrich(tile, c, t * 131 + 7, reliefFor(name));
+    ctx.drawImage(
+      finished,
+      (t % ATLAS_COLS) * ATLAS_TILE_PX,
+      ((t / ATLAS_COLS) | 0) * ATLAS_TILE_PX,
+    );
   }
   return atlas;
 }
